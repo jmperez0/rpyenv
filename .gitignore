@@ -1,0 +1,7 @@
+# Rust build output
+/target/
+
+# Local tooling, not part of the project
+/.claude/
+/.remember/
+/CLAUDE.md
