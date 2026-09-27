@@ -216,7 +216,9 @@ EAGER.
 
 `RPYENV_CONSOLE` selects the behavior when the shim has no console:
 
-- `lazy` (default when the 24H2 APIs are available): as described above
+- `lazy`: as described above. This is the intended default when the 24H2 APIs
+  are available, but it is decided only after the cost is measured (open
+  question 3).
 - `eager`: behave like `python.exe` and create the console at startup
 
 This setting is specific to rpyenv; upstream pyenv has no equivalent. The
