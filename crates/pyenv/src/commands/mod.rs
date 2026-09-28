@@ -2,7 +2,9 @@
 
 pub mod local_global;
 pub mod misc;
+pub mod prefix;
 pub mod version;
+pub mod versions;
 
 use crate::output::Output;
 use rpyenv_core::ctx::Ctx;
@@ -17,6 +19,7 @@ const COMMANDS: &[(&str, Command)] = &[
     ("global", local_global::global),
     ("help", misc::help),
     ("local", local_global::local),
+    ("prefix", prefix::prefix),
     ("root", misc::root),
     ("version", version::version),
     ("version-file", version::version_file),
@@ -24,6 +27,7 @@ const COMMANDS: &[(&str, Command)] = &[
     ("version-file-write", version::version_file_write),
     ("version-name", version::version_name),
     ("version-origin", version::version_origin),
+    ("versions", versions::versions),
 ];
 
 /// pyenv-win only.

@@ -25,3 +25,4 @@ rpyenv matches the contract of pyenv on Linux and pyenv-win on Windows, but not 
 | D-22 | Windows | `version` | With an extra argument (`pyenv version <x>`), the PATH check is skipped, because pyenv.bat routes on `%1%2` | The PATH check always runs; extra arguments are ignored | Batch-routing artifact, not behavior scripts rely on. |
 | D-11 | Windows | `local --unset`, `global --unset` | A missing file prints a VBScript runtime error to stderr (exit 0) | Silent, exit 0 | Script error leak. |
 | D-14 | Linux | `global -f`, `global --force` | Written into the version file as a version | Accepted as a force flag, as for `local` | File corruption. |
+| D-13 | Windows | `prefix` | (pyenv-win lacks the command; upstream joins with `:`) | Joined with `;` | `:` is ambiguous with drive letters. |
