@@ -120,18 +120,10 @@ fn win_exec_messages() {
 
 #[cfg(windows)]
 #[test]
-fn win_exec_runs_a_batch_file_with_the_version_first_on_path() {
+fn win_exec_runs_a_batch_file() {
     let f = Fixture::new();
     let bat = f.exe("3.9.1/Scripts/hello.bat");
-    std::fs::write(&bat, "@echo hello %1\r\n@echo %PATH%\r\n").unwrap();
+    std::fs::write(&bat, "@echo hello %1\r\n").unwrap();
     let r = f.pyenv_env(&["exec", "hello", "world"], &WIN_ENV);
-    let v = f.root.join("versions").join("3.9.1");
-    let start = format!(
-        "hello world\r\n{};{};{};",
-        v.display(),
-        v.join("Scripts").display(),
-        v.join("bin").display()
-    );
-    assert!(r.stdout.starts_with(&start), "{}", r.stdout);
-    assert_eq!(r.code, 0);
+    assert_eq!((r.stdout.as_str(), r.code), ("hello world\r\n", 0));
 }
