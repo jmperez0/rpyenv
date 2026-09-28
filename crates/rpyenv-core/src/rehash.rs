@@ -259,8 +259,15 @@ fn refresh_template(shims: &Path, source: &Path) -> io::Result<PathBuf> {
         (Err(_), _) => true,
     };
     if !fresh {
+        // Copied to a temp file first and renamed into place, so a crash mid-copy leaves
+        // the old template rather than a truncated one.
+        let tmp = dir.join(format!("{TEMPLATE_EXE}.tmp"));
+        if let Err(e) = fs::copy(source, &tmp) {
+            let _ = fs::remove_file(&tmp);
+            return Err(e);
+        }
         remove_or_rename(&template);
-        fs::copy(source, &template)?;
+        fs::rename(&tmp, &template)?;
     }
     Ok(template)
 }
