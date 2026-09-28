@@ -22,3 +22,4 @@ rpyenv matches the contract of pyenv on Linux and pyenv-win on Windows, but not 
 | D-15 | Windows | `version` | The PATH warning looks for `shims\python.bat` | Looks for `shims\python.exe` | rpyenv shims are executables. |
 | D-18 | Linux | `version-file <dir>` | A missing relative `<dir>` prints bash's `cd` error | Exit 1, no message | bash-specific text. |
 | D-21 | Linux | `local`, `global`, `version-file-write` | An unwritable file prints bash's redirection error | `` pyenv: cannot write `<file>': <reason> `` | bash-specific text. |
+| D-22 | Windows | `version` | With an extra argument (`pyenv version <x>`), the PATH check is skipped, because pyenv.bat routes on `%1%2` | The PATH check always runs; extra arguments are ignored | Batch-routing artifact, not behavior scripts rely on. |
