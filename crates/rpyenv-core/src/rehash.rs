@@ -297,7 +297,13 @@ fn remove_stale(shims: &Path, wanted: &[OsString], fold_case: bool) -> io::Resul
 /// Deletes a shim. A running `.exe` can't be deleted on Windows, so it is renamed to
 /// `.<name>.old` instead (hidden, and never a command name); a later rehash deletes it.
 fn remove_or_rename(p: &Path) {
-    if fs::remove_file(p).is_ok() || !p.exists() {
+    remove_or_rename_with(p, |p| fs::remove_file(p))
+}
+
+/// `remove_or_rename`, taking the removal function so a host that allows deleting a
+/// running file can still exercise the rename-aside branch in a test.
+fn remove_or_rename_with(p: &Path, remove: impl Fn(&Path) -> io::Result<()>) {
+    if remove(p).is_ok() || !p.exists() {
         return;
     }
     let name = p
@@ -439,6 +445,22 @@ mod tests {
         check(&ctx, &shim);
         holder.join().unwrap();
         assert!(shims.join("black.exe").exists());
+    }
+
+    #[test]
+    fn rename_aside_when_removal_fails() {
+        let (_t, ctx, _) = setup(Flavor::current());
+        let shims = ctx.shims_dir();
+        fs::create_dir_all(&shims).unwrap();
+        let fail = |_: &Path| -> io::Result<()> { Err(io::Error::other("in use")) };
+        let tool = shims.join("tool.exe");
+        fs::write(&tool, "").unwrap();
+        remove_or_rename_with(&tool, fail);
+        assert!(shims.join(".tool.exe.old").exists());
+        assert!(!tool.exists());
+        fs::write(&tool, "").unwrap();
+        remove_or_rename_with(&tool, fail);
+        assert!(shims.join(".tool.exe.1.old").exists());
     }
 
     #[test]
