@@ -1,0 +1,21 @@
+[workspace]
+resolver = "2"
+members = ["crates/rpyenv-core", "crates/pyenv"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/jmperez0/rpyenv"
+rust-version = "1.96"
+publish = false
+
+[workspace.dependencies]
+rpyenv-core = { path = "crates/rpyenv-core" }
+tempfile = "3.27"
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

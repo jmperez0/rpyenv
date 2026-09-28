@@ -1,0 +1,17 @@
+[package]
+name = "pyenv"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "pyenv"
+path = "src/main.rs"
+
+[dependencies]
+rpyenv-core.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
