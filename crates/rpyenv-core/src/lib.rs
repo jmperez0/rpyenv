@@ -4,3 +4,4 @@ pub mod ctx;
 pub mod flavor;
 pub mod paths;
 pub mod verfile;
+pub mod vsort;
