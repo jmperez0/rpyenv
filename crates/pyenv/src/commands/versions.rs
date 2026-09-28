@@ -3,7 +3,7 @@
 use crate::output::Output;
 use rpyenv_core::ctx::Ctx;
 use rpyenv_core::flavor::Flavor;
-use rpyenv_core::{installed, prefix, select};
+use rpyenv_core::{installed, prefix, select, shimset};
 use std::path::Path;
 
 pub fn versions(ctx: &Ctx, args: &[&str]) -> Output {
@@ -20,6 +20,14 @@ fn versions_pyenv(ctx: &Ctx, args: &[&str]) -> Output {
             "--bare" => bare = true,
             "--skip-aliases" => skip_aliases = true,
             "--skip-envs" => skip_envs = true,
+            // Rehash mode: argument parsing stops here (libexec/pyenv-versions).
+            "--executables" => {
+                let mut o = Output::new();
+                for name in shimset::executables_pyenv(&ctx.versions_dir()) {
+                    o.out(name.to_string_lossy());
+                }
+                return o;
+            }
             _ => {
                 return Output::error(
                     "Usage: pyenv versions [--bare] [--skip-aliases] [--skip-envs] [--executables]",

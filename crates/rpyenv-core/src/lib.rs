@@ -9,6 +9,7 @@ pub mod paths;
 pub mod pathsearch;
 pub mod prefix;
 pub mod select;
+pub mod shimset;
 pub mod verfile;
 pub mod vsort;
 pub mod winresolve;

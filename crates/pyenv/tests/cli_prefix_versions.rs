@@ -95,6 +95,19 @@ fn versions_aliases_and_envs() {
 
 #[cfg(unix)]
 #[test]
+fn versions_executables() {
+    let f = Fixture::new();
+    f.exe("3.12.1/bin/python");
+    f.exe("3.12.1/bin/pip");
+    f.exe("3.11.9/bin/python");
+    let r = f.pyenv(&["versions", "--executables"]);
+    assert_eq!((r.stdout.as_str(), r.code), ("pip\npython\n", 0));
+    // Arguments after --executables are not parsed.
+    assert_eq!(f.pyenv(&["versions", "--executables", "--bogus"]).code, 0);
+}
+
+#[cfg(unix)]
+#[test]
 fn full_help_listing_and_commands() {
     let f = Fixture::new();
     let expected = "Usage: pyenv <command> [<args>]\n\nSome useful pyenv commands are:\n   --version   Display the version of pyenv\n   commands    List all available pyenv commands\n   global      Set or show the global Python version(s)\n   help        Display help for a command\n   local       Set or show the local application-specific Python version(s)\n   prefix      Display prefixes for Python versions\n   root        Display the root directory where versions and shims are kept\n   version     Show the current Python version(s) and its origin\n   version-file   Detect the file that sets the current pyenv version\n   version-name   Show the current Python version\n   version-origin   Explain how the current Python version is set\n   versions    List all Python versions available to pyenv\n   whence      List all Python versions that contain the given executable\n   which       Display the full path to an executable\n\nSee `pyenv help <command>' for information on a specific command.\nFor full documentation, see: https://github.com/pyenv/pyenv#readme\n";
