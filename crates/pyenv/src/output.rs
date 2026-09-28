@@ -53,3 +53,17 @@ impl Output {
         let _ = stdout.flush();
     }
 }
+
+impl From<rpyenv_core::lookup::Report> for Output {
+    fn from(r: rpyenv_core::lookup::Report) -> Output {
+        let mut o = Output::new();
+        for line in &r.lines {
+            if r.stderr {
+                o.err(line);
+            } else {
+                o.out(line);
+            }
+        }
+        o.with_code(r.code)
+    }
+}

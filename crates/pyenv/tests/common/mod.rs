@@ -53,6 +53,21 @@ impl Fixture {
         self
     }
 
+    /// A runnable file at `root/versions/<rel>` (`rel` is `/`-separated; mode 755 on Unix).
+    pub fn exe(&self, rel: &str) -> PathBuf {
+        let p = rel
+            .split('/')
+            .fold(self.root.join("versions"), |p, c| p.join(c));
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, "").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        p
+    }
+
     /// An executable `python` (`python.exe` on Windows) in `syspath`.
     pub fn python_on_path(&self) -> PathBuf {
         let p = self.syspath.join(if cfg!(windows) {

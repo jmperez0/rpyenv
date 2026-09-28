@@ -7,9 +7,16 @@ mod output;
 pub use output::Output;
 use rpyenv_core::ctx::Ctx;
 use rpyenv_core::flavor::Flavor;
+use std::path::PathBuf;
 
 /// rpyenv's own version.
 pub const RPYENV_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// The shim binary installed next to this `pyenv` binary. It may not exist.
+pub(crate) fn shim_exe() -> Option<PathBuf> {
+    let name = format!("pyenv-shim{}", std::env::consts::EXE_SUFFIX);
+    std::env::current_exe().ok().map(|e| e.with_file_name(name))
+}
 
 /// `pyenv --version`: the upstream version rpyenv matches, then rpyenv's own (allowlist D-01).
 pub fn version_line(flavor: Flavor) -> String {

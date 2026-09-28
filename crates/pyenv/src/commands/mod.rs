@@ -5,6 +5,7 @@ pub mod misc;
 pub mod prefix;
 pub mod version;
 pub mod versions;
+pub mod which;
 
 use crate::output::Output;
 use rpyenv_core::ctx::Ctx;
@@ -28,6 +29,8 @@ const COMMANDS: &[(&str, Command)] = &[
     ("version-name", version::version_name),
     ("version-origin", version::version_origin),
     ("versions", versions::versions),
+    ("whence", which::whence),
+    ("which", which::which),
 ];
 
 /// pyenv-win only.
