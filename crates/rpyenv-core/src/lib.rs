@@ -4,6 +4,7 @@ pub mod ctx;
 pub mod flavor;
 pub mod installed;
 pub mod latest;
+pub mod lookup;
 pub mod paths;
 pub mod pathsearch;
 pub mod prefix;

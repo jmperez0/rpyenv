@@ -74,8 +74,9 @@ fn same_dir(a: &Path, b: &Path, flavor: Flavor) -> bool {
     norm(a) == norm(b)
 }
 
+/// A regular file (following symlinks) that can be run: any execute bit on Unix.
 #[cfg(unix)]
-fn is_runnable(p: &Path) -> bool {
+pub fn is_runnable(p: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     p.metadata()
         .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
@@ -83,7 +84,7 @@ fn is_runnable(p: &Path) -> bool {
 }
 
 #[cfg(not(unix))]
-fn is_runnable(p: &Path) -> bool {
+pub fn is_runnable(p: &Path) -> bool {
     p.is_file()
 }
 
