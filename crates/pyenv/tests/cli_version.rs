@@ -235,3 +235,45 @@ fn win_path_check_warns_when_the_shim_is_not_on_path() {
     );
     assert_eq!(f.pyenv(&["version"]).stdout, expected);
 }
+
+#[cfg(windows)]
+#[test]
+fn win_path_check_ignores_a_dot_dot_path_entry() {
+    // Fix 2 (I-2): a PATH entry that reaches the shims directory through `..`
+    // must not read as "a different python", i.e. no FATAL warning.
+    let f = Fixture::new();
+    f.version("3.9.1");
+    f.file(&f.root.join("version"), "3.9.1\r\n");
+    f.file(&f.root.join("shims").join("python.exe"), "");
+    let root_name = f.root.file_name().unwrap().to_string_lossy();
+    let path = format!("{}\\..\\{}\\shims", f.root.display(), root_name);
+    let r = f.pyenv_env(&["version"], &[("PATH", &path)]);
+    assert!(!r.stdout.contains("FATAL"), "stdout: {}", r.stdout);
+    assert_eq!(
+        r.stdout,
+        format!("3.9.1 (set by {}\\version)\r\n", f.root.display())
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn win_path_check_ignores_forward_slashes_in_pyenv_root() {
+    // Fix 2 (I-2): a forward-slash PYENV_ROOT must still match a backslash PATH
+    // entry, and `pyenv root` must print backslashes.
+    let f = Fixture::new();
+    f.version("3.9.1");
+    f.file(&f.root.join("version"), "3.9.1\r\n");
+    f.file(&f.root.join("shims").join("python.exe"), "");
+    let root_fwd = f.root.display().to_string().replace('\\', "/");
+    let shims = f.root.join("shims");
+    let r = f.pyenv_env(
+        &["version"],
+        &[
+            ("PYENV_ROOT", root_fwd.as_str()),
+            ("PATH", &shims.display().to_string()),
+        ],
+    );
+    assert!(!r.stdout.contains("FATAL"), "stdout: {}", r.stdout);
+    let root_out = f.pyenv_env(&["root"], &[("PYENV_ROOT", root_fwd.as_str())]);
+    assert_eq!(root_out.stdout, format!("{}\r\n", f.root.display()));
+}

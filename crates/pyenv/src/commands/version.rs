@@ -84,8 +84,7 @@ fn win_path_check(ctx: &Ctx, o: &mut Output) {
         Flavor::PyenvWin,
         ctx.pathext.as_deref(),
     );
-    let key = |p: &Path| p.to_string_lossy().to_ascii_lowercase();
-    if found.iter().any(|p| key(p) == key(&shim)) {
+    if found.iter().any(|p| path_key(p) == path_key(&shim)) {
         return;
     }
     let first = found
@@ -103,6 +102,13 @@ fn win_path_check(ctx: &Ctx, o: &mut Output) {
     o.out(format!(
         "\x1b[91mPlease remove \x1b[95m{dir}\x1b[91m from PATH for pyenv to work properly.\x1b[0m"
     ));
+}
+
+/// A comparison key for a Windows path: lexically normalized (so `..` is resolved),
+/// `/` unified to `\`, a trailing `\` trimmed, and ASCII-lowercased.
+fn path_key(p: &Path) -> String {
+    let normalized = lexical_normalize(p).to_string_lossy().replace('/', "\\");
+    normalized.trim_end_matches('\\').to_ascii_lowercase()
 }
 
 pub fn version_name(ctx: &Ctx, args: &[&str]) -> Output {

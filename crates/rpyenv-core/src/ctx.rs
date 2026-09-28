@@ -128,7 +128,7 @@ fn discover_root(flavor: Flavor, get: &dyn Fn(&str) -> Option<OsString>) -> Path
             .iter()
             .find_map(|k| val(k))
         {
-            Some(r) => PathBuf::from(trim_trailing_separators(&r)),
+            Some(r) => PathBuf::from(trim_trailing_separators(&r.replace('/', "\\"))),
             None => PathBuf::from(format!(
                 "{}\\.pyenv\\pyenv-win",
                 val("USERPROFILE").unwrap_or_default()
@@ -233,6 +233,16 @@ mod tests {
             build(PyenvWin, &[("PYENV_ROOT", "C:\\")]).unwrap().root,
             PathBuf::from("C:\\")
         );
+    }
+
+    #[test]
+    fn pyenv_win_root_normalizes_forward_slashes() {
+        // A `PathBuf` comparison would not catch a missing fix here: on Windows,
+        // `Path`/`PathBuf` equality treats `/` and `\` as the same separator, so the
+        // string form (what `.display()` and `ctx.root.display()` actually print) is
+        // what must be asserted.
+        let root = build(PyenvWin, &[("PYENV_ROOT", "C:/a/b/")]).unwrap().root;
+        assert_eq!(root.display().to_string(), "C:\\a\\b");
     }
 
     #[test]
