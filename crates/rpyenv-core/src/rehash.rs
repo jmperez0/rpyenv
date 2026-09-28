@@ -20,6 +20,10 @@ pub const TEMPLATE_DIR: &str = ".template";
 pub const TEMPLATE_EXE: &str = "pyenv-shim.exe";
 /// Upstream deletes a lock older than two minutes (libexec/pyenv-rehash:15-43).
 const STALE_LOCK: Duration = Duration::from_secs(120);
+/// The exit check waits this long for another rehash to finish, then skips: a compromise
+/// between spec §5.2, which needs the rehash done before the caller continues, and spec §8's
+/// "a shim that can't get the lock skips".
+const CHECK_WAIT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Wait {
@@ -140,11 +144,12 @@ pub fn needed(ctx: &Ctx) -> bool {
         .unwrap_or(true)
 }
 
-/// A shim's exit check (spec §8): rehash when the state changed. Failures are ignored,
-/// including a lock held by another rehash; the next check catches up.
+/// A shim's exit check (spec §8): rehash when the state changed, waiting briefly for a
+/// rehash already in progress so the caller sees its result (spec §5.2). Failures are
+/// ignored, including the wait running out; the next check catches up.
 pub fn check(ctx: &Ctx, shim_exe: &Path) {
     if needed(ctx) {
-        let _ = rehash(ctx, shim_exe, Wait::No);
+        let _ = rehash(ctx, shim_exe, Wait::Upto(CHECK_WAIT));
     }
 }
 
@@ -416,6 +421,24 @@ mod tests {
             assert!(matches!(r, Err(RehashError::NotWritable(d)) if d == shims));
         }
         fs::set_permissions(&shims, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[test]
+    fn the_check_waits_for_a_held_lock() {
+        let (_t, ctx, shim) = setup(Flavor::PyenvWin);
+        let v = ctx.versions_dir();
+        exe(&v.join("3.9.1").join("python.exe"));
+        rehash(&ctx, &shim, Wait::No).unwrap();
+        let shims = ctx.shims_dir();
+        let held = lock(&shims, Wait::No).unwrap();
+        let holder = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            drop(held);
+        });
+        exe(&v.join("3.9.1").join("Scripts").join("black.exe"));
+        check(&ctx, &shim);
+        holder.join().unwrap();
+        assert!(shims.join("black.exe").exists());
     }
 
     #[test]
