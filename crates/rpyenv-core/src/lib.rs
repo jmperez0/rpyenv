@@ -11,6 +11,7 @@ pub mod pathsearch;
 pub mod prefix;
 pub mod rehash;
 pub mod select;
+pub mod shim;
 pub mod shimset;
 pub mod verfile;
 pub mod vsort;

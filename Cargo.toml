@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/rpyenv-core", "crates/pyenv"]
+members = ["crates/rpyenv-core", "crates/pyenv", "crates/pyenv-shim"]
 
 [workspace.package]
 version = "0.1.0"
