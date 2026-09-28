@@ -12,3 +12,10 @@ rpyenv matches the contract of pyenv on Linux and pyenv-win on Windows, but not 
 | D-06 | Linux | prefix resolution | Ties are broken by `sort`'s locale collation | Ties are broken by byte order (C locale) | Deterministic result. |
 | D-07 | Linux | `versions` | Envs in bash glob order, which depends on the locale | Envs in byte order (C locale) | Deterministic output. |
 | D-17 | Windows | `versions` and others | A missing `versions` folder is created as a side effect | Nothing is created | Read-only commands shouldn't change the disk. |
+| D-08 | Windows | `help` | Drops the `)` after "executables" (batch parsing bug) | `)` is present | Help-text typo. |
+| D-09 | Windows | `--help` | `pyenv --help` prints `no such command '--help'` and exits 1 | Prints the help listing, exit 0 | Defect in pyenv.bat's routing. |
+| D-10 | Windows | all | `pyenv VERSION` prints nothing (routing is half case-insensitive) | Command names are case-insensitive | Defect. |
+| D-12 | Windows | `root`, `prefix`, `version-file`, `version-origin`, `version-file-read`, `version-file-write` | `pyenv: no such command '<name>'` | Implemented with upstream pyenv's behavior, help and messages | Spec §4: commands pyenv-win lacks follow upstream pyenv. |
+| D-16 | Windows | `commands` | Lists pyenv-win's `libexec` files | Lists rpyenv's commands, in the same NTFS name order | Different command set. |
+| D-19 | Linux | `--debug`, `PYENV_DEBUG` | bash `set -x` trace on stderr | No trace (rpyenv's own debug output comes later) | A bash trace has no equivalent in a binary. |
+| D-20 | Windows | `pyenv` (no arguments) | First line is `pyenv ` plus the raw `.version` file | `pyenv 3.1.1 (rpyenv 0.1.0)`, then an empty line | pyenv-win's output depends on the checkout's line endings. |
