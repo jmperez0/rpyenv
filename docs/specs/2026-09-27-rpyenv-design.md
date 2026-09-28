@@ -107,6 +107,33 @@ parity suites (§12) pin the exact behavior instead of this spec restating it.
 Where pyenv and pyenv-win differ, each OS follows its own upstream, and the
 difference is listed in the differential-test allowlist.
 
+**Parity policy (decided 2026-09-28): match the contract, not the bugs.**
+
+- **Match** each OS's upstream in:
+  - output formats, messages, output streams, and exit codes
+  - version-file formats and resolution rules
+
+  Scripts rely on these. Example: pyenv-win writes "no local version
+  configured" to stdout and exits 0.
+- **Don't reproduce defects:**
+  - crashes (pyenv-win fails when two installed versions tie numerically)
+  - lost information (pyenv-win's `pip*` shims return rehash's exit code
+    instead of pip's)
+  - file corruption (pyenv's `global -f X` writes `-f` into the file)
+  - mis-parsing (pyenv's rehash splits names containing spaces into several
+    shims)
+  - typos in help text
+- **Commands pyenv-win lacks** (`root`, `prefix`, `version-file`,
+  `version-origin`) follow upstream pyenv on Windows.
+- **Every intentional difference** is listed in the differential-test
+  allowlist with its reason.
+
+The verbatim references are
+[docs/parity/pyenv-m1-reference.md](../parity/pyenv-m1-reference.md)
+(pyenv 2.8.6, commit `ab74141`) and
+[docs/parity/pyenv-win-m1-reference.md](../parity/pyenv-win-m1-reference.md)
+(pyenv-win 3.1.1 plus 232 commits, commit `856ed5a`).
+
 ## 5. Shims
 
 ### 5.1 Resolving a command
