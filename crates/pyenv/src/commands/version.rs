@@ -3,7 +3,7 @@
 use crate::output::Output;
 use rpyenv_core::ctx::Ctx;
 use rpyenv_core::flavor::Flavor;
-use rpyenv_core::paths::lexical_normalize;
+use rpyenv_core::paths::{lexical_normalize, win_path_key};
 use rpyenv_core::{pathsearch, prefix, select, verfile};
 use std::path::Path;
 
@@ -77,7 +77,7 @@ fn win_path_check(ctx: &Ctx, o: &mut Output) {
         Flavor::PyenvWin,
         ctx.pathext.as_deref(),
     );
-    if found.iter().any(|p| path_key(p) == path_key(&shim)) {
+    if found.iter().any(|p| win_path_key(p) == win_path_key(&shim)) {
         return;
     }
     let first = found
@@ -95,13 +95,6 @@ fn win_path_check(ctx: &Ctx, o: &mut Output) {
     o.out(format!(
         "\x1b[91mPlease remove \x1b[95m{dir}\x1b[91m from PATH for pyenv to work properly.\x1b[0m"
     ));
-}
-
-/// A comparison key for a Windows path: lexically normalized (so `..` is resolved),
-/// `/` unified to `\`, a trailing `\` trimmed, and ASCII-lowercased.
-fn path_key(p: &Path) -> String {
-    let normalized = lexical_normalize(p).to_string_lossy().replace('/', "\\");
-    normalized.trim_end_matches('\\').to_ascii_lowercase()
 }
 
 pub fn version_name(ctx: &Ctx, args: &[&str]) -> Output {

@@ -8,5 +8,8 @@ publish.workspace = true
 
 [dependencies]
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 tempfile.workspace = true

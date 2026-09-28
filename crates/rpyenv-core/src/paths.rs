@@ -27,6 +27,13 @@ pub fn strip_bom(bytes: &[u8]) -> &[u8] {
     bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes)
 }
 
+/// A comparison key for a Windows path: `.` and `..` resolved by text, `/` unified to `\`,
+/// a trailing `\` trimmed, and ASCII-lowercased.
+pub fn win_path_key(p: &Path) -> String {
+    let normalized = lexical_normalize(p).to_string_lossy().replace('/', "\\");
+    normalized.trim_end_matches('\\').to_ascii_lowercase()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

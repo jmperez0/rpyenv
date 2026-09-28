@@ -18,14 +18,7 @@ pub fn find_all(
     };
     let exts: Vec<String> = match flavor {
         Flavor::Pyenv => vec![String::new()],
-        Flavor::PyenvWin => pathext
-            .map(|p| p.to_string_lossy().into_owned())
-            .filter(|p| !p.is_empty())
-            .unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".to_string())
-            .split(';')
-            .filter(|e| !e.is_empty())
-            .map(str::to_ascii_lowercase)
-            .collect(),
+        Flavor::PyenvWin => pathext_list(pathext),
     };
     let mut found = Vec::new();
     for dir in std::env::split_paths(path) {
@@ -57,6 +50,44 @@ pub fn find_first(
     find_all(name, path, skip, flavor, pathext)
         .into_iter()
         .next()
+}
+
+/// `PATHEXT`'s extensions, lowercased; `.COM;.EXE;.BAT;.CMD` when unset or empty.
+fn pathext_list(pathext: Option<&OsStr>) -> Vec<String> {
+    pathext
+        .map(|p| p.to_string_lossy().into_owned())
+        .filter(|p| !p.is_empty())
+        .unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".to_string())
+        .split(';')
+        .filter(|e| !e.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect()
+}
+
+/// cmd.exe's search for a command word on a `;`-separated `PATH`: in each folder, the name
+/// as typed when it has an extension, then the name plus each `PATHEXT` extension. Quotes
+/// and empty entries are dropped.
+pub fn find_cmd(name: &str, path: &OsStr, pathext: Option<&OsStr>) -> Option<PathBuf> {
+    let exts = pathext_list(pathext);
+    let typed_ext = Path::new(name).extension().is_some();
+    let path = path.to_string_lossy();
+    for dir in path
+        .split(';')
+        .map(|d| d.replace('"', ""))
+        .filter(|d| !d.is_empty())
+    {
+        let dir = Path::new(&dir);
+        if typed_ext && dir.join(name).is_file() {
+            return Some(dir.join(name));
+        }
+        for e in &exts {
+            let candidate = dir.join(format!("{name}{e}"));
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
 }
 
 fn same_dir(a: &Path, b: &Path, flavor: Flavor) -> bool {
@@ -109,6 +140,7 @@ pub fn strip_bin(python: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
     use std::fs;
 
     fn make_exe(dir: &Path, name: &str) -> PathBuf {
@@ -175,5 +207,20 @@ mod tests {
             Some(PathBuf::from("/opt"))
         );
         assert_eq!(strip_bin(Path::new("/home/t/sysbin/python")), None);
+    }
+
+    #[test]
+    fn cmd_search_tries_the_typed_name_then_pathext() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (a, b) = (tmp.path().join("a"), tmp.path().join("b"));
+        make_exe(&a, "tool.cmd");
+        make_exe(&b, "tool.exe");
+        make_exe(&b, "x.py");
+        let path = OsString::from(format!("{};\"{}\";", a.display(), b.display()));
+        let exts = Some(OsStr::new(".EXE;.CMD"));
+        assert_eq!(find_cmd("tool", &path, exts), Some(a.join("tool.cmd")));
+        assert_eq!(find_cmd("tool.exe", &path, exts), Some(b.join("tool.exe")));
+        assert_eq!(find_cmd("x.py", &path, None), Some(b.join("x.py")));
+        assert_eq!(find_cmd("x", &path, None), None);
     }
 }
