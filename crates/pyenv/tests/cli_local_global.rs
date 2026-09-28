@@ -59,6 +59,18 @@ fn local_shows_a_parent_file_and_fails_silently_on_an_empty_one() {
 
 #[cfg(unix)]
 #[test]
+fn local_unset_reports_removal_failures_other_than_missing() {
+    // Fix 3 (M-1): a removal failure other than "missing file" must not be silent.
+    let f = Fixture::new();
+    fs::create_dir_all(f.work.join(".python-version")).unwrap();
+    let r = f.pyenv(&["local", "--unset"]);
+    assert_eq!(r.code, 1);
+    assert!(r.stderr.contains("cannot remove"), "stderr: {}", r.stderr);
+    assert!(f.work.join(".python-version").exists());
+}
+
+#[cfg(unix)]
+#[test]
 fn global_show_set_and_quirks() {
     let f = Fixture::new();
     f.version("3.12.10");
@@ -112,6 +124,18 @@ fn win_local() {
     assert_eq!(f.pyenv(&["local", "--unset"]).code, 0);
     let r = f.pyenv(&["local", "--unset"]);
     assert_eq!((r.stdout.as_str(), r.stderr.as_str(), r.code), ("", "", 0));
+}
+
+#[cfg(windows)]
+#[test]
+fn local_unset_reports_removal_failures_other_than_missing() {
+    // Fix 3 (M-1): a removal failure other than "missing file" must not be silent.
+    let f = Fixture::new();
+    fs::create_dir_all(f.work.join(".python-version")).unwrap();
+    let r = f.pyenv(&["local", "--unset"]);
+    assert_eq!(r.code, 1);
+    assert!(r.stdout.contains("cannot remove"), "stdout: {}", r.stdout);
+    assert!(f.work.join(".python-version").exists());
 }
 
 #[cfg(windows)]

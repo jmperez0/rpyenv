@@ -17,8 +17,7 @@ pub fn local(ctx: &Ctx, args: &[&str]) -> Output {
                 .count();
             let rest = &args[forced..];
             if rest.first() == Some(&"--unset") {
-                let _ = std::fs::remove_file(&file);
-                return Output::new();
+                return remove_checked(ctx, &file);
             }
             if !rest.is_empty() {
                 return write_checked(ctx, &file, rest, forced > 0);
@@ -43,8 +42,7 @@ pub fn local(ctx: &Ctx, args: &[&str]) -> Output {
         Flavor::PyenvWin => {
             if args.first() == Some(&"--unset") {
                 // A missing file is not an error (allowlist D-11).
-                let _ = std::fs::remove_file(&file);
-                return Output::new();
+                return remove_checked(ctx, &file);
             }
             if !args.is_empty() {
                 return win_write(ctx, &file, args);
@@ -89,8 +87,7 @@ pub fn global(ctx: &Ctx, args: &[&str]) -> Output {
         }
         Flavor::PyenvWin => {
             if args.first() == Some(&"--unset") {
-                let _ = std::fs::remove_file(&file);
-                return Output::new();
+                return remove_checked(ctx, &file);
             }
             if !args.is_empty() {
                 return win_write(ctx, &file, args);
@@ -100,6 +97,27 @@ pub fn global(ctx: &Ctx, args: &[&str]) -> Output {
                 "no global version configured",
             )
         }
+    }
+}
+
+/// Removes `file`. A missing file is not an error (allowlist D-11). Any other
+/// failure is reported instead of being swallowed (M-1): stderr and exit 1 on
+/// Linux, matching `write_checked`'s reason formatting; stdout and exit 1 on
+/// Windows, matching `win_write`'s "cannot write" message (D-23).
+fn remove_checked(ctx: &Ctx, file: &Path) -> Output {
+    match std::fs::remove_file(file) {
+        Ok(()) => Output::new(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Output::new(),
+        Err(e) => match ctx.flavor {
+            Flavor::Pyenv => {
+                Output::error(format!("pyenv: cannot remove `{}': {e}", file.display()))
+            }
+            Flavor::PyenvWin => {
+                let mut o = Output::new();
+                o.out(format!("pyenv: cannot remove '{}': {e}", file.display()));
+                o.with_code(1)
+            }
+        },
     }
 }
 
