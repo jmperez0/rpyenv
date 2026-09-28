@@ -101,6 +101,32 @@ fn bad_pyenv_dir() {
     );
 }
 
+/// Review M-4: a terminal can sit in a directory that was deleted. Upstream keeps
+/// working from bash's `$PWD`.
+#[cfg(unix)]
+#[test]
+fn works_in_a_deleted_directory() {
+    let f = Fixture::new();
+    let doomed = f.base.join("doomed");
+    std::fs::create_dir_all(&doomed).unwrap();
+    let out = std::process::Command::new("/bin/sh")
+        .args([
+            "-c",
+            r#"cd "$1" && export PWD && /bin/rmdir "$1" && exec "$2" root"#,
+            "sh",
+        ])
+        .arg(&doomed)
+        .arg(env!("CARGO_BIN_EXE_pyenv"))
+        .env_clear()
+        .env("PYENV_ROOT", &f.root)
+        .output()
+        .unwrap();
+    assert_eq!(
+        (String::from_utf8(out.stdout).unwrap(), out.status.code()),
+        (format!("{}\n", f.root.display()), Some(0))
+    );
+}
+
 #[cfg(windows)]
 #[test]
 fn win_no_arguments_prints_show_help() {

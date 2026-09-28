@@ -22,6 +22,8 @@ pub struct Ctx {
     pub pathext: Option<OsString>,
     /// pyenv-win's architecture suffix for installed version names: "", "-win32" or "-arm64".
     pub arch_suffix: &'static str,
+    /// `HOME` when set and non-empty; upstream's `system` search expands `~` in `PATH` with it.
+    pub home: Option<PathBuf>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -56,8 +58,8 @@ impl Ctx {
     }
 
     pub fn from_process() -> Result<Ctx, CtxError> {
-        let cwd = std::env::current_dir().map_err(|e| CtxError::NoCurrentDir(e.to_string()))?;
         let get = |k: &str| std::env::var_os(k);
+        let cwd = current_or_pwd(std::env::current_dir(), get("PWD"))?;
         Ctx::build(Flavor::current(), &get, cwd, host_arch_suffix())
     }
 
@@ -98,6 +100,7 @@ impl Ctx {
             path: get("PATH"),
             pathext: get("PATHEXT"),
             arch_suffix,
+            home: non_empty("HOME").map(PathBuf::from),
         })
     }
 
@@ -112,6 +115,7 @@ impl Ctx {
             path: None,
             pathext: None,
             arch_suffix: "",
+            home: None,
         }
     }
 }
@@ -119,10 +123,15 @@ impl Ctx {
 fn discover_root(flavor: Flavor, get: &dyn Fn(&str) -> Option<OsString>) -> PathBuf {
     let val = |k: &str| get(k).map(|v| v.to_string_lossy().into_owned());
     match flavor {
-        // Upstream removes exactly one trailing slash (libexec/pyenv:58-63).
-        Flavor::Pyenv => match val("PYENV_ROOT") {
-            Some(r) => PathBuf::from(r.strip_suffix('/').unwrap_or(&r)),
-            None => PathBuf::from(format!("{}/.pyenv", val("HOME").unwrap_or_default())),
+        // Upstream removes exactly one trailing slash (libexec/pyenv:58-63). The value
+        // stays an `OsString`, so a root that isn't UTF-8 still works (review M-5).
+        Flavor::Pyenv => match get("PYENV_ROOT") {
+            Some(r) => PathBuf::from(strip_one_slash(r)),
+            None => {
+                let mut s = get("HOME").unwrap_or_default();
+                s.push("/.pyenv");
+                PathBuf::from(s)
+            }
         },
         Flavor::PyenvWin => match ["PYENV_ROOT", "PYENV", "PYENV_HOME"]
             .iter()
@@ -133,6 +142,38 @@ fn discover_root(flavor: Flavor, get: &dyn Fn(&str) -> Option<OsString>) -> Path
                 "{}\\.pyenv\\pyenv-win",
                 val("USERPROFILE").unwrap_or_default()
             )),
+        },
+    }
+}
+
+#[cfg(unix)]
+fn strip_one_slash(s: OsString) -> OsString {
+    use std::os::unix::ffi::OsStringExt;
+    let mut bytes = s.into_vec();
+    if bytes.last() == Some(&b'/') {
+        bytes.pop();
+    }
+    OsString::from_vec(bytes)
+}
+
+/// The Linux flavor off Unix only runs in tests.
+#[cfg(not(unix))]
+fn strip_one_slash(s: OsString) -> OsString {
+    let t = s.to_string_lossy();
+    OsString::from(t.strip_suffix('/').unwrap_or(&t))
+}
+
+/// The physical current directory. When it has been deleted, an absolute `PWD`, which is
+/// what bash-based upstream keeps using (review M-4).
+fn current_or_pwd(
+    cwd: std::io::Result<PathBuf>,
+    pwd: Option<OsString>,
+) -> Result<PathBuf, CtxError> {
+    match cwd {
+        Ok(c) => Ok(c),
+        Err(e) => match pwd.map(PathBuf::from) {
+            Some(p) if p.is_absolute() => Ok(p),
+            _ => Err(CtxError::NoCurrentDir(e.to_string())),
         },
     }
 }
@@ -304,6 +345,55 @@ mod tests {
                 .unwrap()
                 .arch_suffix,
             ""
+        );
+    }
+
+    #[test]
+    fn deleted_current_directory_falls_back_to_an_absolute_pwd() {
+        let gone = || Err(std::io::Error::new(std::io::ErrorKind::NotFound, "gone"));
+        let abs = std::env::temp_dir().join("rpyenv-gone");
+        assert_eq!(
+            current_or_pwd(gone(), Some(abs.clone().into_os_string())),
+            Ok(abs.clone())
+        );
+        assert_eq!(
+            current_or_pwd(gone(), Some(OsString::from("relative/dir"))),
+            Err(CtxError::NoCurrentDir("gone".to_string()))
+        );
+        assert_eq!(
+            current_or_pwd(gone(), None),
+            Err(CtxError::NoCurrentDir("gone".to_string()))
+        );
+        let here = std::env::current_dir().unwrap();
+        assert_eq!(
+            current_or_pwd(Ok(here.clone()), Some(abs.into_os_string())),
+            Ok(here)
+        );
+    }
+
+    #[test]
+    fn home_is_recorded() {
+        let ctx = build(Pyenv, &[("HOME", "/home/u")]).unwrap();
+        assert_eq!(ctx.home, Some(PathBuf::from("/home/u")));
+        assert_eq!(build(Pyenv, &[("HOME", "")]).unwrap().home, None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_root_and_home_are_kept_byte_for_byte() {
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+        let cwd = std::env::current_dir().unwrap();
+        let root = OsString::from_vec(b"/tmp/r\xff/".to_vec());
+        let get = |k: &str| (k == "PYENV_ROOT").then(|| root.clone());
+        let ctx = Ctx::build(Pyenv, &get, cwd.clone(), "").unwrap();
+        assert_eq!(ctx.root.as_os_str().as_bytes(), b"/tmp/r\xff");
+        let home = OsString::from_vec(b"/home/\xfe".to_vec());
+        let get = |k: &str| (k == "HOME").then(|| home.clone());
+        let ctx = Ctx::build(Pyenv, &get, cwd, "").unwrap();
+        assert_eq!(ctx.root.as_os_str().as_bytes(), b"/home/\xfe/.pyenv");
+        assert_eq!(
+            ctx.home.as_deref().map(|h| h.as_os_str().as_bytes()),
+            Some(&b"/home/\xfe"[..])
         );
     }
 

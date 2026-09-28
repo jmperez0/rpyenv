@@ -216,8 +216,8 @@ pub fn version_file_write(ctx: &Ctx, args: &[&str]) -> Output {
 pub fn write_checked(ctx: &Ctx, file: &Path, versions: &[&str], force: bool) -> Output {
     if !force {
         for v in versions {
-            if let Err(message) = prefix::prefix_of(ctx, v) {
-                return Output::error(message);
+            if let Err(e) = prefix::prefix_of(ctx, v) {
+                return Output::error(e.message());
             }
         }
     }

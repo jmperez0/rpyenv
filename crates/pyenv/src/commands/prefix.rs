@@ -38,8 +38,8 @@ pub fn prefix(ctx: &Ctx, args: &[&str]) -> Output {
     for name in &names {
         match prefix::prefix_of(ctx, name) {
             Ok(d) => dirs.push(d.display().to_string()),
-            Err(message) => {
-                o.err(message);
+            Err(e) => {
+                o.err(e.message());
                 return o.with_code(1);
             }
         }

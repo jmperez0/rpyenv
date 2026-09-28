@@ -5,28 +5,54 @@ use crate::flavor::Flavor;
 use crate::{installed, latest, pathsearch, winresolve};
 use std::path::PathBuf;
 
-/// The installation directory of one version name, or upstream's message.
-pub fn prefix_of(ctx: &Ctx, version: &str) -> Result<PathBuf, String> {
-    if ctx.flavor == Flavor::Pyenv && version == "system" {
-        let Some(python) = system_python(ctx) else {
-            return Err("pyenv: system version not found in PATH".to_string());
-        };
-        return match pathsearch::strip_bin(&python) {
-            Some(p) if p.is_dir() => Ok(p),
-            _ => Err("pyenv: version `system' not installed".to_string()),
-        };
+/// Why `prefix_of` failed. `message` gives upstream's text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PrefixError {
+    /// `system` with no `python`, `python3` or `python2` on `PATH`.
+    SystemNotFound,
+    /// Not installed. Holds the name after prefix resolution, or `system` when the
+    /// system Python is not in a `bin` or `sbin` folder.
+    NotInstalled(String),
+}
+
+impl PrefixError {
+    pub fn message(&self) -> String {
+        match self {
+            PrefixError::SystemNotFound => "pyenv: system version not found in PATH".to_string(),
+            PrefixError::NotInstalled(v) => format!("pyenv: version `{v}' not installed"),
+        }
     }
-    let names = installed::names(&ctx.versions_dir(), ctx.flavor);
+}
+
+/// The installation directory of one version name.
+pub fn prefix_of(ctx: &Ctx, version: &str) -> Result<PathBuf, PrefixError> {
+    let vdir = ctx.versions_dir();
+    if ctx.flavor == Flavor::Pyenv {
+        if version == "system" {
+            let python = system_python(ctx).ok_or(PrefixError::SystemNotFound)?;
+            return match pathsearch::strip_bin(&python) {
+                Some(p) if p.is_dir() => Ok(p),
+                _ => Err(PrefixError::NotInstalled("system".to_string())),
+            };
+        }
+        // `latest` returns an installed exact name unchanged, so the listing is read
+        // only for prefixes. A shim calls this on every launch (review M-6).
+        if vdir.join(version).is_dir() {
+            return Ok(vdir.join(version));
+        }
+    }
+    let names = installed::names(&vdir, ctx.flavor);
     let resolved = match ctx.flavor {
-        Flavor::Pyenv => latest::latest(version, &names, &ctx.versions_dir())
-            .unwrap_or_else(|| version.to_string()),
+        Flavor::Pyenv => {
+            latest::latest(version, &names, &vdir).unwrap_or_else(|| version.to_string())
+        }
         Flavor::PyenvWin => winresolve::resolve(version, &names, ctx.arch_suffix),
     };
-    let dir = ctx.versions_dir().join(&resolved);
+    let dir = vdir.join(&resolved);
     if dir.is_dir() {
         Ok(dir)
     } else {
-        Err(format!("pyenv: version `{resolved}' not installed"))
+        Err(PrefixError::NotInstalled(resolved))
     }
 }
 
@@ -84,7 +110,7 @@ mod tests {
         );
         assert_eq!(
             prefix_of(&ctx, "9.9"),
-            Err("pyenv: version `9.9' not installed".to_string())
+            Err(PrefixError::NotInstalled("9.9".to_string()))
         );
     }
 
@@ -92,9 +118,18 @@ mod tests {
     fn pyenv_system_without_python_on_path() {
         let tmp = root_with(&[]);
         let ctx = Ctx::for_test(Flavor::Pyenv, tmp.path(), tmp.path());
+        assert_eq!(prefix_of(&ctx, "system"), Err(PrefixError::SystemNotFound));
+    }
+
+    #[test]
+    fn prefix_error_messages() {
         assert_eq!(
-            prefix_of(&ctx, "system"),
-            Err("pyenv: system version not found in PATH".to_string())
+            PrefixError::SystemNotFound.message(),
+            "pyenv: system version not found in PATH"
+        );
+        assert_eq!(
+            PrefixError::NotInstalled("3.7".to_string()).message(),
+            "pyenv: version `3.7' not installed"
         );
     }
 
@@ -129,7 +164,7 @@ mod tests {
         let ctx = Ctx::for_test(Flavor::PyenvWin, tmp.path(), tmp.path());
         assert_eq!(
             prefix_of(&ctx, "system"),
-            Err("pyenv: version `system' not installed".to_string())
+            Err(PrefixError::NotInstalled("system".to_string()))
         );
     }
 }

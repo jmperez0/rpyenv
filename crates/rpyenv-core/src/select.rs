@@ -66,7 +66,13 @@ pub fn version_name(ctx: &Ctx, force: bool) -> PyenvNames {
     }
     let origin = version_origin(ctx);
     let vdir = ctx.versions_dir();
-    let candidates = installed::names(&vdir, Flavor::Pyenv);
+    // Read only when a name needs prefix resolution: shims call this on every launch (review M-6).
+    let mut candidates: Option<Vec<String>> = None;
+    let mut listing = || -> Vec<String> {
+        candidates
+            .get_or_insert_with(|| installed::names(&vdir, Flavor::Pyenv))
+            .clone()
+    };
     let (mut names, mut failed, mut normalization_done) = (Vec::new(), false, false);
     for v in split_colon(&raw) {
         let normalised = match v.strip_prefix("python-") {
@@ -80,10 +86,10 @@ pub fn version_name(ctx: &Ctx, force: bool) -> PyenvNames {
             Some(normalised.clone())
         } else if normalization_done && vdir.join(&v).is_dir() {
             Some(v.clone())
-        } else if let Some(r) = latest::latest(&normalised, &candidates, &vdir) {
+        } else if let Some(r) = latest::latest(&normalised, &listing(), &vdir) {
             Some(r)
         } else if normalization_done {
-            latest::latest(&v, &candidates, &vdir)
+            latest::latest(&v, &listing(), &vdir)
         } else {
             None
         };
