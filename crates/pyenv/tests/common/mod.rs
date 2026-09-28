@@ -121,6 +121,19 @@ impl Fixture {
     }
 }
 
+/// `pyenv-shim` next to the `pyenv` under test. `cargo test --workspace` builds it; when
+/// running one test file, run `cargo build --workspace` first.
+pub fn shim_exe() -> PathBuf {
+    let p = Path::new(env!("CARGO_BIN_EXE_pyenv"))
+        .with_file_name(format!("pyenv-shim{}", std::env::consts::EXE_SUFFIX));
+    assert!(
+        p.is_file(),
+        "{} is missing: run `cargo build --workspace` first",
+        p.display()
+    );
+    p
+}
+
 /// Expected text in the platform's line endings: rpyenv prints CRLF on Windows.
 pub fn nl(s: &str) -> String {
     if cfg!(windows) {

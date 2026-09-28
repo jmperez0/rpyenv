@@ -3,6 +3,7 @@
 pub mod local_global;
 pub mod misc;
 pub mod prefix;
+pub mod rehash;
 pub mod version;
 pub mod versions;
 pub mod which;
@@ -21,7 +22,9 @@ const COMMANDS: &[(&str, Command)] = &[
     ("help", misc::help),
     ("local", local_global::local),
     ("prefix", prefix::prefix),
+    ("rehash", rehash::rehash),
     ("root", misc::root),
+    ("shims", rehash::shims),
     ("version", version::version),
     ("version-file", version::version_file),
     ("version-file-read", version::version_file_read),
