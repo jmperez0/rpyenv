@@ -15,17 +15,21 @@ pub struct VersionEntry {
     pub alias: bool,
 }
 
+/// Get subdirectory names in a directory, handling missing directories gracefully.
+fn subdirs(dir: &Path) -> Vec<String> {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    rd.filter_map(Result::ok)
+        .filter(|e| e.path().is_dir())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect()
+}
+
 /// Top-level entries of `versions/` that are directories (following links),
 /// in the order the flavor lists them. Envs are not included.
 pub fn top_level(versions_dir: &Path, flavor: Flavor) -> Vec<VersionEntry> {
-    let Ok(rd) = std::fs::read_dir(versions_dir) else {
-        return Vec::new();
-    };
-    let mut names: Vec<String> = rd
-        .filter_map(Result::ok)
-        .filter(|e| e.path().is_dir())
-        .map(|e| e.file_name().to_string_lossy().into_owned())
-        .collect();
+    let mut names = subdirs(versions_dir);
     if flavor == Flavor::Pyenv {
         sort_version_names(&mut names, &versions_dir.to_string_lossy());
     }
@@ -66,14 +70,7 @@ fn is_alias(versions_dir: &Path, path: &Path) -> bool {
 /// `<entry>/envs/*` directories, in byte order (allowlist D-07).
 pub fn envs_of(entry: &VersionEntry) -> Vec<VersionEntry> {
     let envs = entry.path.join("envs");
-    let Ok(rd) = std::fs::read_dir(&envs) else {
-        return Vec::new();
-    };
-    let mut names: Vec<String> = rd
-        .filter_map(Result::ok)
-        .filter(|e| e.path().is_dir())
-        .map(|e| e.file_name().to_string_lossy().into_owned())
-        .collect();
+    let mut names = subdirs(&envs);
     names.sort();
     names
         .into_iter()
