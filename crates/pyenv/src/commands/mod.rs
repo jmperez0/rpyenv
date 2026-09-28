@@ -1,5 +1,6 @@
 //! The command table.
 
+pub mod exec;
 pub mod local_global;
 pub mod misc;
 pub mod prefix;
@@ -18,6 +19,7 @@ pub type Command = fn(&Ctx, &[&str]) -> Output;
 const COMMANDS: &[(&str, Command)] = &[
     ("--version", misc::version_cmd),
     ("commands", misc::commands),
+    ("exec", exec::exec_listed),
     ("global", local_global::global),
     ("help", misc::help),
     ("local", local_global::local),

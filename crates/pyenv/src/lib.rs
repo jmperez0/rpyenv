@@ -7,6 +7,7 @@ mod output;
 pub use output::Output;
 use rpyenv_core::ctx::Ctx;
 use rpyenv_core::flavor::Flavor;
+use std::ffi::OsString;
 use std::path::PathBuf;
 
 /// rpyenv's own version.
@@ -27,22 +28,25 @@ pub fn version_line(flavor: Flavor) -> String {
     format!("pyenv {upstream} (rpyenv {RPYENV_VERSION})")
 }
 
-/// Runs one invocation. `args` excludes the program name.
-pub fn run(args: &[String], ctx: &Ctx) -> Output {
-    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+/// Runs one invocation. `args` excludes the program name. They stay `OsString`s so that
+/// `exec` passes them on byte for byte (review M-5); other commands see them as text.
+pub fn run(args: &[OsString], ctx: &Ctx) -> Output {
+    let text: Vec<String> = args
+        .iter()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    let strs: Vec<&str> = text.iter().map(String::as_str).collect();
     match ctx.flavor {
-        Flavor::Pyenv => run_pyenv(&args, ctx),
-        Flavor::PyenvWin => run_pyenv_win(&args, ctx),
+        Flavor::Pyenv => run_pyenv(&strs, args, ctx),
+        Flavor::PyenvWin => run_pyenv_win(&strs, args, ctx),
     }
 }
 
 /// Upstream `libexec/pyenv`.
-fn run_pyenv(args: &[&str], ctx: &Ctx) -> Output {
+fn run_pyenv(args: &[&str], raw: &[OsString], ctx: &Ctx) -> Output {
     // `--debug` is accepted and ignored (allowlist D-19).
-    let args = match args.first() {
-        Some(&"--debug") => &args[1..],
-        _ => args,
-    };
+    let skip = usize::from(args.first() == Some(&"--debug"));
+    let (args, raw) = (&args[skip..], &raw[skip..]);
     let Some((&cmd, rest)) = args.split_first() else {
         let mut o = Output::new();
         o.err(version_line(Flavor::Pyenv));
@@ -57,6 +61,7 @@ fn run_pyenv(args: &[&str], ctx: &Ctx) -> Output {
                 "pyenv: shell integration not enabled. Run `pyenv init' for instructions.",
             )
         }
+        "exec" if rest.first() != Some(&"--help") => return commands::exec::exec(ctx, &raw[1..]),
         _ => {}
     }
     match commands::lookup(Flavor::Pyenv, cmd) {
@@ -67,7 +72,7 @@ fn run_pyenv(args: &[&str], ctx: &Ctx) -> Output {
 }
 
 /// pyenv-win's `pyenv.bat`, with command names matched case-insensitively (allowlist D-10).
-fn run_pyenv_win(args: &[&str], ctx: &Ctx) -> Output {
+fn run_pyenv_win(args: &[&str], raw: &[OsString], ctx: &Ctx) -> Output {
     let Some((&typed, rest)) = args.split_first() else {
         return help::show_help_win();
     };
@@ -75,6 +80,9 @@ fn run_pyenv_win(args: &[&str], ctx: &Ctx) -> Output {
     // `pyenv --help [<cmd>]` prints help instead of "no such command" (allowlist D-09).
     if cmd == "--help" || cmd == "help" {
         return help::help_command(Flavor::PyenvWin, rest);
+    }
+    if cmd == "exec" && rest.first() != Some(&"--help") {
+        return commands::exec::exec(ctx, &raw[1..]);
     }
     match commands::lookup(Flavor::PyenvWin, &cmd) {
         Some(_) if rest.first() == Some(&"--help") => {
