@@ -183,12 +183,14 @@ fn sigterm_reaches_the_child_and_the_shim_dies_the_same_way() {
     f.install("3.12.10/bin/pip");
     f.rehash();
     let start = Instant::now();
+    let after = f.base.join("after");
     let mut shim = f
         .shim_command(
             "pip",
             &[
                 ("PYENV_VERSION", v("3.12.10")),
-                ("ARGV_ECHO_SLEEP_MS", v("20000")),
+                ("ARGV_ECHO_SLEEP_MS", v("3000")),
+                ("ARGV_ECHO_AFTER", after.as_os_str()),
             ],
         )
         .stdout(Stdio::null())
@@ -202,8 +204,12 @@ fn sigterm_reaches_the_child_and_the_shim_dies_the_same_way() {
     assert!(killed.success());
     let status = shim.wait().unwrap();
     assert_eq!(status.signal(), Some(15));
+    let elapsed = start.elapsed();
+    if elapsed < Duration::from_secs(4) {
+        std::thread::sleep(Duration::from_secs(4) - elapsed);
+    }
     assert!(
-        start.elapsed() < Duration::from_secs(10),
+        !after.exists(),
         "the child kept running: SIGTERM was not passed on"
     );
 }
