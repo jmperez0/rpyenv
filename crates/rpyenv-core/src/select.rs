@@ -111,6 +111,18 @@ pub struct WinSelected {
     pub origin: String,
 }
 
+/// pyenv-win's selecting file: the nearest `.python-version` found upward from `ctx.pwd`
+/// if `verfile::read_pyenv_win` gives it a non-empty list, else the global version file
+/// (whether or not it exists).
+pub fn win_version_file(ctx: &Ctx) -> PathBuf {
+    if let Some(f) = verfile::find_local(&ctx.pwd) {
+        if !verfile::read_pyenv_win(&f).is_empty() {
+            return f;
+        }
+    }
+    ctx.global_version_file()
+}
+
 /// pyenv-win `GetCurrentVersionsNoError`: ordered, de-duplicated, empty when nothing is set.
 pub fn win_select(ctx: &Ctx) -> Vec<WinSelected> {
     let mut out: Vec<WinSelected> = Vec::new();
@@ -129,14 +141,8 @@ pub fn win_select(ctx: &Ctx) -> Vec<WinSelected> {
         return out;
     }
     let installed = installed::names(&ctx.versions_dir(), Flavor::PyenvWin);
-    let local = verfile::find_local(&ctx.pwd).map(|f| (verfile::read_pyenv_win(&f), f));
-    let (lines, file) = match local {
-        Some((lines, f)) if !lines.is_empty() => (lines, f),
-        _ => {
-            let g = ctx.global_version_file();
-            (verfile::read_pyenv_win(&g), g)
-        }
-    };
+    let file = win_version_file(ctx);
+    let lines = verfile::read_pyenv_win(&file);
     let origin = file.display().to_string();
     for line in lines {
         push(
@@ -152,12 +158,7 @@ pub fn win_origin(ctx: &Ctx) -> String {
     if ctx.pyenv_version.is_some() {
         return "%PYENV_VERSION%".to_string();
     }
-    if let Some(f) = verfile::find_local(&ctx.pwd) {
-        if !verfile::read_pyenv_win(&f).is_empty() {
-            return f.display().to_string();
-        }
-    }
-    ctx.global_version_file().display().to_string()
+    win_version_file(ctx).display().to_string()
 }
 
 #[cfg(test)]
@@ -341,5 +342,21 @@ mod tests {
     fn pyenv_win_nothing_selected_is_empty() {
         let s = Setup::new(&[]);
         assert!(win_select(&s.ctx(Flavor::PyenvWin, None)).is_empty());
+    }
+
+    #[test]
+    fn win_version_file_is_the_file_that_selects_the_version() {
+        let s = Setup::new(&["3.9.1"]);
+        let global = s.root().join("version");
+        let local = s.work().join(".python-version");
+        // No files anywhere: the global path, whether or not it exists.
+        assert_eq!(win_version_file(&s.ctx(Flavor::PyenvWin, None)), global);
+        // Non-empty local file: it wins.
+        fs::write(&local, "3.9.1\r\n").unwrap();
+        assert_eq!(win_version_file(&s.ctx(Flavor::PyenvWin, None)), local);
+        // Empty local file: falls through to the global file.
+        fs::write(&local, "").unwrap();
+        fs::write(&global, "3.9.1\r\n").unwrap();
+        assert_eq!(win_version_file(&s.ctx(Flavor::PyenvWin, None)), global);
     }
 }

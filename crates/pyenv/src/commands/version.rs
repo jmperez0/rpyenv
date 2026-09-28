@@ -157,7 +157,13 @@ pub fn version_file(ctx: &Ctx, args: &[&str]) -> Output {
                 None => return o.with_code(1),
             }
         }
-        None => o.out(select::version_file(ctx).display().to_string()),
+        None => {
+            let file = match ctx.flavor {
+                Flavor::Pyenv => select::version_file(ctx),
+                Flavor::PyenvWin => select::win_version_file(ctx),
+            };
+            o.out(file.display().to_string());
+        }
     }
     o
 }

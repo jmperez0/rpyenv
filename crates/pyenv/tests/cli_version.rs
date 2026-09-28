@@ -206,6 +206,21 @@ fn win_trailing_backslash_in_pyenv_root_is_not_doubled() {
 
 #[cfg(windows)]
 #[test]
+fn win_version_file_and_origin_agree_with_version_when_local_is_empty() {
+    // Fix 1 (I-1): an empty local .python-version must fall through to the global
+    // file for version-file and version-origin, the same as it already does for
+    // version and version-name.
+    let f = Fixture::new();
+    f.version("3.9.1");
+    f.file(&f.root.join("version"), "3.9.1\r\n");
+    f.file(&f.work.join(".python-version"), "");
+    let expected = format!("{}\\version\r\n", f.root.display());
+    assert_eq!(f.pyenv(&["version-file"]).stdout, expected);
+    assert_eq!(f.pyenv(&["version-origin"]).stdout, expected);
+}
+
+#[cfg(windows)]
+#[test]
 fn win_path_check_warns_when_the_shim_is_not_on_path() {
     let f = Fixture::new();
     f.version("3.9.1");
