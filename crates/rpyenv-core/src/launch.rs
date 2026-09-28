@@ -352,11 +352,16 @@ fn cannot_run(flavor: Flavor, program: &Path, err: &std::io::Error) -> i32 {
 #[cfg(unix)]
 mod sig {
     use std::io;
+    use std::mem;
     use std::os::unix::process::CommandExt;
     use std::process::{Command, ExitStatus};
     use std::sync::atomic::{AtomicI32, Ordering};
 
     static CHILD: AtomicI32 = AtomicI32::new(0);
+
+    /// The four signals whose disposition this process changes around a wait, in a fixed
+    /// order shared by every array indexed by signal here.
+    const SIGNALS: [libc::c_int; 4] = [libc::SIGINT, libc::SIGQUIT, libc::SIGTERM, libc::SIGHUP];
 
     extern "C" fn forward(signal: libc::c_int) {
         let pid = CHILD.load(Ordering::SeqCst);
@@ -368,29 +373,78 @@ mod sig {
         }
     }
 
+    /// Reads a signal's current disposition without changing it (`act` is null).
+    unsafe fn current(signal: libc::c_int) -> libc::sighandler_t {
+        let mut old: libc::sigaction = mem::zeroed();
+        libc::sigaction(signal, std::ptr::null(), &mut old);
+        old.sa_sigaction
+    }
+
+    /// Installs `handler` (a real handler, `SIG_IGN` or `SIG_DFL`) for `signal`.
+    unsafe fn install(signal: libc::c_int, handler: libc::sighandler_t) {
+        let mut act: libc::sigaction = mem::zeroed();
+        act.sa_sigaction = handler;
+        libc::sigemptyset(&mut act.sa_mask);
+        act.sa_flags = 0;
+        libc::sigaction(signal, &act, std::ptr::null_mut());
+    }
+
     /// Spawns and waits like a shell does (spec §5.2): SIGINT and SIGQUIT are ignored here,
-    /// because the terminal sends them to the child too; SIGTERM and SIGHUP are passed on.
+    /// because the terminal sends them to the child too; SIGTERM and SIGHUP are forwarded to
+    /// the child. A signal already ignored on entry stays ignored throughout, in the child
+    /// too, the way a shell keeps an inherited ignore for the commands it runs (`nohup ...
+    /// &` must survive logout, and a backgrounded `pip` in a script must survive Ctrl-C).
     /// A signal that arrives before the child's PID is stored is lost; the window is the
-    /// few instructions between `spawn` and `store`.
+    /// few instructions between `spawn` and `store`. This process's own dispositions are
+    /// restored once the wait is over, before the rehash check that follows runs.
     pub fn spawn_and_wait(cmd: &mut Command) -> io::Result<ExitStatus> {
         let handler = forward as extern "C" fn(libc::c_int) as libc::sighandler_t;
+        // SAFETY: only reads each signal's disposition; nothing is changed yet.
+        let on_entry: [libc::sighandler_t; 4] = SIGNALS.map(|s| unsafe { current(s) });
+        let was_ignored: [bool; 4] = on_entry.map(|h| h == libc::SIG_IGN);
+        // What the child restores each signal to before exec: SIG_IGN when it was already
+        // ignored on entry, else SIG_DFL. Computed now so `pre_exec` only calls the
+        // async-signal-safe `libc::sigaction` on values already known.
+        let child_dispositions: [libc::sighandler_t; 4] = was_ignored.map(|ignored| {
+            if ignored {
+                libc::SIG_IGN
+            } else {
+                libc::SIG_DFL
+            }
+        });
         // SAFETY: changing this process's signal dispositions before spawning. The child
-        // restores the defaults before exec, using only async-signal-safe calls.
+        // restores the precomputed dispositions before exec, using only async-signal-safe
+        // calls.
         unsafe {
-            libc::signal(libc::SIGINT, libc::SIG_IGN);
-            libc::signal(libc::SIGQUIT, libc::SIG_IGN);
-            libc::signal(libc::SIGTERM, handler);
-            libc::signal(libc::SIGHUP, handler);
-            cmd.pre_exec(|| {
-                for s in [libc::SIGINT, libc::SIGQUIT, libc::SIGTERM, libc::SIGHUP] {
-                    libc::signal(s, libc::SIG_DFL);
+            install(libc::SIGINT, libc::SIG_IGN);
+            install(libc::SIGQUIT, libc::SIG_IGN);
+            if !was_ignored[2] {
+                install(libc::SIGTERM, handler);
+            }
+            if !was_ignored[3] {
+                install(libc::SIGHUP, handler);
+            }
+            cmd.pre_exec(move || {
+                for (signal, disposition) in SIGNALS.iter().zip(child_dispositions) {
+                    install(*signal, disposition);
                 }
                 Ok(())
             });
         }
         let mut child = cmd.spawn()?;
         CHILD.store(child.id() as i32, Ordering::SeqCst);
-        child.wait()
+        let result = child.wait();
+        // No PID is left for `forward` to signal, and this process's own dispositions are
+        // back to what the caller had, for the rehash check that runs next.
+        CHILD.store(0, Ordering::SeqCst);
+        // SAFETY: restoring this process's own signal dispositions to exactly what `current`
+        // read on entry, before anything was changed.
+        unsafe {
+            for (signal, original) in SIGNALS.iter().zip(on_entry) {
+                install(*signal, original);
+            }
+        }
+        result
     }
 
     /// Dies from `signal`, as the child did, so the caller sees the same status.
