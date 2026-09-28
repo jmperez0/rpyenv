@@ -6,6 +6,15 @@ use crate::flavor::Flavor;
 use crate::{installed, latest, verfile, winresolve};
 use std::path::PathBuf;
 
+/// pyenv-win's message when no version is selected (stdout, exit 1).
+pub const WIN_NO_VERSION: [&str; 5] = [
+    "No global/local python version has been set yet. Please set the global/local version by typing:",
+    "pyenv global <python-version>",
+    "pyenv global 3.7.4",
+    "pyenv local <python-version>",
+    "pyenv local 3.7.4",
+];
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PyenvNames {
     /// Accepted names, in order. Upstream prints them joined with `:` even when some failed.

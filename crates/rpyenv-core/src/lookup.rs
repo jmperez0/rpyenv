@@ -5,7 +5,7 @@ use crate::flavor::Flavor;
 use crate::{installed, pathsearch, prefix, select};
 use std::ffi::OsStr;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// What a failed command prints, on which stream, and its exit code.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,6 +69,12 @@ pub enum NotFound {
         origin: String,
         warnings: Vec<String>,
     },
+    /// pyenv-win: nothing is selected.
+    WinNoVersion,
+    /// pyenv-win: a selected version that is not installed stops the search.
+    WinNotInstalled(String),
+    /// pyenv-win: no selected version has it.
+    WinNotFound,
 }
 
 /// The name of upstream's `_PYENV_SHIM_PATHS_<PROGRAM>` variable: the program name
@@ -198,6 +204,103 @@ pub fn whence_pyenv(ctx: &Ctx, command: &str) -> Vec<(String, PathBuf)> {
     out
 }
 
+/// pyenv-win `GetExtensions(True)`: `PATHEXT` entries as written, in order, then `.PY`
+/// and `.PYW` unless present. An empty `PATHEXT` gives one empty extension first.
+pub fn win_extensions(pathext: Option<&OsStr>) -> Vec<String> {
+    let raw = pathext
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let mut exts: Vec<String> = raw
+        .split(';')
+        .filter(|e| !e.is_empty())
+        .map(String::from)
+        .collect();
+    if exts.is_empty() {
+        exts.push(String::new());
+    }
+    for add in [".PY", ".PYW"] {
+        if !exts.iter().any(|e| e.eq_ignore_ascii_case(add)) {
+            exts.push(add.to_string());
+        }
+    }
+    exts
+}
+
+/// The files pyenv-win checks in one version: in the folder, then `Scripts`, then `bin`,
+/// the bare name and then the first extension that exists. Every hit, in that order.
+/// Names match without case, as on NTFS, and each hit carries the file's on-disk name.
+fn win_hits(version_dir: &Path, program: &str, exts: &[String]) -> Vec<PathBuf> {
+    let mut hits = Vec::new();
+    for dir in [
+        version_dir.to_path_buf(),
+        version_dir.join("Scripts"),
+        version_dir.join("bin"),
+    ] {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        let files: Vec<std::ffi::OsString> = entries
+            .filter_map(Result::ok)
+            .filter(|e| e.path().is_file())
+            .map(|e| e.file_name())
+            .collect();
+        let find = |want: &str| {
+            files
+                .iter()
+                .find(|f| f.to_string_lossy().eq_ignore_ascii_case(want))
+                .map(|f| dir.join(f))
+        };
+        if let Some(p) = find(program) {
+            hits.push(p);
+        }
+        if let Some(p) = exts.iter().find_map(|e| find(&format!("{program}{e}"))) {
+            hits.push(p);
+        }
+    }
+    hits
+}
+
+/// pyenv-win `CommandWhich` (pyenv.vbs:101-169). The folders in the printed path are
+/// as built from the root; only the file name is in its on-disk case (allowlist D-31).
+pub fn which_win(ctx: &Ctx, command: &str) -> Result<Found, NotFound> {
+    let program = command.strip_suffix('.').unwrap_or(command);
+    let selected = select::win_select(ctx);
+    if selected.is_empty() {
+        return Err(NotFound::WinNoVersion);
+    }
+    let exts = win_extensions(ctx.pathext.as_deref());
+    for s in &selected {
+        let dir = ctx.versions_dir().join(&s.name);
+        if !dir.is_dir() {
+            return Err(NotFound::WinNotInstalled(s.name.clone()));
+        }
+        if let Some(path) = win_hits(&dir, program, &exts).into_iter().next() {
+            return Ok(Found {
+                path,
+                warnings: Vec::new(),
+            });
+        }
+    }
+    Err(NotFound::WinNotFound)
+}
+
+/// pyenv-win `CommandWhence` (pyenv.vbs:171-261): every installed version, selection
+/// ignored. Without `--path`, each version that has the program is listed once
+/// (allowlist D-32); with `--path`, every hit.
+pub fn whence_win(ctx: &Ctx, program: &str, with_path: bool) -> Vec<String> {
+    let exts = win_extensions(ctx.pathext.as_deref());
+    let mut out = Vec::new();
+    for name in installed::names(&ctx.versions_dir(), Flavor::PyenvWin) {
+        let hits = win_hits(&ctx.versions_dir().join(&name), program, &exts);
+        if with_path {
+            out.extend(hits.iter().map(|h| h.display().to_string()));
+        } else if !hits.is_empty() {
+            out.push(name);
+        }
+    }
+    out
+}
+
 /// What `which` prints when `command` was not found. `advice` is false for `--skip-advice`.
 pub fn not_found_report(ctx: &Ctx, command: &str, nf: &NotFound, advice: bool) -> Report {
     match nf {
@@ -230,6 +333,41 @@ pub fn not_found_report(ctx: &Ctx, command: &str, nf: &NotFound, advice: bool) -
                 code: 127,
             }
         }
+        NotFound::WinNoVersion => Report {
+            lines: select::WIN_NO_VERSION
+                .iter()
+                .map(|l| l.to_string())
+                .collect(),
+            stderr: false,
+            code: 1,
+        },
+        // pyenv-win repeats the name where the origin would go (pyenv.vbs:125).
+        NotFound::WinNotInstalled(v) => Report {
+            lines: vec![format!(
+                "pyenv: version '{v}' is not installed (set by {v})"
+            )],
+            stderr: false,
+            code: 1,
+        },
+        NotFound::WinNotFound => {
+            let program = command.strip_suffix('.').unwrap_or(command);
+            let mut lines = vec![format!("pyenv: {command}: command not found")];
+            let versions = whence_win(ctx, program, false);
+            if !versions.is_empty() {
+                lines.push(String::new());
+                lines.push(format!(
+                    "The '{command}' command exists in these Python versions:"
+                ));
+                lines.extend(versions.iter().map(|v| format!("  {v}")));
+                // pyenv-win indents the CRLF that ends whence's output, too.
+                lines.push("  ".to_string());
+            }
+            Report {
+                lines,
+                stderr: false,
+                code: 127,
+            }
+        }
     }
 }
 
@@ -237,7 +375,6 @@ pub fn not_found_report(ctx: &Ctx, command: &str, nf: &NotFound, advice: bool) -
 mod tests {
     use super::*;
     use std::fs;
-    use std::path::Path;
 
     /// A file the platform can run: mode 755 on Unix.
     fn exe(p: &Path) {
@@ -446,5 +583,136 @@ mod tests {
         ctx.path = Some(sys.clone().into_os_string());
         assert!(which_pyenv(&ctx, "tool", false, &Skip::default()).is_ok());
         assert!(which_pyenv(&ctx, "tool", true, &Skip::default()).is_err());
+    }
+
+    fn win_root(versions: &[&str]) -> (tempfile::TempDir, Ctx) {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("root");
+        for v in versions {
+            fs::create_dir_all(root.join("versions").join(v)).unwrap();
+        }
+        fs::create_dir_all(root.join("versions")).unwrap();
+        fs::create_dir_all(tmp.path().join("work")).unwrap();
+        let mut ctx = Ctx::for_test(Flavor::PyenvWin, &root, &tmp.path().join("work"));
+        // Lowercase, so the tests behave the same on case-sensitive file systems.
+        ctx.pathext = Some(".exe;.bat".into());
+        (tmp, ctx)
+    }
+
+    fn touch(p: &Path) {
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(p, "").unwrap();
+    }
+
+    #[test]
+    fn win_extension_list() {
+        assert_eq!(
+            win_extensions(Some(OsStr::new(".COM;.EXE"))),
+            [".COM", ".EXE", ".PY", ".PYW"]
+        );
+        assert_eq!(
+            win_extensions(Some(OsStr::new(".py;;.EXE"))),
+            [".py", ".EXE", ".PYW"]
+        );
+        assert_eq!(win_extensions(None), ["", ".PY", ".PYW"]);
+    }
+
+    #[test]
+    fn win_which_walks_selected_versions_folder_scripts_bin() {
+        let (_t, mut ctx) = win_root(&["3.8.2", "3.9.1"]);
+        let v = ctx.versions_dir();
+        touch(&v.join("3.8.2/python38.exe"));
+        touch(&v.join("3.9.1/Scripts/pip.exe"));
+        touch(&v.join("3.9.1/bin/pip.exe"));
+        touch(&v.join("3.9.1/bin/tool.bat"));
+        ctx.pyenv_version = Some("3.9.1 3.8.2".to_string());
+        let path = |c: &str| which_win(&ctx, c).map(|f| f.path);
+        assert_eq!(path("python38"), Ok(v.join("3.8.2").join("python38.exe")));
+        assert_eq!(
+            path("pip"),
+            Ok(v.join("3.9.1").join("Scripts").join("pip.exe"))
+        );
+        assert_eq!(
+            path("tool"),
+            Ok(v.join("3.9.1").join("bin").join("tool.bat"))
+        );
+        // One trailing dot is dropped.
+        assert_eq!(
+            path("pip."),
+            Ok(v.join("3.9.1").join("Scripts").join("pip.exe"))
+        );
+    }
+
+    #[test]
+    fn win_which_bare_name_before_extensions() {
+        let (_t, mut ctx) = win_root(&["3.9.1"]);
+        let v = ctx.versions_dir();
+        touch(&v.join("3.9.1/tool"));
+        touch(&v.join("3.9.1/tool.exe"));
+        ctx.pyenv_version = Some("3.9.1".to_string());
+        assert_eq!(
+            which_win(&ctx, "tool").map(|f| f.path),
+            Ok(v.join("3.9.1").join("tool"))
+        );
+    }
+
+    #[test]
+    fn win_which_failures_and_reports() {
+        let (_t, mut ctx) = win_root(&["3.8.2", "3.8.6"]);
+        let v = ctx.versions_dir();
+        touch(&v.join("3.8.2/python38.exe"));
+        touch(&v.join("3.8.6/python38.exe"));
+        assert_eq!(which_win(&ctx, "python"), Err(NotFound::WinNoVersion));
+        let r = not_found_report(&ctx, "python", &NotFound::WinNoVersion, true);
+        assert_eq!((r.lines.len(), r.stderr, r.code), (5, false, 1));
+
+        ctx.pyenv_version = Some("3.7.7".to_string());
+        let nf = which_win(&ctx, "python").unwrap_err();
+        assert_eq!(nf, NotFound::WinNotInstalled("3.7.7".to_string()));
+        assert_eq!(
+            not_found_report(&ctx, "python", &nf, true).lines,
+            ["pyenv: version '3.7.7' is not installed (set by 3.7.7)"]
+        );
+
+        ctx.pyenv_version = Some("3.8.2".to_string());
+        fs::remove_file(v.join("3.8.2/python38.exe")).unwrap();
+        let nf = which_win(&ctx, "python38").unwrap_err();
+        assert_eq!(nf, NotFound::WinNotFound);
+        let r = not_found_report(&ctx, "python38", &nf, true);
+        assert_eq!(
+            r.lines,
+            [
+                "pyenv: python38: command not found",
+                "",
+                "The 'python38' command exists in these Python versions:",
+                "  3.8.6",
+                "  ",
+            ]
+        );
+        assert_eq!((r.stderr, r.code), (false, 127));
+        assert_eq!(
+            not_found_report(&ctx, "unknown3.8", &NotFound::WinNotFound, true).lines,
+            ["pyenv: unknown3.8: command not found"]
+        );
+    }
+
+    #[test]
+    fn win_whence_names_once_and_paths_in_search_order() {
+        let (_t, ctx) = win_root(&["3.8.2"]);
+        let v = ctx.versions_dir().join("3.8.2");
+        touch(&v.join("foo.exe"));
+        touch(&v.join("Scripts/foo.exe"));
+        touch(&v.join("bin/foo.exe"));
+        // pyenv-win prints `3.8.2` twice here (allowlist D-32).
+        assert_eq!(whence_win(&ctx, "foo", false), ["3.8.2"]);
+        assert_eq!(
+            whence_win(&ctx, "foo", true),
+            [
+                v.join("foo.exe").display().to_string(),
+                v.join("Scripts").join("foo.exe").display().to_string(),
+                v.join("bin").join("foo.exe").display().to_string(),
+            ]
+        );
+        assert!(whence_win(&ctx, "bar", false).is_empty());
     }
 }
