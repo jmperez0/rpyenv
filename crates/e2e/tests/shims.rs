@@ -326,10 +326,12 @@ fn win_batch_target_runs_through_its_exe_shim() {
     assert_eq!(stdout(&out), "hello world\r\n");
 }
 
-/// Review focus 5: a running shim can't be deleted, so rehash renames it aside.
+/// Review focus 5: a running shim must not make rehash fail. Windows either deletes it,
+/// or refuses and rehash renames it to `.tool.exe.old`; either way no stale shim remains
+/// once it exits.
 #[cfg(windows)]
 #[test]
-fn win_running_shim_is_renamed_aside() {
+fn win_rehash_does_not_trip_over_a_running_shim() {
     let f = Fixture::new();
     f.install("3.9.1/python.exe");
     let scripts = f.root.join("versions").join("3.9.1").join("Scripts");
@@ -353,9 +355,9 @@ fn win_running_shim_is_renamed_aside() {
     f.rehash();
     let shims = f.root.join("shims");
     assert!(!shims.join("tool.exe").exists());
-    assert!(shims.join(".tool.exe.old").exists());
     let _ = running.wait();
     f.rehash();
+    assert!(!shims.join("tool.exe").exists());
     assert!(!shims.join(".tool.exe.old").exists());
 }
 
