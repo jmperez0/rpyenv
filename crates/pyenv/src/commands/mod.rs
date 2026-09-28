@@ -1,6 +1,7 @@
 //! The command table.
 
 pub mod misc;
+pub mod version;
 
 use crate::output::Output;
 use rpyenv_core::ctx::Ctx;
@@ -14,10 +15,16 @@ const COMMANDS: &[(&str, Command)] = &[
     ("commands", misc::commands),
     ("help", misc::help),
     ("root", misc::root),
+    ("version", version::version),
+    ("version-file", version::version_file),
+    ("version-file-read", version::version_file_read),
+    ("version-file-write", version::version_file_write),
+    ("version-name", version::version_name),
+    ("version-origin", version::version_origin),
 ];
 
 /// pyenv-win only.
-const WIN_ONLY: &[(&str, Command)] = &[];
+const WIN_ONLY: &[(&str, Command)] = &[("vname", version::version_name)];
 
 fn table(flavor: Flavor) -> impl Iterator<Item = &'static (&'static str, Command)> {
     let extra: &'static [(&'static str, Command)] = if flavor == Flavor::PyenvWin {

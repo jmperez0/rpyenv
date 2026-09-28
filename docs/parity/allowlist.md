@@ -19,3 +19,6 @@ rpyenv matches the contract of pyenv on Linux and pyenv-win on Windows, but not 
 | D-16 | Windows | `commands` | Lists pyenv-win's `libexec` files | Lists rpyenv's commands, in the same NTFS name order | Different command set. |
 | D-19 | Linux | `--debug`, `PYENV_DEBUG` | bash `set -x` trace on stderr | No trace (rpyenv's own debug output comes later) | A bash trace has no equivalent in a binary. |
 | D-20 | Windows | `pyenv` (no arguments) | First line is `pyenv ` plus the raw `.version` file | `pyenv 3.1.1 (rpyenv 0.1.0)`, then an empty line | pyenv-win's output depends on the checkout's line endings. |
+| D-15 | Windows | `version` | The PATH warning looks for `shims\python.bat` | Looks for `shims\python.exe` | rpyenv shims are executables. |
+| D-18 | Linux | `version-file <dir>` | A missing relative `<dir>` prints bash's `cd` error | Exit 1, no message | bash-specific text. |
+| D-21 | Linux | `local`, `global`, `version-file-write` | An unwritable file prints bash's redirection error | `` pyenv: cannot write `<file>': <reason> `` | bash-specific text. |
