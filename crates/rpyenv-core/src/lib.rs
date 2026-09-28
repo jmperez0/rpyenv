@@ -7,6 +7,7 @@ pub mod latest;
 pub mod paths;
 pub mod pathsearch;
 pub mod prefix;
+pub mod select;
 pub mod verfile;
 pub mod vsort;
 pub mod winresolve;
