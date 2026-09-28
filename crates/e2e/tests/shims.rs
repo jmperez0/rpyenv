@@ -79,6 +79,33 @@ fn shim_and_exec_export_the_upstream_environment() {
     }
 }
 
+/// Fix I-1: a shim baked with no `PYENV_ROOT` in its own environment still finds the root
+/// it lives in, rather than falling back to `HOME`/`.pyenv`.
+#[cfg(unix)]
+#[test]
+fn shim_uses_the_root_it_lives_in() {
+    let f = Fixture::new();
+    let python = f.install("3.12.10/bin/python");
+    f.rehash();
+    let out = f
+        .shim_command(
+            "python",
+            &[
+                ("PYENV_VERSION", v("3.12.10")),
+                ("ARGV_ECHO_ENV", v("PYENV_ROOT")),
+            ],
+        )
+        .env_remove("PYENV_ROOT")
+        .output()
+        .unwrap();
+    let text = stdout(&out);
+    assert_eq!(text.lines().next(), Some(line("argv0", &python).as_str()));
+    assert!(
+        text.lines().any(|l| l == line("env PYENV_ROOT", &f.root)),
+        "{text}"
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn not_found_exits_127_listing_the_versions_that_have_it() {
@@ -274,6 +301,25 @@ fn win_shim_passes_plain_arguments_and_the_exit_code() {
     for a in &args {
         assert!(text.lines().any(|l| l == line("arg", a)), "{text}");
     }
+    assert_eq!(out.status.code(), Some(7));
+}
+
+/// Fix I-1: a shim baked with no `PYENV_ROOT` in its own environment still finds the root
+/// it lives in, rather than falling back to `USERPROFILE`/`.pyenv/pyenv-win`.
+#[cfg(windows)]
+#[test]
+fn win_shim_uses_the_root_it_lives_in() {
+    let f = Fixture::new();
+    f.install("3.9.1/python.exe");
+    f.rehash();
+    let out = f
+        .shim_command(
+            "python",
+            &[("PYENV_VERSION", v("3.9.1")), ("ARGV_ECHO_EXIT", v("7"))],
+        )
+        .env_remove("PYENV_ROOT")
+        .output()
+        .unwrap();
     assert_eq!(out.status.code(), Some(7));
 }
 

@@ -6,7 +6,7 @@ use crate::flavor::Flavor;
 use crate::launch::{self, ExecEnv, Mode};
 use crate::rehash;
 use std::ffi::{OsStr, OsString};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// The shim binary's own name, which is never a command.
 pub const SHIM_NAME: &str = "pyenv-shim";
@@ -25,13 +25,20 @@ pub fn main() -> i32 {
         );
         return 1;
     };
-    let ctx = match Ctx::from_process() {
+    let mut ctx = match Ctx::from_process() {
         Ok(ctx) => ctx,
         Err(e) => {
             eprint!("{}{}", e.message(), flavor.eol());
             return 1;
         }
     };
+    // Upstream bakes PYENV_ROOT into each shim; rpyenv's shims share one binary, so they
+    // find the root from where they live, not the caller's PYENV_ROOT / HOME. Everything
+    // after this, including the PYENV_ROOT exported to the child, uses the shim's root.
+    let path = std::env::var_os("PATH");
+    if let Some(root) = own_root(flavor, &argv0, own.as_deref(), path.as_deref(), &ctx.pwd) {
+        ctx.root = root;
+    }
     // Linux shims link to this binary; Windows shims are hardlinks to the template, so
     // the exit check passes the template itself and nothing is copied.
     let rehash_with = match flavor {
@@ -68,6 +75,64 @@ pub fn command_name(flavor: Flavor, argv0: &OsStr, own: Option<&Path>) -> Option
     (!name.is_empty() && !name.eq_ignore_ascii_case(SHIM_NAME)).then_some(name)
 }
 
+/// The parent of the `shims` folder the shim was run from: the root upstream bakes into
+/// each shim at rehash time, found here instead from where the running shim actually lives,
+/// since rpyenv's shims share one binary. `None` whenever any step fails, and the caller
+/// falls back to `PYENV_ROOT` / `HOME`.
+pub fn own_root(
+    flavor: Flavor,
+    argv0: &OsStr,
+    own: Option<&Path>,
+    path: Option<&OsStr>,
+    cwd: &Path,
+) -> Option<PathBuf> {
+    match flavor {
+        Flavor::PyenvWin => {
+            let shims = own?.parent()?;
+            let name = shims.file_name()?.to_string_lossy();
+            if !name.eq_ignore_ascii_case("shims") {
+                return None;
+            }
+            Some(shims.parent()?.to_path_buf())
+        }
+        Flavor::Pyenv => {
+            let invoked = linux_invoked_path(argv0, own, path, cwd)?;
+            let shims = invoked.parent()?;
+            if shims.file_name()? != OsStr::new("shims") {
+                return None;
+            }
+            Some(shims.parent()?.to_path_buf())
+        }
+    }
+}
+
+/// The path the shim was actually invoked as, on Linux: `argv0` itself when it contains a
+/// `/` (joined onto `cwd` when relative, then lexically normalized); otherwise the first
+/// `PATH` entry whose `<dir>/<argv0>` canonicalizes to the same file as `own`. The result is
+/// kept as spelled (not canonicalized), matching what upstream bakes in.
+fn linux_invoked_path(
+    argv0: &OsStr,
+    own: Option<&Path>,
+    path: Option<&OsStr>,
+    cwd: &Path,
+) -> Option<PathBuf> {
+    if argv0.as_encoded_bytes().contains(&b'/') {
+        let p = Path::new(argv0);
+        let joined = if p.is_relative() {
+            cwd.join(p)
+        } else {
+            p.to_path_buf()
+        };
+        return Some(crate::paths::lexical_normalize(&joined));
+    }
+    let own_canon = std::fs::canonicalize(own?).ok()?;
+    std::env::split_paths(path?).find_map(|dir| {
+        let candidate = dir.join(argv0);
+        let canon = std::fs::canonicalize(&candidate).ok()?;
+        (canon == own_canon).then_some(candidate)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -82,5 +147,72 @@ mod tests {
         assert_eq!(win("python.exe"), Some("python".to_string()));
         assert_eq!(win("PYENV-SHIM.EXE"), None);
         assert_eq!(command_name(Flavor::PyenvWin, OsStr::new("x"), None), None);
+    }
+
+    #[test]
+    fn own_root_finds_the_windows_shims_parent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let own = tmp.path().join("root").join("shims").join("python.exe");
+        assert_eq!(
+            own_root(
+                Flavor::PyenvWin,
+                OsStr::new("x"),
+                Some(&own),
+                None,
+                tmp.path()
+            ),
+            Some(tmp.path().join("root"))
+        );
+    }
+
+    #[test]
+    fn own_root_windows_wrong_folder_name_is_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let own = tmp.path().join("root").join("bin").join("python.exe");
+        assert_eq!(
+            own_root(
+                Flavor::PyenvWin,
+                OsStr::new("x"),
+                Some(&own),
+                None,
+                tmp.path()
+            ),
+            None
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn own_root_linux_uses_an_argv0_with_a_slash() {
+        let tmp = tempfile::tempdir().unwrap();
+        let argv0 = tmp.path().join("root").join("shims").join("python");
+        assert_eq!(
+            own_root(Flavor::Pyenv, argv0.as_os_str(), None, None, tmp.path()),
+            Some(tmp.path().join("root"))
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn own_root_linux_finds_itself_on_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root_shims = tmp.path().join("root").join("shims");
+        std::fs::create_dir_all(&root_shims).unwrap();
+        let other = tmp.path().join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        let own_bin = tmp.path().join("pyenv-shim");
+        std::fs::write(&own_bin, b"bin").unwrap();
+        std::os::unix::fs::symlink(&own_bin, root_shims.join("python")).unwrap();
+        let path = std::env::join_paths([&other, &root_shims]).unwrap();
+        assert_eq!(
+            own_root(
+                Flavor::Pyenv,
+                OsStr::new("python"),
+                Some(&own_bin),
+                Some(path.as_os_str()),
+                tmp.path(),
+            ),
+            Some(tmp.path().join("root"))
+        );
     }
 }
