@@ -43,6 +43,15 @@ pub enum RehashError {
     Io(io::Error),
 }
 
+/// What one rehash changed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RehashStats {
+    /// Shims created or re-created.
+    pub linked: usize,
+    /// Stale shims removed or renamed aside.
+    pub removed: usize,
+}
+
 /// Held while a rehash runs. Dropping it removes the lock file, on failure too.
 #[derive(Debug)]
 pub struct Lock {
@@ -116,7 +125,7 @@ pub fn snapshot(ctx: &Ctx) -> String {
             }
         }
     }
-    let mut s = String::from("rpyenv rehash state 1\n");
+    let mut s = String::from("rpyenv rehash state 2\n");
     for d in dirs {
         let Ok(meta) = fs::metadata(&d) else {
             continue;
@@ -131,10 +140,20 @@ pub fn snapshot(ctx: &Ctx) -> String {
             "{}.{:09} {count} {}\n",
             t.as_secs(),
             t.subsec_nanos(),
-            d.display()
+            state_path(&d, &vdir)
         ));
     }
     s
+}
+
+/// `d` relative to `versions`, with `/` separators (`.` for `versions` itself), so two
+/// spellings of one root give the same state (M1b review M-3).
+fn state_path(d: &Path, vdir: &Path) -> String {
+    match d.strip_prefix(vdir) {
+        Ok(r) if r.as_os_str().is_empty() => ".".to_string(),
+        Ok(r) => r.to_string_lossy().replace('\\', "/"),
+        Err(_) => d.display().to_string(),
+    }
 }
 
 /// True when the stored state is missing or differs from the disk.
@@ -144,28 +163,38 @@ pub fn needed(ctx: &Ctx) -> bool {
         .unwrap_or(true)
 }
 
-/// A shim's exit check (spec §8): rehash when the state changed, waiting briefly for a
-/// rehash already in progress so the caller sees its result (spec §5.2). Failures are
-/// ignored, including the wait running out; the next check catches up.
-pub fn check(ctx: &Ctx, shim_exe: &Path) {
-    if needed(ctx) {
-        let _ = rehash(ctx, shim_exe, Wait::Upto(CHECK_WAIT));
+/// A shim's exit check (spec §8). When the state changed, it waits up to `CHECK_WAIT` for
+/// the lock, then checks again (the rehash it waited for may have done the work) before
+/// rehashing. Failures are ignored; the next check catches up. True when it rehashed.
+pub fn check(ctx: &Ctx, shim_exe: &Path) -> bool {
+    if !needed(ctx) {
+        return false;
     }
+    let Ok(_lock) = lock(&ctx.shims_dir(), Wait::Upto(CHECK_WAIT)) else {
+        return false;
+    };
+    needed(ctx) && rehash_locked(ctx, shim_exe).is_ok()
 }
 
 /// Brings `shims` in line with the installed versions.
-pub fn rehash(ctx: &Ctx, shim_exe: &Path, wait: Wait) -> Result<(), RehashError> {
+pub fn rehash(ctx: &Ctx, shim_exe: &Path, wait: Wait) -> Result<RehashStats, RehashError> {
+    let _lock = lock(&ctx.shims_dir(), wait)?;
+    rehash_locked(ctx, shim_exe)
+}
+
+/// The rehash itself, for a caller that holds the lock.
+pub fn rehash_locked(ctx: &Ctx, shim_exe: &Path) -> Result<RehashStats, RehashError> {
     let shims = ctx.shims_dir();
-    let _lock = lock(&shims, wait)?;
     // Taken before scanning: a change during the scan makes the next check rehash again.
     let state = snapshot(ctx);
     let wanted = shimset::wanted(ctx);
-    match ctx.flavor {
+    let stats = match ctx.flavor {
         Flavor::Pyenv => apply_links(&shims, shim_exe, &wanted),
         Flavor::PyenvWin => apply_hardlinks(&shims, shim_exe, &wanted),
     }
     .map_err(RehashError::Io)?;
-    write_state(&shims, &state).map_err(RehashError::Io)
+    write_state(&shims, &state).map_err(RehashError::Io)?;
+    Ok(stats)
 }
 
 fn write_state(shims: &Path, state: &str) -> io::Result<()> {
@@ -176,7 +205,8 @@ fn write_state(shims: &Path, state: &str) -> io::Result<()> {
 
 /// Linux: each shim is a symlink to the shim binary. An existing file that isn't that
 /// link, such as upstream's bash shim, is replaced; directories are left alone.
-fn apply_links(shims: &Path, target: &Path, wanted: &[OsString]) -> io::Result<()> {
+fn apply_links(shims: &Path, target: &Path, wanted: &[OsString]) -> io::Result<RehashStats> {
+    let mut linked = 0;
     for name in wanted {
         let p = shims.join(name);
         match fs::symlink_metadata(&p) {
@@ -192,8 +222,12 @@ fn apply_links(shims: &Path, target: &Path, wanted: &[OsString]) -> io::Result<(
             Err(e) => return Err(e),
         }
         symlink(target, &p)?;
+        linked += 1;
     }
-    remove_stale(shims, wanted, false)
+    Ok(RehashStats {
+        linked,
+        removed: remove_stale(shims, wanted, false)?,
+    })
 }
 
 #[cfg(unix)]
@@ -210,10 +244,11 @@ fn symlink(target: &Path, link: &Path) -> io::Result<()> {
 /// Windows: each shim is a hardlink to `shims\.template\pyenv-shim.exe`, or a copy when a
 /// hardlink isn't possible. A failed shim doesn't stop the others; the first error is
 /// returned, so the state isn't stored and the next check tries again.
-fn apply_hardlinks(shims: &Path, source: &Path, wanted: &[OsString]) -> io::Result<()> {
+fn apply_hardlinks(shims: &Path, source: &Path, wanted: &[OsString]) -> io::Result<RehashStats> {
     let template = refresh_template(shims, source)?;
     let tmeta = fs::metadata(&template)?;
     let mut first_err = None;
+    let mut linked = 0;
     for name in wanted {
         let p = shims.join(name);
         match fs::metadata(&p) {
@@ -222,14 +257,15 @@ fn apply_hardlinks(shims: &Path, source: &Path, wanted: &[OsString]) -> io::Resu
             Ok(_) => remove_or_rename(&p),
             Err(_) => {}
         }
-        if let Err(e) =
-            fs::hard_link(&template, &p).or_else(|_| fs::copy(&template, &p).map(|_| ()))
-        {
-            first_err.get_or_insert(e);
+        match fs::hard_link(&template, &p).or_else(|_| fs::copy(&template, &p).map(|_| ())) {
+            Ok(()) => linked += 1,
+            Err(e) => {
+                first_err.get_or_insert(e);
+            }
         }
     }
-    remove_stale(shims, wanted, true)?;
-    first_err.map_or(Ok(()), Err)
+    let removed = remove_stale(shims, wanted, true)?;
+    first_err.map_or(Ok(RehashStats { linked, removed }), Err)
 }
 
 /// A hardlink shares its size and modification time with the template. A refreshed
@@ -275,7 +311,7 @@ fn refresh_template(shims: &Path, source: &Path) -> io::Result<PathBuf> {
 /// Removes shim files that are no longer wanted. Names starting with `.` are rpyenv's
 /// own files and are kept, except `.old` leftovers, which are deleted. Directories are
 /// left alone (allowlist D-35). `fold_case` compares names without case (Windows).
-fn remove_stale(shims: &Path, wanted: &[OsString], fold_case: bool) -> io::Result<()> {
+fn remove_stale(shims: &Path, wanted: &[OsString], fold_case: bool) -> io::Result<usize> {
     let key = |n: &OsString| -> OsString {
         if fold_case {
             OsString::from(n.to_string_lossy().to_lowercase())
@@ -284,6 +320,7 @@ fn remove_stale(shims: &Path, wanted: &[OsString], fold_case: bool) -> io::Resul
         }
     };
     let keep: HashSet<OsString> = wanted.iter().map(key).collect();
+    let mut removed = 0;
     for e in fs::read_dir(shims)?.filter_map(Result::ok) {
         let name = e.file_name();
         let text = name.to_string_lossy();
@@ -296,9 +333,10 @@ fn remove_stale(shims: &Path, wanted: &[OsString], fold_case: bool) -> io::Resul
         let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
         if !is_dir && !keep.contains(&key(&name)) {
             remove_or_rename(&e.path());
+            removed += 1;
         }
     }
-    Ok(())
+    Ok(removed)
 }
 
 /// Deletes a shim. A running `.exe` can't be deleted on Windows, so it is renamed to
@@ -490,20 +528,75 @@ mod tests {
         for old in ["python.bat", "python", "aws.lnk"] {
             assert!(!shims.join(old).exists(), "{old}");
         }
-        // Links to the current template are kept.
-        let before = fs::metadata(shims.join("pip.exe"))
-            .unwrap()
-            .modified()
-            .unwrap();
-        rehash(&ctx, &shim, Wait::No).unwrap();
-        let after = fs::metadata(shims.join("pip.exe"))
-            .unwrap()
-            .modified()
-            .unwrap();
-        assert_eq!(before, after);
         // A new shim binary refreshes the template and every link.
         fs::write(&shim, b"new shim binary").unwrap();
         rehash(&ctx, &shim, Wait::No).unwrap();
         assert_eq!(fs::read(shims.join("pip.exe")).unwrap(), b"new shim binary");
+    }
+
+    #[test]
+    fn state_does_not_depend_on_how_the_root_is_spelled() {
+        let (_t, ctx, _) = setup(Flavor::PyenvWin);
+        exe(&ctx.versions_dir().join("3.9.1/python.exe"));
+        let mut other = ctx.clone();
+        other.root = ctx.root.join(".");
+        assert_ne!(
+            ctx.versions_dir().display().to_string(),
+            other.versions_dir().display().to_string()
+        );
+        assert_eq!(snapshot(&ctx), snapshot(&other));
+    }
+
+    #[test]
+    fn a_second_rehash_changes_nothing() {
+        let (_t, ctx, shim) = setup(Flavor::PyenvWin);
+        let v = ctx.versions_dir();
+        exe(&v.join("3.9.1/python.exe"));
+        exe(&v.join("3.9.1/Scripts/pip.exe"));
+        fs::create_dir_all(ctx.shims_dir()).unwrap();
+        fs::write(ctx.shims_dir().join("python.bat"), "old").unwrap();
+        let first = rehash(&ctx, &shim, Wait::No).unwrap();
+        assert_eq!(
+            first,
+            RehashStats {
+                linked: 2,
+                removed: 1
+            }
+        );
+        assert_eq!(
+            rehash(&ctx, &shim, Wait::No).unwrap(),
+            RehashStats::default()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_second_linux_rehash_changes_nothing() {
+        let (_t, ctx, shim) = setup(Flavor::Pyenv);
+        exe(&ctx.versions_dir().join("3.12.1/bin/python"));
+        assert_eq!(rehash(&ctx, &shim, Wait::No).unwrap().linked, 1);
+        assert_eq!(
+            rehash(&ctx, &shim, Wait::No).unwrap(),
+            RehashStats::default()
+        );
+    }
+
+    #[test]
+    fn the_check_skips_when_another_rehash_already_did_it() {
+        let (_t, ctx, shim) = setup(Flavor::PyenvWin);
+        exe(&ctx.versions_dir().join("3.9.1/python.exe"));
+        rehash(&ctx, &shim, Wait::No).unwrap();
+        exe(&ctx.versions_dir().join("3.9.1/Scripts/black.exe"));
+        let held = lock(&ctx.shims_dir(), Wait::No).unwrap();
+        let (other_ctx, other_shim) = (ctx.clone(), shim.clone());
+        let other = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            let stats = rehash_locked(&other_ctx, &other_shim).unwrap();
+            drop(held);
+            stats
+        });
+        assert!(!check(&ctx, &shim), "the check rehashed again");
+        assert_eq!(other.join().unwrap().linked, 1);
+        assert!(ctx.shims_dir().join("black.exe").exists());
     }
 }

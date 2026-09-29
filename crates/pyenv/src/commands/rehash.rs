@@ -30,7 +30,7 @@ pub fn rehash(ctx: &Ctx, _args: &[&str]) -> Output {
         .max(0);
     let lock = ctx.shims_dir().join(rehash::LOCK_NAME);
     match rehash::rehash(ctx, &exe, Wait::Upto(Duration::from_secs(timeout as u64))) {
-        Ok(()) => Output::new(),
+        Ok(_) => Output::new(),
         Err(RehashError::NotWritable(dir)) => fail(
             ctx,
             &[format!("pyenv: cannot rehash: {} isn't writable", dir.display())],
