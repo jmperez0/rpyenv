@@ -305,7 +305,9 @@ pub fn is_pip_like(command: &str, args: &[OsString]) -> bool {
 /// returns only if that fails. With `wait`, the child runs to the end, the rehash check
 /// runs (`rehash_with` is the shim binary rehash uses), and the child's exit code is
 /// returned. On Linux, a child that died from a signal makes this process die from it too.
-pub fn run(plan: &LaunchPlan, ctx: &Ctx, rehash_with: Option<&Path>) -> i32 {
+/// `Err` means the program couldn't be started at all: the caller decides where that goes
+/// (a GUI shim may have nowhere to print it).
+pub fn run(plan: &LaunchPlan, ctx: &Ctx, rehash_with: Option<&Path>) -> Result<i32, Report> {
     let mut cmd = Command::new(&plan.program);
     #[cfg(windows)]
     {
@@ -335,7 +337,7 @@ pub fn run(plan: &LaunchPlan, ctx: &Ctx, rehash_with: Option<&Path>) -> i32 {
     if !plan.wait {
         use std::os::unix::process::CommandExt;
         let err = cmd.exec();
-        return cannot_run(ctx.flavor, &plan.program, &err);
+        return Err(cannot_run(&plan.program, &err));
     }
     #[cfg(unix)]
     let status = sig::spawn_and_wait(&mut cmd);
@@ -347,8 +349,8 @@ pub fn run(plan: &LaunchPlan, ctx: &Ctx, rehash_with: Option<&Path>) -> i32 {
         rehash::check(ctx, exe);
     }
     match status {
-        Ok(s) => exit_code(s),
-        Err(e) => cannot_run(ctx.flavor, &plan.program, &e),
+        Ok(s) => Ok(exit_code(s)),
+        Err(e) => Err(cannot_run(&plan.program, &e)),
     }
 }
 
@@ -373,15 +375,17 @@ fn exit_code(status: ExitStatus) -> i32 {
 }
 
 /// A file that can't be started: exit 127 when it is missing, else 126, as a shell
-/// would (allowlist D-43).
-fn cannot_run(flavor: Flavor, program: &Path, err: &std::io::Error) -> i32 {
-    let line = format!("pyenv: {}: {}", program.display(), io_reason(err));
-    eprint!("{line}{}", flavor.eol());
-    crate::debuglog::append(&line);
-    if err.kind() == std::io::ErrorKind::NotFound {
+/// would (allowlist D-43). Only builds the report; the caller prints and logs it.
+fn cannot_run(program: &Path, err: &std::io::Error) -> Report {
+    let code = if err.kind() == std::io::ErrorKind::NotFound {
         127
     } else {
         126
+    };
+    Report {
+        lines: vec![format!("pyenv: {}: {}", program.display(), io_reason(err))],
+        stderr: true,
+        code,
     }
 }
 

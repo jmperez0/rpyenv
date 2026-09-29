@@ -80,7 +80,13 @@ fn run(gui: bool) -> i32 {
                 ..plan
             };
             say(gui, flavor, &plan.warnings, true);
-            launch::run(&plan, &ctx, rehash_with.as_deref())
+            match launch::run(&plan, &ctx, rehash_with.as_deref()) {
+                Ok(code) => code,
+                Err(r) => {
+                    say(gui, flavor, &r.lines, r.stderr);
+                    r.code
+                }
+            }
         }
     }
 }

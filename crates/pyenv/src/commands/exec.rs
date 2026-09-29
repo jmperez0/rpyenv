@@ -34,7 +34,17 @@ pub fn exec(ctx: &Ctx, args: &[OsString]) -> Output {
             }
             before.emit(ctx.flavor);
             let rehash_with = crate::shim_exe().filter(|e| e.is_file());
-            Output::new().with_code(launch::run(&plan, ctx, rehash_with.as_deref()))
+            match launch::run(&plan, ctx, rehash_with.as_deref()) {
+                Ok(code) => Output::new().with_code(code),
+                Err(r) => {
+                    for line in &r.lines {
+                        rpyenv_core::debuglog::append(line);
+                    }
+                    let out: Output = r.into();
+                    out.emit(ctx.flavor);
+                    Output::new().with_code(out.code)
+                }
+            }
         }
     }
 }
