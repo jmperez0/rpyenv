@@ -208,9 +208,8 @@ fn relative_path(from_dir: &str, to: &str) -> Option<String> {
 /// A `.cmd` forwarder (spec §5.3). It resolves `name` with `pyenv which`, then runs it in
 /// the caller's cmd, without `call` or `setlocal`, so whatever the batch file sets stays
 /// set. When `name` can't be resolved at all, `pyenv which` says why (the first `which`
-/// line) and errorlevel is 127. `name` itself must be ASCII (the caller checks; `pyenv_ref`
-/// alone isn't enough, since a non-ASCII *name* would also need non-ASCII bytes in the
-/// file).
+/// line) and errorlevel is 127. `name` itself must pass `forwardable_name` (the caller
+/// checks; `pyenv_ref` alone isn't enough, since the name is written into the file too).
 ///
 /// `pyenv_ref`'s path goes into the helper variable `RPYENV_FORWARD_PYENV`, not directly
 /// into the command lines: `&`, `(`, `)`, `^` and `%` are cmd metacharacters, and a real
@@ -267,6 +266,17 @@ pub fn forwarder(pyenv_ref: &PyenvRef, name: &str) -> String {
          @(set \"RPYENV_FORWARD_TARGET=\") & (set \"RPYENV_FORWARD_CP=1\") & for /f \"delims=\" %%i in ('\"\"%%RPYENV_FORWARD_PYENV%%\" which {name}\"') do @set \"RPYENV_FORWARD_TARGET=%%i\"\r\n\
          @(set \"RPYENV_FORWARD_CP=\") & (set \"RPYENV_FORWARD_PYENV=\") & (set \"RPYENV_FORWARD_TARGET=\"){clear_dir} & if \"%RPYENV_FORWARD_TARGET%\"==\"\" (exit /b 127) else (\"%RPYENV_FORWARD_TARGET%\" %*)\r\n"
     )
+}
+
+/// Whether a forwarder can be written for the shim file `name` (`setvar.cmd`): only
+/// `[A-Za-z0-9._+-]`. The name goes unquoted into the forwarder's command lines, so a
+/// space or a cmd metacharacter (`&`, `^`, `%`, …) would break them, and a non-ASCII
+/// letter would need bytes in the console's code page, unknown at rehash time.
+pub fn forwardable_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '+' | '-'))
 }
 
 /// The shims rehash keeps in `shims` for the context's flavor. `forward` is the batch

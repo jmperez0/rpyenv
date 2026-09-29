@@ -285,14 +285,15 @@ fn apply_hardlinks(shims: &Path, source: &Path, wanted: &[Wanted]) -> io::Result
     // after being created, and a stale forwarder from a previous rehash that could write
     // one is left behind uncleaned. Two independent reasons: no known `pyenv.exe`, or
     // `pyenv_reference` finding nothing safe to write, doesn't vary by name — one decision
-    // for every forwarder; the command's own name isn't ASCII (`café`) does vary by name,
-    // since a non-ASCII name needs the same non-ASCII bytes in the file that
-    // `pyenv_reference` already refuses for `pyenv.exe`'s own path.
+    // for every forwarder; the command's own name having a character outside
+    // `[A-Za-z0-9._+-]` (`café`, `set var`, `a&b`) does vary by name, since the name is
+    // written into the forwarder's command lines (`shimset::forwardable_name`).
     let effective: Vec<Wanted> = wanted
         .iter()
         .cloned()
         .map(|w| {
-            let keep_forward = pyenv_ref.is_some() && w.name.to_string_lossy().is_ascii();
+            let keep_forward =
+                pyenv_ref.is_some() && shimset::forwardable_name(&w.name.to_string_lossy());
             if w.kind == ShimKind::Forward && !keep_forward {
                 console_fallback(w)
             } else {
@@ -919,6 +920,33 @@ mod tests {
         apply_hardlinks(&shims, &other_shim, &wanted).unwrap();
         assert_eq!(fs::read(shims.join("setvar.exe")).unwrap(), b"shim binary");
         assert!(!shims.join("setvar.cmd").exists());
+    }
+
+    /// A forwarded name is written into the forwarder's command lines, so only
+    /// `[A-Za-z0-9._+-]` is allowed; a space or `&` would break them.
+    #[test]
+    fn a_forwarded_name_outside_the_safe_set_falls_back_to_a_console_shim() {
+        let (tmp, ctx, shim) = setup(Flavor::PyenvWin);
+        fs::write(tmp.path().join("pyenv.exe"), b"cli").unwrap();
+        let v = ctx.versions_dir();
+        exe(&v.join("3.9.1/python.exe"));
+        let names = ["set var", "a&b", "Ok_1.2+x-y"];
+        for n in names {
+            exe(&v.join(format!("3.9.1/Scripts/{n}.bat")));
+        }
+        let forward: Vec<String> = names.iter().map(|n| n.to_ascii_lowercase()).collect();
+        let wanted = shimset::shims_win(&v, &forward);
+        let shims = ctx.shims_dir();
+        apply_hardlinks(&shims, &shim, &wanted).unwrap();
+        for n in ["set var", "a&b"] {
+            assert_eq!(
+                fs::read(shims.join(format!("{n}.exe"))).unwrap(),
+                b"shim binary"
+            );
+            assert!(!shims.join(format!("{n}.cmd")).exists(), "{n}");
+        }
+        assert!(shims.join("Ok_1.2+x-y.cmd").is_file());
+        assert!(!shims.join("Ok_1.2+x-y.exe").exists());
     }
 
     #[test]
