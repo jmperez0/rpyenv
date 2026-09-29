@@ -264,6 +264,16 @@ fn win_hits(version_dir: &Path, program: &str, exts: &[String]) -> Vec<PathBuf> 
 /// pyenv-win `CommandWhich` (pyenv.vbs:101-169). The folders in the printed path are
 /// as built from the root; only the file name is in its on-disk case (allowlist D-31).
 pub fn which_win(ctx: &Ctx, command: &str) -> Result<Found, NotFound> {
+    which_win_with(ctx, command, false)
+}
+
+/// `which_win` for launching: only files Windows can start count, so a bare `tool` next
+/// to `tool.exe` is passed over (M1b review M-4).
+pub fn which_win_runnable(ctx: &Ctx, command: &str) -> Result<Found, NotFound> {
+    which_win_with(ctx, command, true)
+}
+
+fn which_win_with(ctx: &Ctx, command: &str, runnable_only: bool) -> Result<Found, NotFound> {
     let program = command.strip_suffix('.').unwrap_or(command);
     let selected = select::win_select(ctx);
     if selected.is_empty() {
@@ -275,7 +285,11 @@ pub fn which_win(ctx: &Ctx, command: &str) -> Result<Found, NotFound> {
         if !dir.is_dir() {
             return Err(NotFound::WinNotInstalled(s.name.clone()));
         }
-        if let Some(path) = win_hits(&dir, program, &exts).into_iter().next() {
+        let hits = win_hits(&dir, program, &exts);
+        if let Some(path) = hits
+            .into_iter()
+            .find(|h| !runnable_only || is_runnable_win(h))
+        {
             return Ok(Found {
                 path,
                 warnings: Vec::new(),
@@ -283,6 +297,14 @@ pub fn which_win(ctx: &Ctx, command: &str) -> Result<Found, NotFound> {
         }
     }
     Err(NotFound::WinNotFound)
+}
+
+fn is_runnable_win(p: &Path) -> bool {
+    p.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+        ["exe", "com", "bat", "cmd"]
+            .iter()
+            .any(|r| e.eq_ignore_ascii_case(r))
+    })
 }
 
 /// pyenv-win `CommandWhence` (pyenv.vbs:171-261): every installed version, selection
@@ -641,6 +663,23 @@ mod tests {
         assert_eq!(
             path("pip."),
             Ok(v.join("3.9.1").join("Scripts").join("pip.exe"))
+        );
+    }
+
+    #[test]
+    fn win_runnable_lookup_skips_files_windows_cannot_start() {
+        let (_t, mut ctx) = win_root(&["3.9.1"]);
+        let v = ctx.versions_dir();
+        touch(&v.join("3.9.1/Scripts/tool"));
+        touch(&v.join("3.9.1/Scripts/tool.exe"));
+        ctx.pyenv_version = Some("3.9.1".to_string());
+        assert_eq!(
+            which_win(&ctx, "tool").map(|f| f.path),
+            Ok(v.join("3.9.1").join("Scripts").join("tool"))
+        );
+        assert_eq!(
+            which_win_runnable(&ctx, "tool").map(|f| f.path),
+            Ok(v.join("3.9.1").join("Scripts").join("tool.exe"))
         );
     }
 

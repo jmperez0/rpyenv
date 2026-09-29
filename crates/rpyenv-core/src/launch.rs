@@ -186,23 +186,28 @@ fn plan_win(
         .collect();
     let path = win_child_path(ctx, &names, env.appdata.as_deref());
     let program = match mode {
-        // A shim finds its file like `pyenv which`; not found is exit 127 (D-42).
+        // A shim finds its file like `pyenv which`, launching only files Windows can start
+        // (M1b review M-4); not found is exit 127 (D-42).
         Mode::Shim => {
-            lookup::which_win(ctx, command)
+            lookup::which_win_runnable(ctx, command)
                 .map_err(|nf| lookup::not_found_report(ctx, command, &nf, true))?
                 .path
         }
         // `exec` lets the command line find it on the new PATH (D-40).
         Mode::Exec => {
             win_exec_version_check(ctx, &names)?;
-            pathsearch::find_cmd(command, &path, ctx.pathext.as_deref()).ok_or_else(|| Report {
-                lines: vec![
-                    format!("'{command}' is not recognized as an internal or external command,"),
-                    "operable program or batch file.".to_string(),
-                ],
-                stderr: true,
-                code: 1,
-            })?
+            pathsearch::find_cmd(command, &path, ctx.pathext.as_deref(), &ctx.pwd).ok_or_else(
+                || Report {
+                    lines: vec![
+                        format!(
+                            "'{command}' is not recognized as an internal or external command,"
+                        ),
+                        "operable program or batch file.".to_string(),
+                    ],
+                    stderr: true,
+                    code: 1,
+                },
+            )?
         }
     };
     Ok(LaunchPlan {

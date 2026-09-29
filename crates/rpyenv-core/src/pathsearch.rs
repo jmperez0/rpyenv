@@ -64,30 +64,29 @@ fn pathext_list(pathext: Option<&OsStr>) -> Vec<String> {
         .collect()
 }
 
-/// cmd.exe's search for a command word on a `;`-separated `PATH`: in each folder, the name
-/// as typed when it has an extension, then the name plus each `PATHEXT` extension. Quotes
-/// and empty entries are dropped.
-pub fn find_cmd(name: &str, path: &OsStr, pathext: Option<&OsStr>) -> Option<PathBuf> {
+/// cmd.exe's search for a command word. A name with `\` or `/` in it is run from `cwd`
+/// (or as given, when absolute), without searching `PATH`. Otherwise each folder of the
+/// `;`-separated `path` is searched: the name as typed when it has an extension, then the
+/// name plus each `PATHEXT` extension. Quotes and empty entries are dropped.
+pub fn find_cmd(name: &str, path: &OsStr, pathext: Option<&OsStr>, cwd: &Path) -> Option<PathBuf> {
     let exts = pathext_list(pathext);
     let typed_ext = Path::new(name).extension().is_some();
-    let path = path.to_string_lossy();
-    for dir in path
-        .split(';')
-        .map(|d| d.replace('"', ""))
-        .filter(|d| !d.is_empty())
-    {
-        let dir = Path::new(&dir);
+    let try_dir = |dir: &Path| -> Option<PathBuf> {
         if typed_ext && dir.join(name).is_file() {
             return Some(dir.join(name));
         }
-        for e in &exts {
-            let candidate = dir.join(format!("{name}{e}"));
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-        }
+        exts.iter()
+            .map(|e| dir.join(format!("{name}{e}")))
+            .find(|c| c.is_file())
+    };
+    if name.contains(['\\', '/']) {
+        return try_dir(cwd);
     }
-    None
+    let path = path.to_string_lossy();
+    path.split(';')
+        .map(|d| d.replace('"', ""))
+        .filter(|d| !d.is_empty())
+        .find_map(|d| try_dir(Path::new(&d)))
 }
 
 fn same_dir(a: &Path, b: &Path, flavor: Flavor) -> bool {
@@ -218,9 +217,36 @@ mod tests {
         make_exe(&b, "x.py");
         let path = OsString::from(format!("{};\"{}\";", a.display(), b.display()));
         let exts = Some(OsStr::new(".EXE;.CMD"));
-        assert_eq!(find_cmd("tool", &path, exts), Some(a.join("tool.cmd")));
-        assert_eq!(find_cmd("tool.exe", &path, exts), Some(b.join("tool.exe")));
-        assert_eq!(find_cmd("x.py", &path, None), Some(b.join("x.py")));
-        assert_eq!(find_cmd("x", &path, None), None);
+        assert_eq!(
+            find_cmd("tool", &path, exts, tmp.path()),
+            Some(a.join("tool.cmd"))
+        );
+        assert_eq!(
+            find_cmd("tool.exe", &path, exts, tmp.path()),
+            Some(b.join("tool.exe"))
+        );
+        assert_eq!(
+            find_cmd("x.py", &path, None, tmp.path()),
+            Some(b.join("x.py"))
+        );
+        assert_eq!(find_cmd("x", &path, None, tmp.path()), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn cmd_search_runs_a_name_with_a_folder_from_the_current_folder() {
+        let tmp = tempfile::tempdir().unwrap();
+        make_exe(&tmp.path().join("sub"), "tool.exe");
+        let elsewhere = tmp.path().join("elsewhere");
+        make_exe(&elsewhere, "tool.exe");
+        let path = OsString::from(elsewhere.display().to_string());
+        assert_eq!(
+            find_cmd("sub\\tool", &path, Some(OsStr::new(".exe")), tmp.path()),
+            Some(tmp.path().join("sub\\tool.exe"))
+        );
+        assert_eq!(
+            find_cmd("sub/tool.exe", &path, None, tmp.path()),
+            Some(tmp.path().join("sub/tool.exe"))
+        );
     }
 }
