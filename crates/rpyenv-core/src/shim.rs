@@ -107,15 +107,17 @@ pub fn own_root(
 }
 
 /// The path the shim was actually invoked as, on Linux: `argv0` itself when it contains a
-/// `/` (joined onto `cwd` when relative, then lexically normalized); otherwise the first
-/// `PATH` entry whose `<dir>/<argv0>` canonicalizes to the same file as `own`. The result is
-/// kept as spelled (not canonicalized), matching what upstream bakes in.
+/// `/` (joined onto `cwd` when relative, then lexically normalized) and it canonicalizes to
+/// the same file as `own`; otherwise the first `PATH` entry whose `<dir>/<argv0>`
+/// canonicalizes to the same file as `own`. The result is kept as spelled (not
+/// canonicalized), matching what upstream bakes in.
 fn linux_invoked_path(
     argv0: &OsStr,
     own: Option<&Path>,
     path: Option<&OsStr>,
     cwd: &Path,
 ) -> Option<PathBuf> {
+    let own_canon = std::fs::canonicalize(own?).ok()?;
     if argv0.as_encoded_bytes().contains(&b'/') {
         let p = Path::new(argv0);
         let joined = if p.is_relative() {
@@ -123,9 +125,10 @@ fn linux_invoked_path(
         } else {
             p.to_path_buf()
         };
-        return Some(crate::paths::lexical_normalize(&joined));
+        // Any program can set argv[0]: trust it only when it really is this shim.
+        let canon = std::fs::canonicalize(&joined).ok()?;
+        return (canon == own_canon).then(|| crate::paths::lexical_normalize(&joined));
     }
-    let own_canon = std::fs::canonicalize(own?).ok()?;
     std::env::split_paths(path?).find_map(|dir| {
         let candidate = dir.join(argv0);
         let canon = std::fs::canonicalize(&candidate).ok()?;
@@ -183,12 +186,37 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn own_root_linux_uses_an_argv0_with_a_slash() {
+    fn own_root_linux_trusts_an_argv0_with_a_slash_only_when_it_is_the_shim() {
         let tmp = tempfile::tempdir().unwrap();
-        let argv0 = tmp.path().join("root").join("shims").join("python");
+        let shims = tmp.path().join("root").join("shims");
+        std::fs::create_dir_all(&shims).unwrap();
+        let own_bin = tmp.path().join("pyenv-shim");
+        std::fs::write(&own_bin, b"bin").unwrap();
+        std::os::unix::fs::symlink(&own_bin, shims.join("python")).unwrap();
+        let argv0 = shims.join("python");
         assert_eq!(
-            own_root(Flavor::Pyenv, argv0.as_os_str(), None, None, tmp.path()),
+            own_root(
+                Flavor::Pyenv,
+                argv0.as_os_str(),
+                Some(&own_bin),
+                None,
+                tmp.path()
+            ),
             Some(tmp.path().join("root"))
+        );
+        // Any program can set argv[0]; a path that isn't this shim is not trusted.
+        let fake = tmp.path().join("fake").join("shims").join("python");
+        std::fs::create_dir_all(fake.parent().unwrap()).unwrap();
+        std::fs::write(&fake, b"other").unwrap();
+        assert_eq!(
+            own_root(
+                Flavor::Pyenv,
+                fake.as_os_str(),
+                Some(&own_bin),
+                None,
+                tmp.path()
+            ),
+            None
         );
     }
 

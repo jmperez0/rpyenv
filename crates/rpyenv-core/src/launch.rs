@@ -341,11 +341,25 @@ fn exit_code(status: ExitStatus) -> i32 {
 /// A file that can't be started: exit 127 when it is missing, else 126, as a shell
 /// would (allowlist D-43).
 fn cannot_run(flavor: Flavor, program: &Path, err: &std::io::Error) -> i32 {
-    eprint!("pyenv: {}: {err}{}", program.display(), flavor.eol());
+    eprint!(
+        "pyenv: {}: {}{}",
+        program.display(),
+        io_reason(err),
+        flavor.eol()
+    );
     if err.kind() == std::io::ErrorKind::NotFound {
         127
     } else {
         126
+    }
+}
+
+/// An I/O error's text without Rust's ` (os error N)` suffix, as a shell prints it (D-43).
+pub fn io_reason(err: &std::io::Error) -> String {
+    let text = err.to_string();
+    match text.rfind(" (os error ") {
+        Some(i) if text.ends_with(')') => text[..i].to_string(),
+        _ => text,
     }
 }
 
@@ -431,26 +445,36 @@ mod sig {
                 Ok(())
             });
         }
-        let mut child = cmd.spawn()?;
-        CHILD.store(child.id() as i32, Ordering::SeqCst);
-        let result = child.wait();
-        // No PID is left for `forward` to signal, and this process's own dispositions are
-        // back to what the caller had, for the rehash check that runs next.
-        CHILD.store(0, Ordering::SeqCst);
-        // SAFETY: restoring this process's own signal dispositions to exactly what `current`
-        // read on entry, before anything was changed.
+        let result = match cmd.spawn() {
+            Ok(mut child) => {
+                CHILD.store(child.id() as i32, Ordering::SeqCst);
+                child.wait()
+            }
+            Err(e) => Err(e),
+        };
+        // Restore first, then clear CHILD, on both paths: a TERM or HUP that arrives in
+        // between meets the caller's own disposition, not a forwarder with no child.
+        // SAFETY: restoring this process's own dispositions to exactly what `current` read
+        // on entry, before anything was changed.
         unsafe {
             for (signal, original) in SIGNALS.iter().zip(on_entry) {
                 install(*signal, original);
             }
         }
+        CHILD.store(0, Ordering::SeqCst);
         result
     }
 
-    /// Dies from `signal`, as the child did, so the caller sees the same status.
+    /// Dies from `signal`, as the child did, so the caller sees the same status. No core
+    /// file: the child made one if it was going to, and the shim's would overwrite it.
     pub fn die_by(signal: i32) -> ! {
-        // SAFETY: plain libc calls on this process.
+        // SAFETY: plain libc calls on this process; lowering our own core limit is allowed.
         unsafe {
+            let none = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
+            libc::setrlimit(libc::RLIMIT_CORE, &none);
             libc::signal(signal, libc::SIG_DFL);
             libc::raise(signal);
         }
@@ -666,6 +690,14 @@ mod tests {
         ctx.pyenv_version = Some("3.9.1 3.7.7".to_string());
         let r = plan(&ctx, Mode::Exec, "python", vec![], &ExecEnv::default()).unwrap_err();
         assert_eq!(r.lines, WIN_EXEC_NO_VERSION);
+    }
+
+    #[test]
+    fn io_reasons_drop_the_os_error_suffix() {
+        let reason = io_reason(&std::io::Error::from_raw_os_error(2));
+        assert!(!reason.is_empty());
+        assert!(!reason.contains("os error"), "{reason}");
+        assert_eq!(io_reason(&std::io::Error::other("plain")), "plain");
     }
 
     #[test]
