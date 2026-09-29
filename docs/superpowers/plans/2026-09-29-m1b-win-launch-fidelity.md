@@ -2561,5 +2561,4 @@ git commit -m "Write .cmd forwarders for RPYENV_BATCH_FORWARD"
   - removing the rehash lock when `pyenv rehash` is interrupted.
 - **M7:** conda support, with upstream's `conda.d/default.list` filter (allowlist D-44).
 - **Still open, low priority:**
-  - `RPYENV_BATCH_FORWARD` is read at each rehash, so a shim's exit check running without it turns forwarders back into exe shims. Put the variable in the user environment, as the MSI will (M6).
   - The rename-aside branch runs only on hosts that refuse to delete a running shim; it is unit-tested.

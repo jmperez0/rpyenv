@@ -270,8 +270,9 @@ pub fn forwarder(pyenv_ref: &PyenvRef, name: &str) -> String {
     )
 }
 
-/// The shims rehash keeps in `shims` for the context's flavor.
-pub fn wanted(ctx: &Ctx) -> Vec<Wanted> {
+/// The shims rehash keeps in `shims` for the context's flavor. `forward` is the batch
+/// forward list (Windows); the caller decides where it comes from (`rehash::batch_forward`).
+pub fn wanted(ctx: &Ctx, forward: &[String]) -> Vec<Wanted> {
     match ctx.flavor {
         Flavor::Pyenv => executables_pyenv(&ctx.versions_dir())
             .into_iter()
@@ -280,10 +281,7 @@ pub fn wanted(ctx: &Ctx) -> Vec<Wanted> {
                 kind: ShimKind::Console,
             })
             .collect(),
-        Flavor::PyenvWin => shims_win(
-            &ctx.versions_dir(),
-            &forward_names(std::env::var_os("RPYENV_BATCH_FORWARD").as_deref()),
-        ),
+        Flavor::PyenvWin => shims_win(&ctx.versions_dir(), forward),
     }
 }
 

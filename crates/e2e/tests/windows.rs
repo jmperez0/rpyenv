@@ -569,6 +569,31 @@ fn win_forwarder_absolute_branch_with_special_characters() {
     assert!(!text.contains("RPYENV_FORWARD_TARGET="), "{text}");
 }
 
+/// A shim's exit check, run without `RPYENV_BATCH_FORWARD` (as `pip install` through a
+/// shim is), keeps the forwarders the last `pyenv rehash` made.
+#[test]
+fn win_the_exit_check_keeps_forwarders_without_the_variable() {
+    let f = Fixture::new();
+    f.install("3.9.1/python.exe");
+    install_setvar(&f);
+    let forward = [("RPYENV_BATCH_FORWARD", v("setvar"))];
+    assert!(f.pyenv(&["rehash"], &forward).status.success());
+    assert!(f.root.join("shims").join("setvar.cmd").is_file());
+    let new_tool = f.root.join("versions/3.9.1/Scripts/newtool.exe");
+    let out = f.run_shim(
+        "python",
+        &[],
+        &[
+            ("PYENV_VERSION", v("3.9.1")),
+            ("ARGV_ECHO_TOUCH", new_tool.as_os_str()),
+        ],
+    );
+    assert!(out.status.success());
+    assert!(f.shim("newtool").is_file(), "the exit check didn't rehash");
+    assert!(f.root.join("shims").join("setvar.cmd").is_file());
+    assert!(!f.shim("setvar").exists());
+}
+
 /// A forwarded tool the selected version lacks: pyenv's message, errorlevel 127.
 #[test]
 fn win_forwarder_reports_a_missing_command_with_127() {

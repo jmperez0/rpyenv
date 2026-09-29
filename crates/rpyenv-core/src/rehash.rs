@@ -6,7 +6,7 @@ use crate::flavor::Flavor;
 use crate::shimset::{ShimKind, Wanted};
 use crate::{installed, shimset};
 use std::collections::HashSet;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -23,6 +23,8 @@ pub const TEMPLATE_EXE: &str = "pyenv-shim.exe";
 pub const TEMPLATE_GUI_EXE: &str = "pyenv-shimw.exe";
 /// Where `pyenv rehash` records the `pyenv.exe` that forwarders call (plan decision 6).
 pub const PYENV_PATH_FILE: &str = "pyenv-path.txt";
+/// Where `pyenv rehash` records its `RPYENV_BATCH_FORWARD` list, for the exit check.
+pub const BATCH_FORWARD_FILE: &str = "batch-forward.txt";
 /// Upstream deletes a lock older than two minutes (libexec/pyenv-rehash:15-43).
 const STALE_LOCK: Duration = Duration::from_secs(120);
 /// The exit check waits this long for another rehash to finish, then skips: a compromise
@@ -192,7 +194,7 @@ pub fn rehash_locked(ctx: &Ctx, shim_exe: &Path) -> Result<RehashStats, RehashEr
     let shims = ctx.shims_dir();
     // Taken before scanning: a change during the scan makes the next check rehash again.
     let state = snapshot(ctx);
-    let wanted = shimset::wanted(ctx);
+    let wanted = shimset::wanted(ctx, &batch_forward(ctx, shim_exe));
     let stats = match ctx.flavor {
         Flavor::Pyenv => apply_links(&shims, shim_exe, &wanted),
         Flavor::PyenvWin => apply_hardlinks(&shims, shim_exe, &wanted),
@@ -352,12 +354,43 @@ fn console_fallback(w: Wanted) -> Wanted {
     }
 }
 
+/// True for a shim's exit check, which rehashes from the template itself; `pyenv rehash`
+/// passes the shim binary installed next to `pyenv.exe`.
+fn is_exit_check(source: &Path, template_dir: &Path) -> bool {
+    source.parent() == Some(template_dir)
+}
+
+/// The names that get a `.cmd` forwarder (Windows). `pyenv rehash` takes them from
+/// `RPYENV_BATCH_FORWARD` and records them, an empty list when the variable is unset or
+/// empty. A shim's exit check usually runs without the variable (`pip install` through a
+/// shim), so it uses the variable when set and the record otherwise; it never rewrites
+/// the record.
+fn batch_forward(ctx: &Ctx, source: &Path) -> Vec<String> {
+    if ctx.flavor != Flavor::PyenvWin {
+        return Vec::new();
+    }
+    let dir = ctx.shims_dir().join(TEMPLATE_DIR);
+    let record = dir.join(BATCH_FORWARD_FILE);
+    if is_exit_check(source, &dir) {
+        return match &ctx.batch_forward {
+            Some(v) => shimset::forward_names(Some(v)),
+            None => fs::read_to_string(&record)
+                .map(|s| shimset::forward_names(Some(OsStr::new(&s))))
+                .unwrap_or_default(),
+        };
+    }
+    let names = shimset::forward_names(ctx.batch_forward.as_deref());
+    let _ = fs::create_dir_all(&dir);
+    let _ = fs::write(&record, names.join(";"));
+    names
+}
+
 /// The `pyenv.exe` forwarders call. `pyenv rehash` passes the shim binary installed next
 /// to `pyenv.exe`, and the path is recorded; a shim's exit check passes the template and
 /// reads the record back.
 fn pyenv_exe(source: &Path, template_dir: &Path) -> Option<PathBuf> {
     let record = template_dir.join(PYENV_PATH_FILE);
-    if source.parent() == Some(template_dir) {
+    if is_exit_check(source, template_dir) {
         return fs::read_to_string(&record)
             .ok()
             .map(|s| PathBuf::from(s.trim()));
@@ -800,6 +833,52 @@ mod tests {
             apply_hardlinks(&shims, &template, &wanted).unwrap(),
             RehashStats::default()
         );
+    }
+
+    /// A shim's exit check usually runs without `RPYENV_BATCH_FORWARD` (`pip install`
+    /// through a shim); it uses the list the last `pyenv rehash` recorded, so forwarders
+    /// stay forwarders. The variable wins when it is set; the CLI rewrites the record.
+    #[test]
+    fn the_exit_check_keeps_forwarders_without_the_variable() {
+        let (tmp, mut ctx, shim) = setup(Flavor::PyenvWin);
+        fs::write(tmp.path().join("pyenv.exe"), b"cli").unwrap();
+        let v = ctx.versions_dir();
+        exe(&v.join("3.9.1/python.exe"));
+        exe(&v.join("3.9.1/Scripts/setvar.bat"));
+        let shims = ctx.shims_dir();
+        let template = shims.join(TEMPLATE_DIR).join(TEMPLATE_EXE);
+        ctx.batch_forward = Some(OsString::from("setvar"));
+        rehash(&ctx, &shim, Wait::No).unwrap();
+        assert!(shims.join("setvar.cmd").is_file());
+        // The exit check, without the variable: the record keeps the forwarder.
+        ctx.batch_forward = None;
+        exe(&v.join("3.9.1/Scripts/newtool.exe"));
+        assert!(check(&ctx, &template));
+        assert!(shims.join("newtool.exe").is_file());
+        assert!(shims.join("setvar.cmd").is_file());
+        assert!(!shims.join("setvar.exe").exists());
+        // The exit check with the variable set (empty): it wins over the record.
+        ctx.batch_forward = Some(OsString::new());
+        exe(&v.join("3.9.1/Scripts/other.exe"));
+        assert!(check(&ctx, &template));
+        assert!(shims.join("setvar.exe").is_file());
+        assert!(!shims.join("setvar.cmd").exists());
+        // ...and it didn't rewrite the record.
+        ctx.batch_forward = None;
+        exe(&v.join("3.9.1/Scripts/third.exe"));
+        assert!(check(&ctx, &template));
+        assert!(shims.join("setvar.cmd").is_file());
+        // `pyenv rehash` without the variable records an empty list.
+        rehash(&ctx, &shim, Wait::No).unwrap();
+        assert_eq!(
+            fs::read_to_string(shims.join(TEMPLATE_DIR).join(BATCH_FORWARD_FILE)).unwrap(),
+            ""
+        );
+        assert!(shims.join("setvar.exe").is_file());
+        exe(&v.join("3.9.1/Scripts/fourth.exe"));
+        assert!(check(&ctx, &template));
+        assert!(shims.join("setvar.exe").is_file());
+        assert!(!shims.join("setvar.cmd").exists());
     }
 
     #[test]
