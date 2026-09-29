@@ -133,7 +133,7 @@ unsafe extern "system" fn keep_running(_event: u32) -> BOOL {
 /// handler's TRUE means the shim ignores them and waits for the child. For
 /// `CTRL_CLOSE_EVENT`, `CTRL_LOGOFF_EVENT` and `CTRL_SHUTDOWN_EVENT` it doesn't: Windows
 /// ends the shim as soon as the handler returns, without waiting for the child, which gets
-/// the event too (the final review's probe saw the child's cleanup finish under conhost).
+/// the event too (under conhost, the child's own cleanup was observed to finish).
 /// It uses a handler, never `SetConsoleCtrlHandler(NULL, TRUE)`, which children would
 /// inherit (spec §5.3).
 pub fn ignore_console_events() {
