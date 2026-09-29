@@ -672,6 +672,22 @@ fn win_the_exit_check_keeps_forwarders_without_the_variable() {
     assert!(f.shim("newtool").is_file(), "the exit check didn't rehash");
     assert!(f.root.join("shims").join("setvar.cmd").is_file());
     assert!(!f.shim("setvar").exists());
+    // `pyenv exec`'s exit check, also without the variable, keeps them too.
+    let exec_tool = f.root.join("versions/3.9.1/Scripts/exectool.exe");
+    let out = f.pyenv(
+        &["exec", "python"],
+        &[
+            ("PYENV_VERSION", v("3.9.1")),
+            ("ARGV_ECHO_TOUCH", exec_tool.as_os_str()),
+        ],
+    );
+    assert!(out.status.success());
+    assert!(
+        f.shim("exectool").is_file(),
+        "pyenv exec's check didn't rehash"
+    );
+    assert!(f.root.join("shims").join("setvar.cmd").is_file());
+    assert!(!f.shim("setvar").exists());
 }
 
 /// A forwarded tool the selected version lacks: pyenv's message, errorlevel 127.
