@@ -23,8 +23,11 @@ use windows_sys::Win32::System::JobObjects::{
     SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK,
 };
+use windows_sys::Win32::System::StationsAndDesktops::{
+    GetProcessWindowStation, GetUserObjectInformationW, UOI_FLAGS, USEROBJECTFLAGS,
+};
 use windows_sys::Win32::System::Threading::{CREATE_NO_WINDOW, DETACHED_PROCESS};
-use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK, WSF_VISIBLE};
 
 /// A Job Object whose processes end when its last handle closes, which happens when this
 /// process ends, however it ends. Processes they start break away silently and live on,
@@ -180,8 +183,38 @@ pub fn std_handle_usable(stderr: bool) -> bool {
     std_file_type(which).is_some_and(|t| t != FILE_TYPE_UNKNOWN)
 }
 
-/// A modal error box titled "rpyenv", for the GUI shim when there is nowhere to print.
+/// Whether this process's window station is visible on a physical display. A service or a
+/// scheduled task with no interactive session has an invisible one: a modal box there would
+/// have nothing to show it and no user to click it, and would block forever.
+fn window_station_visible() -> bool {
+    // SAFETY: `GetProcessWindowStation` returns this process's own window station handle,
+    // owned by the system, so it needs no closing; `GetUserObjectInformationW` reads into
+    // a local, zero-initialized buffer of exactly the size it's told.
+    unsafe {
+        let station = GetProcessWindowStation();
+        if station.is_null() {
+            return false;
+        }
+        let mut flags: USEROBJECTFLAGS = std::mem::zeroed();
+        let mut needed = 0u32;
+        let ok = GetUserObjectInformationW(
+            station,
+            UOI_FLAGS,
+            (&mut flags as *mut USEROBJECTFLAGS).cast(),
+            std::mem::size_of::<USEROBJECTFLAGS>() as u32,
+            &mut needed,
+        );
+        ok != 0 && (flags.dwFlags & WSF_VISIBLE as u32) != 0
+    }
+}
+
+/// A modal error box titled "rpyenv", for the GUI shim when there is nowhere to print. Shows
+/// nothing when the window station isn't visible (plan decision 4 doesn't cover a session
+/// nobody can see).
 pub fn message_box(text: &str) {
+    if !window_station_visible() {
+        return;
+    }
     let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
     let (text, title) = (wide(text), wide("rpyenv"));
     // SAFETY: both buffers are NUL-terminated UTF-16 and outlive the call; no owner window.
