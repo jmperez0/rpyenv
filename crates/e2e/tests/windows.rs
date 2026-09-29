@@ -283,6 +283,8 @@ fn win_gui_shim_reports_on_a_given_output() {
     std::fs::create_dir_all(tool.parent().unwrap()).unwrap();
     std::fs::copy(built("argv-echow"), &tool).unwrap();
     f.rehash();
+    let read = |p: std::path::PathBuf| std::fs::read(p).unwrap();
+    assert_eq!(read(f.shim("tool")), read(built("pyenv-shimw")));
     let out = f.run_shim("tool", &[], &[("PYENV_VERSION", v("3.9.1"))]);
     assert_eq!(out.status.code(), Some(127));
     assert!(String::from_utf8_lossy(&out.stdout).starts_with("pyenv: tool: command not found\r\n"));
