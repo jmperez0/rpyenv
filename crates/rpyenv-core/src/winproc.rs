@@ -129,9 +129,13 @@ unsafe extern "system" fn keep_running(_event: u32) -> BOOL {
     TRUE
 }
 
-/// Ctrl+C, Ctrl+Break and closing the console reach the child, which shares the console.
-/// The shim ignores them and waits for the child. It uses a handler, never
-/// `SetConsoleCtrlHandler(NULL, TRUE)`, which children would inherit (spec §5.3).
+/// Console events reach the child, which shares the console. For Ctrl+C and Ctrl+Break the
+/// handler's TRUE means the shim ignores them and waits for the child. For
+/// `CTRL_CLOSE_EVENT`, `CTRL_LOGOFF_EVENT` and `CTRL_SHUTDOWN_EVENT` it doesn't: Windows
+/// ends the shim as soon as the handler returns, without waiting for the child, which gets
+/// the event too (the final review's probe saw the child's cleanup finish under conhost).
+/// It uses a handler, never `SetConsoleCtrlHandler(NULL, TRUE)`, which children would
+/// inherit (spec §5.3).
 pub fn ignore_console_events() {
     // SAFETY: registers a handler that only returns TRUE and touches no state.
     unsafe {
