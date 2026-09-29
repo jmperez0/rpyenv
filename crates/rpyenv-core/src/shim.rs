@@ -52,6 +52,9 @@ pub fn main() -> i32 {
     let env = ExecEnv::from_process(&program, own);
     match launch::plan(&ctx, Mode::Shim, &program, args, &env) {
         Err(report) => {
+            for line in &report.lines {
+                crate::debuglog::append(line);
+            }
             report.emit(flavor);
             report.code
         }

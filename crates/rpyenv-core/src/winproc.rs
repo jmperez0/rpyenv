@@ -2,18 +2,26 @@
 //! ends the child with the shim, and a console handler that keeps the shim alive through
 //! the child's Ctrl+C.
 
+use crate::console::{self, ConsoleMode};
+use crate::debuglog;
 use std::io;
 use std::os::windows::io::AsRawHandle;
+use std::os::windows::process::CommandExt;
 use std::path::Path;
-use std::process::{Child, Command, ExitStatus};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use windows_sys::core::BOOL;
-use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, TRUE};
-use windows_sys::Win32::System::Console::SetConsoleCtrlHandler;
+use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE, TRUE};
+use windows_sys::Win32::Storage::FileSystem::{GetFileType, FILE_TYPE_DISK, FILE_TYPE_PIPE};
+use windows_sys::Win32::System::Console::{
+    GetConsoleProcessList, GetStdHandle, SetConsoleCtrlHandler, STD_ERROR_HANDLE, STD_HANDLE,
+    STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+};
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
     SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK,
 };
+use windows_sys::Win32::System::Threading::{CREATE_NO_WINDOW, DETACHED_PROCESS};
 
 /// A Job Object whose processes end when its last handle closes, which happens when this
 /// process ends, however it ends. Processes they start break away silently and live on,
@@ -64,6 +72,44 @@ impl Drop for Job {
     }
 }
 
+/// What the console decision needs to know about this process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Probe {
+    pub attached: bool,
+    pub stdout_redirected: bool,
+    pub stderr_redirected: bool,
+    pub stdin_provided: bool,
+}
+
+fn usable(h: HANDLE) -> bool {
+    !h.is_null() && h != INVALID_HANDLE_VALUE
+}
+
+/// A disk file or a pipe (the doc's "redirected"). These are this process's own handles,
+/// with no I/O pending, so `GetFileType` can't block.
+fn redirected(which: STD_HANDLE) -> bool {
+    // SAFETY: reads this process's own standard handle and asks for its type.
+    unsafe {
+        let h = GetStdHandle(which);
+        usable(h) && matches!(GetFileType(h), FILE_TYPE_DISK | FILE_TYPE_PIPE)
+    }
+}
+
+pub fn probe() -> Probe {
+    let mut one = 0u32;
+    // SAFETY: asks for at most one process id into a one-element buffer; the count it
+    // returns is 0 exactly when this process has no console.
+    let attached = unsafe { GetConsoleProcessList(&mut one, 1) } != 0;
+    // SAFETY: reads this process's own standard input handle.
+    let stdin = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
+    Probe {
+        attached,
+        stdout_redirected: redirected(STD_OUTPUT_HANDLE),
+        stderr_redirected: redirected(STD_ERROR_HANDLE),
+        stdin_provided: usable(stdin),
+    }
+}
+
 unsafe extern "system" fn keep_running(_event: u32) -> BOOL {
     TRUE
 }
@@ -81,7 +127,25 @@ pub fn ignore_console_events() {
 /// Starts `cmd` inside a job, with console events ignored, and waits for it. The child
 /// joins the job right after it starts (plan decision 2).
 pub fn spawn_and_wait(cmd: &mut Command, program: &Path) -> io::Result<ExitStatus> {
-    let _ = program;
+    let p = probe();
+    let mode = console::choose(p.attached, p.stdout_redirected, p.stderr_redirected);
+    debuglog::append(&format!(
+        "mode={} program={}",
+        mode.name(),
+        program.display()
+    ));
+    match mode {
+        ConsoleMode::Inherit => {}
+        ConsoleMode::NoWindow => {
+            cmd.creation_flags(CREATE_NO_WINDOW);
+            if !p.stdin_provided {
+                cmd.stdin(Stdio::null());
+            }
+        }
+        ConsoleMode::Mirror => {
+            cmd.creation_flags(DETACHED_PROCESS);
+        }
+    }
     ignore_console_events();
     let job = Job::new();
     let mut child = cmd.spawn()?;

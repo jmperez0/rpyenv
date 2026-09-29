@@ -1,6 +1,8 @@
 //! Version resolution and `PYENV_ROOT` layout, shared by the `pyenv` CLI and the shims.
 
+pub mod console;
 pub mod ctx;
+pub mod debuglog;
 pub mod flavor;
 pub mod installed;
 pub mod latest;
