@@ -161,6 +161,49 @@ fn win_ctrl_break_reaches_the_child_and_the_shim_waits() {
     assert_eq!(shim.wait().unwrap().code(), Some(5));
 }
 
+/// Spec §5.3 bans `SetConsoleCtrlHandler(NULL, TRUE)` in the shim: children inherit it and
+/// would ignore Ctrl+C. The shim gets a windowless console of its own (no new process
+/// group, which would also turn Ctrl+C off), the child shares it, and a helper attached to
+/// that console sends Ctrl+C to every process on it. Only that console's processes get it,
+/// so this test process is not hit. The child catches it and exits 5 at once; its sleep,
+/// up to 30 s, only bounds how long the event may take to arrive under load.
+#[test]
+fn win_ctrl_c_reaches_the_child_through_the_shim() {
+    use windows_sys::Win32::System::Console::SetConsoleCtrlHandler;
+    // Whether Ctrl+C is ignored is inherited: clear it here, so the shim starts as it would
+    // from an ordinary console, whatever started this test.
+    // SAFETY: no handler pointer; it only changes this process's Ctrl+C flag.
+    unsafe { SetConsoleCtrlHandler(None, 0) };
+    let f = Fixture::new();
+    f.install("3.9.1/python.exe");
+    f.rehash();
+    let ready = f.base.join("ready");
+    let mut shim = f
+        .shim_command(
+            "python",
+            &[
+                ("PYENV_VERSION", v("3.9.1")),
+                ("ARGV_ECHO_CATCH_BREAK", v("1")),
+                ("ARGV_ECHO_SLEEP_MS", v("30000")),
+                ("ARGV_ECHO_READY", ready.as_os_str()),
+            ],
+        )
+        .creation_flags(CREATE_NO_WINDOW)
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    wait_for(&ready);
+    let sent = Command::new(built("argv-echo"))
+        .env("ARGV_ECHO_CTRLC_PID", shim.id().to_string())
+        .status()
+        .unwrap();
+    if sent.code() != Some(0) {
+        let _ = shim.kill();
+    }
+    assert_eq!(sent.code(), Some(0), "could not send Ctrl+C");
+    assert_eq!(shim.wait().unwrap().code(), Some(5));
+}
+
 const DETACHED_PROCESS: u32 = 0x0000_0008;
 
 /// The console mode the shim logged.

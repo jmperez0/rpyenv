@@ -37,6 +37,29 @@ fn send_break(pid: u32) -> i32 {
     0
 }
 
+/// Sends Ctrl+C to every process on the console of process `pid`: this helper leaves its
+/// own console, attaches to that one, and ignores Ctrl+C itself first. Only processes on
+/// that console get it.
+#[cfg(windows)]
+fn send_ctrl_c(pid: u32) -> i32 {
+    use windows_sys::Win32::System::Console::{
+        AttachConsole, FreeConsole, GenerateConsoleCtrlEvent, SetConsoleCtrlHandler, CTRL_C_EVENT,
+    };
+    // SAFETY: console calls with no pointer arguments; they change only this helper's own
+    // console attachment and Ctrl+C flag, and send the event to the console it attached to.
+    unsafe {
+        FreeConsole();
+        if AttachConsole(pid) == 0 {
+            return 2;
+        }
+        SetConsoleCtrlHandler(None, 1);
+        if GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0) == 0 {
+            return 3;
+        }
+    }
+    0
+}
+
 pub fn main() {
     #[cfg(windows)]
     if let Some(pid) = std::env::var("ARGV_ECHO_BREAK_PID")
@@ -44,6 +67,13 @@ pub fn main() {
         .and_then(|p| p.parse::<u32>().ok())
     {
         std::process::exit(send_break(pid));
+    }
+    #[cfg(windows)]
+    if let Some(pid) = std::env::var("ARGV_ECHO_CTRLC_PID")
+        .ok()
+        .and_then(|p| p.parse::<u32>().ok())
+    {
+        std::process::exit(send_ctrl_c(pid));
     }
     #[cfg(windows)]
     if std::env::var("ARGV_ECHO_CATCH_BREAK").as_deref() == Ok("1") {

@@ -8,10 +8,11 @@
 //! file, so a test can tell whether the process was still running past the sleep;
 //! `ARGV_ECHO_EXIT` is the exit code (default 0).
 //!
-//! On Windows, `ARGV_ECHO_CATCH_BREAK=1` catches console events and makes the exit code 5
-//! if one arrived by the end of the sleep, and `ARGV_ECHO_BREAK_PID=<pid>` only sends
-//! Ctrl+Break to that process group (attaching to its console) and exits 0, or 2 or 3 on
-//! failure. `ARGV_ECHO_READY=<path>` creates that file just before the sleep, so a test can
+//! On Windows, `ARGV_ECHO_CATCH_BREAK=1` catches console events (Ctrl+C and Ctrl+Break
+//! alike) and makes the exit code 5 if one arrived by the end of the sleep, and
+//! `ARGV_ECHO_BREAK_PID=<pid>` only sends Ctrl+Break to that process group (attaching to its
+//! console) and exits 0, or 2 or 3 on failure. `ARGV_ECHO_CTRLC_PID=<pid>` likewise sends
+//! Ctrl+C to every process on that process's console, ignoring it itself. `ARGV_ECHO_READY=<path>` creates that file just before the sleep, so a test can
 //! wait until the program is running and set up. `ARGV_ECHO_CONSOLE=1` prints `console=<n>`,
 //! the number of processes on its console (0 without one), and `window=0` or `window=1`,
 //! whether a console window is visible.
