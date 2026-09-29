@@ -375,12 +375,9 @@ fn exit_code(status: ExitStatus) -> i32 {
 /// A file that can't be started: exit 127 when it is missing, else 126, as a shell
 /// would (allowlist D-43).
 fn cannot_run(flavor: Flavor, program: &Path, err: &std::io::Error) -> i32 {
-    eprint!(
-        "pyenv: {}: {}{}",
-        program.display(),
-        io_reason(err),
-        flavor.eol()
-    );
+    let line = format!("pyenv: {}: {}", program.display(), io_reason(err));
+    eprint!("{line}{}", flavor.eol());
+    crate::debuglog::append(&line);
     if err.kind() == std::io::ErrorKind::NotFound {
         127
     } else {

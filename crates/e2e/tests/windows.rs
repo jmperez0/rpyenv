@@ -180,6 +180,15 @@ fn console_count(out: &std::process::Output) -> u32 {
         .expect("argv-echo printed no console= line")
 }
 
+/// Whether argv-echo's `window=` line said a console window is visible.
+fn has_window(out: &std::process::Output) -> bool {
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .find_map(|l| l.strip_prefix("window="))
+        .expect("argv-echo printed no window= line")
+        == "1"
+}
+
 fn console_env(log: &std::path::Path) -> [(&'static str, &OsStr); 3] {
     [
         ("PYENV_VERSION", v("3.9.1")),
@@ -188,7 +197,7 @@ fn console_env(log: &std::path::Path) -> [(&'static str, &OsStr); 3] {
     ]
 }
 
-/// Review focus 4: no console, output redirected → a windowless console for the child.
+/// No console, output redirected → a windowless console for the child.
 #[test]
 fn win_no_console_with_redirected_output_gets_no_window() {
     let f = Fixture::new();
@@ -205,6 +214,7 @@ fn win_no_console_with_redirected_output_gets_no_window() {
         console_count(&out) >= 1,
         "the child should have a windowless console"
     );
+    assert!(!has_window(&out), "the child's console should be hidden");
 }
 
 /// No console and stderr on NUL (not redirected) → the child gets no console either.
@@ -222,6 +232,7 @@ fn win_no_console_without_both_outputs_redirected_mirrors() {
         .unwrap();
     assert_eq!(mode_in(&log), "MIRROR");
     assert_eq!(console_count(&out), 0);
+    assert!(!has_window(&out), "the child should have no console at all");
 }
 
 /// A shim with a console shares it with the child: the console then holds at least the

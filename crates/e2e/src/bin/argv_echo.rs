@@ -13,7 +13,8 @@
 //! Ctrl+Break to that process group (attaching to its console) and exits 0, or 2 or 3 on
 //! failure. `ARGV_ECHO_READY=<path>` creates that file just before the sleep, so a test can
 //! wait until the program is running and set up. `ARGV_ECHO_CONSOLE=1` prints `console=<n>`,
-//! the number of processes on its console (0 without one).
+//! the number of processes on its console (0 without one), and `window=0` or `window=1`,
+//! whether a console window is visible.
 
 use std::io::{Read, Write};
 
@@ -93,6 +94,9 @@ fn main() {
         // SAFETY: asks for at most one process id into a one-element buffer.
         let n = unsafe { windows_sys::Win32::System::Console::GetConsoleProcessList(&mut one, 1) };
         out.push_str(&format!("console={n}\n"));
+        // SAFETY: no arguments; returns this process's console window handle or null.
+        let window = unsafe { windows_sys::Win32::System::Console::GetConsoleWindow() };
+        out.push_str(&format!("window={}\n", u32::from(!window.is_null())));
     }
     #[cfg(target_os = "linux")]
     if var("ARGV_ECHO_SIGIGN").as_deref() == Some("1") {
