@@ -10,6 +10,7 @@ pub mod launch;
 pub mod lookup;
 pub mod paths;
 pub mod pathsearch;
+pub mod pe;
 pub mod prefix;
 pub mod rehash;
 pub mod select;

@@ -3,6 +3,7 @@
 
 use crate::ctx::Ctx;
 use crate::flavor::Flavor;
+use crate::shimset::{ShimKind, Wanted};
 use crate::{installed, shimset};
 use std::collections::HashSet;
 use std::ffi::OsString;
@@ -18,6 +19,8 @@ pub const STATE_NAME: &str = ".rehash-state";
 /// Windows: the per-user copy of the shim binary that every shim is a hardlink to.
 pub const TEMPLATE_DIR: &str = ".template";
 pub const TEMPLATE_EXE: &str = "pyenv-shim.exe";
+/// Windows: the GUI shim's template name, and its installed name next to `pyenv-shim.exe`.
+pub const TEMPLATE_GUI_EXE: &str = "pyenv-shimw.exe";
 /// Upstream deletes a lock older than two minutes (libexec/pyenv-rehash:15-43).
 const STALE_LOCK: Duration = Duration::from_secs(120);
 /// The exit check waits this long for another rehash to finish, then skips: a compromise
@@ -205,10 +208,10 @@ fn write_state(shims: &Path, state: &str) -> io::Result<()> {
 
 /// Linux: each shim is a symlink to the shim binary. An existing file that isn't that
 /// link, such as upstream's bash shim, is replaced; directories are left alone.
-fn apply_links(shims: &Path, target: &Path, wanted: &[OsString]) -> io::Result<RehashStats> {
+fn apply_links(shims: &Path, target: &Path, wanted: &[Wanted]) -> io::Result<RehashStats> {
     let mut linked = 0;
-    for name in wanted {
-        let p = shims.join(name);
+    for w in wanted {
+        let p = shims.join(&w.name);
         match fs::symlink_metadata(&p) {
             Ok(m)
                 if m.file_type().is_symlink()
@@ -241,23 +244,36 @@ fn symlink(target: &Path, link: &Path) -> io::Result<()> {
     fs::copy(target, link).map(|_| ())
 }
 
-/// Windows: each shim is a hardlink to `shims\.template\pyenv-shim.exe`, or a copy when a
-/// hardlink isn't possible. A failed shim doesn't stop the others; the first error is
-/// returned, so the state isn't stored and the next check tries again.
-fn apply_hardlinks(shims: &Path, source: &Path, wanted: &[OsString]) -> io::Result<RehashStats> {
-    let template = refresh_template(shims, source)?;
-    let tmeta = fs::metadata(&template)?;
+/// Windows: each shim is a hardlink to `shims\.template\pyenv-shim.exe` or
+/// `shims\.template\pyenv-shimw.exe`, matching its kind, or a copy when a hardlink isn't
+/// possible. A failed shim doesn't stop the others; the first error is returned, so the
+/// state isn't stored and the next check tries again.
+fn apply_hardlinks(shims: &Path, source: &Path, wanted: &[Wanted]) -> io::Result<RehashStats> {
+    let console = refresh_template(shims, source, TEMPLATE_EXE)?;
+    // The GUI shim is installed next to the console one, and its template next to the
+    // console template. Without it, GUI programs get the console shim.
+    let gui_source = source.with_file_name(TEMPLATE_GUI_EXE);
+    let gui = if gui_source.is_file() {
+        refresh_template(shims, &gui_source, TEMPLATE_GUI_EXE)?
+    } else {
+        console.clone()
+    };
+    let (console_meta, gui_meta) = (fs::metadata(&console)?, fs::metadata(&gui)?);
     let mut first_err = None;
     let mut linked = 0;
-    for name in wanted {
-        let p = shims.join(name);
+    for w in wanted {
+        let (template, tmeta) = match w.kind {
+            ShimKind::Console => (&console, &console_meta),
+            ShimKind::Gui => (&gui, &gui_meta),
+        };
+        let p = shims.join(&w.name);
         match fs::metadata(&p) {
-            Ok(m) if same_file_data(&m, &tmeta) => continue,
+            Ok(m) if same_file_data(&m, tmeta) => continue,
             Ok(m) if m.is_dir() => continue,
             Ok(_) => remove_or_rename(&p),
             Err(_) => {}
         }
-        match fs::hard_link(&template, &p).or_else(|_| fs::copy(&template, &p).map(|_| ())) {
+        match fs::hard_link(template, &p).or_else(|_| fs::copy(template, &p).map(|_| ())) {
             Ok(()) => linked += 1,
             Err(e) => {
                 first_err.get_or_insert(e);
@@ -274,17 +290,20 @@ fn same_file_data(a: &fs::Metadata, b: &fs::Metadata) -> bool {
     a.is_file() && a.len() == b.len() && a.modified().ok() == b.modified().ok()
 }
 
-/// `shims\.template\pyenv-shim.exe`, copied again when `source` has different bytes
-/// (spec §8). Old copies renamed aside by an earlier refresh are deleted first.
-fn refresh_template(shims: &Path, source: &Path) -> io::Result<PathBuf> {
+/// `shims\.template\<name>`, copied again when `source` has different bytes (spec §8).
+/// Old copies renamed aside by an earlier refresh, and leftover `.tmp` files, are deleted
+/// first.
+fn refresh_template(shims: &Path, source: &Path, name: &str) -> io::Result<PathBuf> {
     let dir = shims.join(TEMPLATE_DIR);
     fs::create_dir_all(&dir)?;
     for e in fs::read_dir(&dir)?.filter_map(Result::ok) {
-        if e.file_name().to_string_lossy().ends_with(".old") {
+        let n = e.file_name();
+        let text = n.to_string_lossy();
+        if text.ends_with(".old") || text.ends_with(".tmp") {
             let _ = fs::remove_file(e.path());
         }
     }
-    let template = dir.join(TEMPLATE_EXE);
+    let template = dir.join(name);
     if source == template {
         return Ok(template);
     }
@@ -297,7 +316,7 @@ fn refresh_template(shims: &Path, source: &Path) -> io::Result<PathBuf> {
     if !fresh {
         // Copied to a temp file first and renamed into place, so a crash mid-copy leaves
         // the old template rather than a truncated one.
-        let tmp = dir.join(format!("{TEMPLATE_EXE}.tmp"));
+        let tmp = dir.join(format!("{name}.tmp"));
         if let Err(e) = fs::copy(source, &tmp) {
             let _ = fs::remove_file(&tmp);
             return Err(e);
@@ -311,7 +330,7 @@ fn refresh_template(shims: &Path, source: &Path) -> io::Result<PathBuf> {
 /// Removes shim files that are no longer wanted. Names starting with `.` are rpyenv's
 /// own files and are kept, except `.old` leftovers, which are deleted. Directories are
 /// left alone (allowlist D-35). `fold_case` compares names without case (Windows).
-fn remove_stale(shims: &Path, wanted: &[OsString], fold_case: bool) -> io::Result<usize> {
+fn remove_stale(shims: &Path, wanted: &[Wanted], fold_case: bool) -> io::Result<usize> {
     let key = |n: &OsString| -> OsString {
         if fold_case {
             OsString::from(n.to_string_lossy().to_lowercase())
@@ -319,7 +338,7 @@ fn remove_stale(shims: &Path, wanted: &[OsString], fold_case: bool) -> io::Resul
             n.clone()
         }
     };
-    let keep: HashSet<OsString> = wanted.iter().map(key).collect();
+    let keep: HashSet<OsString> = wanted.iter().map(|w| key(&w.name)).collect();
     let mut removed = 0;
     for e in fs::read_dir(shims)?.filter_map(Result::ok) {
         let name = e.file_name();
@@ -598,5 +617,23 @@ mod tests {
         assert!(!check(&ctx, &shim), "the check rehashed again");
         assert_eq!(other.join().unwrap().linked, 1);
         assert!(ctx.shims_dir().join("black.exe").exists());
+    }
+
+    #[test]
+    fn gui_programs_link_to_the_gui_shim() {
+        let (tmp, ctx, shim) = setup(Flavor::PyenvWin);
+        fs::write(tmp.path().join(TEMPLATE_GUI_EXE), b"gui shim").unwrap();
+        let v = ctx.versions_dir().join("3.9.1");
+        fs::create_dir_all(&v).unwrap();
+        fs::write(v.join("python.exe"), crate::pe::image(3)).unwrap();
+        fs::write(v.join("pythonw.exe"), crate::pe::image(2)).unwrap();
+        rehash(&ctx, &shim, Wait::No).unwrap();
+        let shims = ctx.shims_dir();
+        assert_eq!(fs::read(shims.join("python.exe")).unwrap(), b"shim binary");
+        assert_eq!(fs::read(shims.join("pythonw.exe")).unwrap(), b"gui shim");
+        assert_eq!(
+            rehash(&ctx, &shim, Wait::No).unwrap(),
+            RehashStats::default()
+        );
     }
 }

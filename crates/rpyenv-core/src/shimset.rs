@@ -43,10 +43,28 @@ pub fn executables_pyenv(versions_dir: &Path) -> Vec<OsString> {
     names.into_iter().collect()
 }
 
+/// Which shim binary a shim is. Linux shims are always `Console`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShimKind {
+    /// `pyenv-shim`.
+    Console,
+    /// `pyenv-shimw`: every version's file with this name is a GUI program.
+    Gui,
+}
+
+/// One file rehash keeps in `shims`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Wanted {
+    pub name: OsString,
+    pub kind: ShimKind,
+}
+
 /// pyenv-win's layout: `<stem>.exe` for every `.exe`, `.bat` and `.cmd` in a version's
-/// folder, `Scripts` and `bin`. Names compare without case; the first spelling found wins.
-pub fn shims_win(versions_dir: &Path) -> Vec<String> {
-    let mut by_key: BTreeMap<String, String> = BTreeMap::new();
+/// folder, `Scripts` and `bin`, each with the shim binary it needs: GUI only when every
+/// version's file is a GUI program. Names compare without case; the first spelling found
+/// wins.
+pub fn shims_win(versions_dir: &Path) -> Vec<Wanted> {
+    let mut by_key: BTreeMap<String, Wanted> = BTreeMap::new();
     for entry in installed::top_level(versions_dir, Flavor::PyenvWin) {
         for dir in [
             entry.path.clone(),
@@ -72,23 +90,36 @@ pub fn shims_win(versions_dir: &Path) -> Vec<String> {
                 {
                     continue;
                 }
-                by_key
-                    .entry(stem.to_ascii_lowercase())
-                    .or_insert_with(|| format!("{stem}.exe"));
+                let kind = if ext == "exe" && crate::pe::is_gui(&path) {
+                    ShimKind::Gui
+                } else {
+                    ShimKind::Console
+                };
+                // The console shim wins when versions disagree (spec §8).
+                let slot = by_key.entry(stem.to_ascii_lowercase()).or_insert(Wanted {
+                    name: OsString::from(format!("{stem}.exe")),
+                    kind,
+                });
+                if kind == ShimKind::Console {
+                    slot.kind = ShimKind::Console;
+                }
             }
         }
     }
     by_key.into_values().collect()
 }
 
-/// The shim file names `rehash` keeps in `shims` for the context's flavor.
-pub fn wanted(ctx: &Ctx) -> Vec<OsString> {
+/// The shims rehash keeps in `shims` for the context's flavor.
+pub fn wanted(ctx: &Ctx) -> Vec<Wanted> {
     match ctx.flavor {
-        Flavor::Pyenv => executables_pyenv(&ctx.versions_dir()),
-        Flavor::PyenvWin => shims_win(&ctx.versions_dir())
+        Flavor::Pyenv => executables_pyenv(&ctx.versions_dir())
             .into_iter()
-            .map(OsString::from)
+            .map(|name| Wanted {
+                name,
+                kind: ShimKind::Console,
+            })
             .collect(),
+        Flavor::PyenvWin => shims_win(&ctx.versions_dir()),
     }
 }
 
@@ -167,13 +198,41 @@ mod tests {
             file(&v.join(f), true);
         }
         assert_eq!(
-            shims_win(&v),
+            shims_win(&v)
+                .iter()
+                .map(|w| w.name.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
             [
                 "extra.exe",
                 "hello.exe",
                 "pip.exe",
                 "python.exe",
                 "pythonw.exe"
+            ]
+        );
+    }
+
+    #[test]
+    fn gui_only_when_every_target_is_gui() {
+        let tmp = tempfile::tempdir().unwrap();
+        let v = tmp.path().join("versions");
+        let write = |rel: &str, sub: u16| {
+            let p = v.join(rel);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(p, crate::pe::image(sub)).unwrap();
+        };
+        write("3.9.1/pythonw.exe", 2);
+        write("3.9.1/tool.exe", 2);
+        write("3.8.2/tool.exe", 3);
+        let kinds: Vec<(String, ShimKind)> = shims_win(&v)
+            .into_iter()
+            .map(|w| (w.name.to_string_lossy().into_owned(), w.kind))
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                ("pythonw.exe".to_string(), ShimKind::Gui),
+                ("tool.exe".to_string(), ShimKind::Console)
             ]
         );
     }
