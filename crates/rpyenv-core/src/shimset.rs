@@ -144,8 +144,8 @@ pub fn forward_names(value: Option<&OsStr>) -> Vec<String> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PyenvRef {
     /// `pyenv`'s own path, pure ASCII. Kept absolute, not `%~dp0`-relative, even though
-    /// relative would be simpler: `%~dp0` misresolves when a batch file is invoked quoted
-    /// and without its extension (`pyenv_reference`'s doc has the details).
+    /// relative would be simpler: `%~dp0` misresolves when a batch file is invoked quoted,
+    /// with or without its extension (`forwarder`'s doc has the details).
     Absolute(String),
     /// A path relative to `shims` (also ASCII — only the tail after their common ancestor
     /// need be, since the shared, possibly non-ASCII, root is never written to the file;
@@ -222,9 +222,9 @@ fn relative_path(from_dir: &str, to: &str) -> Option<String> {
 /// string is parsed twice, once by this line and once by the child cmd `for /f` spawns to
 /// run it.
 ///
-/// A `Relative` reference needs the forwarder's own folder, which `%~dp0` misresolves for
-/// a quoted invocation (`"setvar"`) or one without the extension typed (`setvar` without
-/// `.cmd`). Resolved instead by an explicit `call :d` up front, into
+/// A `Relative` reference needs the forwarder's own folder, which `%~dp0` misresolves (to
+/// the current directory) for any quoted invocation, with or without the extension
+/// (`"setvar"`, `"setvar.cmd"`). Resolved instead by an explicit `call :d` up front, into
 /// `RPYENV_FORWARD_DIR`, only when needed. The `:d` subroutine comes first, jumped over by
 /// `@goto :m`, so nothing follows the line that runs the target: running a `.bat`/`.cmd`
 /// target without `call` abandons this script (the usual case), but an `.exe` target
