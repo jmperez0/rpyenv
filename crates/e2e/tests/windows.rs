@@ -430,3 +430,58 @@ fn win_gui_shim_shows_a_message_box_when_it_has_nowhere_to_print() {
         search.pid
     );
 }
+
+fn cmd_exe() -> std::path::PathBuf {
+    std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+        .join("System32")
+        .join("cmd.exe")
+}
+
+fn install_setvar(f: &Fixture) {
+    let scripts = f.root.join("versions").join("3.9.1").join("Scripts");
+    std::fs::create_dir_all(&scripts).unwrap();
+    std::fs::write(scripts.join("setvar.bat"), "@set FROM_BAT=%1\r\n").unwrap();
+}
+
+/// A forwarded batch tool changes the caller's environment, and the helper variable
+/// doesn't stay behind.
+#[test]
+fn win_forwarder_changes_the_callers_environment() {
+    let f = Fixture::new();
+    f.install("3.9.1/python.exe");
+    install_setvar(&f);
+    let env = [
+        ("PYENV_VERSION", v("3.9.1")),
+        ("RPYENV_BATCH_FORWARD", v("setvar")),
+    ];
+    assert!(f.pyenv(&["rehash"], &env).status.success());
+    assert!(f.root.join("shims").join("setvar.cmd").is_file());
+    assert!(!f.shim("setvar").exists());
+    let out = f
+        .command(&cmd_exe(), &env)
+        .args(["/d", "/c"])
+        .raw_arg(r#""setvar hello & set FROM_BAT & set RPYENV_FORWARD_TARGET""#)
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("FROM_BAT=hello"), "{text}");
+    assert!(!text.contains("RPYENV_FORWARD_TARGET="), "{text}");
+}
+
+/// A forwarded tool the selected version lacks: pyenv's message, errorlevel 127.
+#[test]
+fn win_forwarder_reports_a_missing_command_with_127() {
+    let f = Fixture::new();
+    f.install("3.9.1/python.exe");
+    f.install("3.8.2/python.exe");
+    install_setvar(&f);
+    let env = [("RPYENV_BATCH_FORWARD", v("setvar"))];
+    assert!(f.pyenv(&["rehash"], &env).status.success());
+    let out = f
+        .command(&cmd_exe(), &[("PYENV_VERSION", v("3.8.2"))])
+        .args(["/d", "/c", "setvar"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(127));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("pyenv: setvar: command not found"));
+}

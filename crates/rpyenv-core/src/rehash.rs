@@ -21,6 +21,8 @@ pub const TEMPLATE_DIR: &str = ".template";
 pub const TEMPLATE_EXE: &str = "pyenv-shim.exe";
 /// Windows: the GUI shim's template name, and its installed name next to `pyenv-shim.exe`.
 pub const TEMPLATE_GUI_EXE: &str = "pyenv-shimw.exe";
+/// Where `pyenv rehash` records the `pyenv.exe` that forwarders call (plan decision 6).
+pub const PYENV_PATH_FILE: &str = "pyenv-path.txt";
 /// Upstream deletes a lock older than two minutes (libexec/pyenv-rehash:15-43).
 const STALE_LOCK: Duration = Duration::from_secs(120);
 /// The exit check waits this long for another rehash to finish, then skips: a compromise
@@ -246,8 +248,9 @@ fn symlink(target: &Path, link: &Path) -> io::Result<()> {
 
 /// Windows: each shim is a hardlink to `shims\.template\pyenv-shim.exe` or
 /// `shims\.template\pyenv-shimw.exe`, matching its kind, or a copy when a hardlink isn't
-/// possible. A failed shim doesn't stop the others; the first error is returned, so the
-/// state isn't stored and the next check tries again.
+/// possible. A `.cmd` forwarder is a text file instead (spec §5.3), and falls back to the
+/// console shim when `pyenv.exe` isn't known. A failed shim doesn't stop the others; the
+/// first error is returned, so the state isn't stored and the next check tries again.
 fn apply_hardlinks(shims: &Path, source: &Path, wanted: &[Wanted]) -> io::Result<RehashStats> {
     let console = refresh_template(shims, source, TEMPLATE_EXE)?;
     // The GUI shim is installed next to the console one, and its template next to the
@@ -259,12 +262,28 @@ fn apply_hardlinks(shims: &Path, source: &Path, wanted: &[Wanted]) -> io::Result
         console.clone()
     };
     let (console_meta, gui_meta) = (fs::metadata(&console)?, fs::metadata(&gui)?);
+    let pyenv = pyenv_exe(source, &shims.join(TEMPLATE_DIR));
     let mut first_err = None;
     let mut linked = 0;
     for w in wanted {
+        if let (ShimKind::Forward, Some(pyenv)) = (w.kind, &pyenv) {
+            let p = shims.join(&w.name);
+            let file = w.name.to_string_lossy();
+            let text = shimset::forwarder(pyenv, file.strip_suffix(".cmd").unwrap_or(&file));
+            if fs::read_to_string(&p).ok().as_deref() != Some(text.as_str()) {
+                remove_or_rename(&p);
+                match fs::write(&p, &text) {
+                    Ok(()) => linked += 1,
+                    Err(e) => {
+                        first_err.get_or_insert(e);
+                    }
+                }
+            }
+            continue;
+        }
         let (template, tmeta) = match w.kind {
-            ShimKind::Console => (&console, &console_meta),
             ShimKind::Gui => (&gui, &gui_meta),
+            ShimKind::Console | ShimKind::Forward => (&console, &console_meta),
         };
         let p = shims.join(&w.name);
         match fs::metadata(&p) {
@@ -282,6 +301,24 @@ fn apply_hardlinks(shims: &Path, source: &Path, wanted: &[Wanted]) -> io::Result
     }
     let removed = remove_stale(shims, wanted, true)?;
     first_err.map_or(Ok(RehashStats { linked, removed }), Err)
+}
+
+/// The `pyenv.exe` forwarders call. `pyenv rehash` passes the shim binary installed next
+/// to `pyenv.exe`, and the path is recorded; a shim's exit check passes the template and
+/// reads the record back.
+fn pyenv_exe(source: &Path, template_dir: &Path) -> Option<PathBuf> {
+    let record = template_dir.join(PYENV_PATH_FILE);
+    if source.parent() == Some(template_dir) {
+        return fs::read_to_string(&record)
+            .ok()
+            .map(|s| PathBuf::from(s.trim()));
+    }
+    let pyenv = source.with_file_name("pyenv.exe");
+    if !pyenv.is_file() {
+        return None;
+    }
+    let _ = fs::write(&record, pyenv.display().to_string());
+    Some(pyenv)
 }
 
 /// A hardlink shares its size and modification time with the template. A refreshed
@@ -633,6 +670,31 @@ mod tests {
         assert_eq!(fs::read(shims.join("pythonw.exe")).unwrap(), b"gui shim");
         assert_eq!(
             rehash(&ctx, &shim, Wait::No).unwrap(),
+            RehashStats::default()
+        );
+    }
+
+    #[test]
+    fn forwarders_use_the_recorded_pyenv_path() {
+        let (tmp, ctx, shim) = setup(Flavor::PyenvWin);
+        let pyenv = tmp.path().join("pyenv.exe");
+        fs::write(&pyenv, b"cli").unwrap();
+        let v = ctx.versions_dir();
+        exe(&v.join("3.9.1/python.exe"));
+        exe(&v.join("3.9.1/Scripts/setvar.bat"));
+        let wanted = shimset::shims_win(&v, &["setvar".to_string()]);
+        let shims = ctx.shims_dir();
+        let stats = apply_hardlinks(&shims, &shim, &wanted).unwrap();
+        assert_eq!(stats.linked, 2);
+        assert_eq!(
+            fs::read_to_string(shims.join("setvar.cmd")).unwrap(),
+            shimset::forwarder(&pyenv, "setvar")
+        );
+        assert!(!shims.join("setvar.exe").exists());
+        // A shim's exit check passes the template; the recorded path keeps the forwarder.
+        let template = shims.join(TEMPLATE_DIR).join(TEMPLATE_EXE);
+        assert_eq!(
+            apply_hardlinks(&shims, &template, &wanted).unwrap(),
             RehashStats::default()
         );
     }

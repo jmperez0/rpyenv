@@ -4,7 +4,7 @@ use crate::ctx::Ctx;
 use crate::flavor::Flavor;
 use crate::{installed, pathsearch};
 use std::collections::{BTreeMap, BTreeSet};
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::path::Path;
 
 /// Activation scripts must run inside the current shell, so they never get a shim: any
@@ -50,6 +50,8 @@ pub enum ShimKind {
     Console,
     /// `pyenv-shimw`: every version's file with this name is a GUI program.
     Gui,
+    /// A `.cmd` forwarder, for a batch tool named in `RPYENV_BATCH_FORWARD`.
+    Forward,
 }
 
 /// One file rehash keeps in `shims`.
@@ -61,9 +63,10 @@ pub struct Wanted {
 
 /// pyenv-win's layout: `<stem>.exe` for every `.exe`, `.bat` and `.cmd` in a version's
 /// folder, `Scripts` and `bin`, each with the shim binary it needs: GUI only when every
-/// version's file is a GUI program. Names compare without case; the first spelling found
-/// wins.
-pub fn shims_win(versions_dir: &Path) -> Vec<Wanted> {
+/// version's file is a GUI program, and a `.cmd` forwarder for a name in `forward`
+/// (`RPYENV_BATCH_FORWARD`, spec §5.3). Names compare without case; when versions
+/// disagree, a forwarder beats an exe shim, and a console shim beats a GUI shim.
+pub fn shims_win(versions_dir: &Path, forward: &[String]) -> Vec<Wanted> {
     let mut by_key: BTreeMap<String, Wanted> = BTreeMap::new();
     for entry in installed::top_level(versions_dir, Flavor::PyenvWin) {
         for dir in [
@@ -90,23 +93,62 @@ pub fn shims_win(versions_dir: &Path) -> Vec<Wanted> {
                 {
                     continue;
                 }
-                let kind = if ext == "exe" && crate::pe::is_gui(&path) {
-                    ShimKind::Gui
+                let lower = stem.to_ascii_lowercase();
+                let is_batch = ext == "bat" || ext == "cmd";
+                let candidate = if is_batch && forward.contains(&lower) {
+                    Wanted {
+                        name: OsString::from(format!("{stem}.cmd")),
+                        kind: ShimKind::Forward,
+                    }
+                } else if ext == "exe" && crate::pe::is_gui(&path) {
+                    Wanted {
+                        name: OsString::from(format!("{stem}.exe")),
+                        kind: ShimKind::Gui,
+                    }
                 } else {
-                    ShimKind::Console
+                    Wanted {
+                        name: OsString::from(format!("{stem}.exe")),
+                        kind: ShimKind::Console,
+                    }
                 };
-                // The console shim wins when versions disagree (spec §8).
-                let slot = by_key.entry(stem.to_ascii_lowercase()).or_insert(Wanted {
-                    name: OsString::from(format!("{stem}.exe")),
-                    kind,
-                });
-                if kind == ShimKind::Console {
-                    slot.kind = ShimKind::Console;
+                let rank = |k: ShimKind| match k {
+                    ShimKind::Gui => 0,
+                    ShimKind::Console => 1,
+                    ShimKind::Forward => 2,
+                };
+                let slot = by_key.entry(lower).or_insert(candidate.clone());
+                if rank(candidate.kind) > rank(slot.kind) {
+                    *slot = candidate;
                 }
             }
         }
     }
     by_key.into_values().collect()
+}
+
+/// The names in `RPYENV_BATCH_FORWARD` (`;`-separated), lowercased.
+pub fn forward_names(value: Option<&OsStr>) -> Vec<String> {
+    value
+        .map(|v| v.to_string_lossy().into_owned())
+        .unwrap_or_default()
+        .split(';')
+        .map(|n| n.trim().to_ascii_lowercase())
+        .filter(|n| !n.is_empty())
+        .collect()
+}
+
+/// A `.cmd` forwarder (spec §5.3). It resolves `name` with `pyenv which`, then runs it in
+/// the caller's cmd, without `call` or `setlocal`, so whatever the batch file sets stays
+/// set. The helper variable is cleared on the line that uses it: cmd expands `%…%` when it
+/// reads the line. When `name` can't be resolved, `pyenv which` says why and errorlevel is
+/// 127.
+pub fn forwarder(pyenv: &Path, name: &str) -> String {
+    let p = pyenv.display();
+    format!(
+        "@\"{p}\" which {name} >nul 2>&1 || (\"{p}\" which {name} & exit /b 127)\r\n\
+         @for /f \"delims=\" %%i in ('\"\"{p}\" which {name}\"') do @set \"RPYENV_FORWARD_TARGET=%%i\"\r\n\
+         @(set \"RPYENV_FORWARD_TARGET=\") & \"%RPYENV_FORWARD_TARGET%\" %*\r\n"
+    )
 }
 
 /// The shims rehash keeps in `shims` for the context's flavor.
@@ -119,7 +161,10 @@ pub fn wanted(ctx: &Ctx) -> Vec<Wanted> {
                 kind: ShimKind::Console,
             })
             .collect(),
-        Flavor::PyenvWin => shims_win(&ctx.versions_dir()),
+        Flavor::PyenvWin => shims_win(
+            &ctx.versions_dir(),
+            &forward_names(std::env::var_os("RPYENV_BATCH_FORWARD").as_deref()),
+        ),
     }
 }
 
@@ -198,7 +243,7 @@ mod tests {
             file(&v.join(f), true);
         }
         assert_eq!(
-            shims_win(&v)
+            shims_win(&v, &[])
                 .iter()
                 .map(|w| w.name.to_string_lossy().into_owned())
                 .collect::<Vec<_>>(),
@@ -224,7 +269,7 @@ mod tests {
         write("3.9.1/pythonw.exe", 2);
         write("3.9.1/tool.exe", 2);
         write("3.8.2/tool.exe", 3);
-        let kinds: Vec<(String, ShimKind)> = shims_win(&v)
+        let kinds: Vec<(String, ShimKind)> = shims_win(&v, &[])
             .into_iter()
             .map(|w| (w.name.to_string_lossy().into_owned(), w.kind))
             .collect();
@@ -234,6 +279,50 @@ mod tests {
                 ("pythonw.exe".to_string(), ShimKind::Gui),
                 ("tool.exe".to_string(), ShimKind::Console)
             ]
+        );
+    }
+
+    #[test]
+    fn forward_names_parse() {
+        assert_eq!(
+            forward_names(Some(OsStr::new(" Setvar ;;activate-env;"))),
+            ["setvar", "activate-env"]
+        );
+        assert!(forward_names(None).is_empty());
+    }
+
+    #[test]
+    fn listed_batch_tools_get_forwarders() {
+        let tmp = tempfile::tempdir().unwrap();
+        let v = tmp.path().join("versions");
+        for f in [
+            "3.9.1/python.exe",
+            "3.9.1/Scripts/setvar.bat",
+            "3.9.1/Scripts/other.bat",
+        ] {
+            file(&v.join(f), true);
+        }
+        let kinds: Vec<(String, ShimKind)> = shims_win(&v, &["setvar".to_string()])
+            .into_iter()
+            .map(|w| (w.name.to_string_lossy().into_owned(), w.kind))
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                ("other.exe".to_string(), ShimKind::Console),
+                ("python.exe".to_string(), ShimKind::Console),
+                ("setvar.cmd".to_string(), ShimKind::Forward),
+            ]
+        );
+    }
+
+    #[test]
+    fn forwarder_text() {
+        assert_eq!(
+            forwarder(Path::new(r"C:\bin\pyenv.exe"), "setvar"),
+            "@\"C:\\bin\\pyenv.exe\" which setvar >nul 2>&1 || (\"C:\\bin\\pyenv.exe\" which setvar & exit /b 127)\r\n\
+             @for /f \"delims=\" %%i in ('\"\"C:\\bin\\pyenv.exe\" which setvar\"') do @set \"RPYENV_FORWARD_TARGET=%%i\"\r\n\
+             @(set \"RPYENV_FORWARD_TARGET=\") & \"%RPYENV_FORWARD_TARGET%\" %*\r\n"
         );
     }
 }
