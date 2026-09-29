@@ -207,9 +207,10 @@ fn relative_path(from_dir: &str, to: &str) -> Option<String> {
 
 /// A `.cmd` forwarder (spec §5.3). It resolves `name` with `pyenv which`, then runs it in
 /// the caller's cmd, without `call` or `setlocal`, so whatever the batch file sets stays
-/// set. When `name` can't be resolved at all, `pyenv which` says why (line 2) and
-/// errorlevel is 127. `name` itself must be ASCII (the caller checks; `pyenv_ref` alone
-/// isn't enough, since a non-ASCII *name* would also need non-ASCII bytes in the file).
+/// set. When `name` can't be resolved at all, `pyenv which` says why (the first `which`
+/// line) and errorlevel is 127. `name` itself must be ASCII (the caller checks; `pyenv_ref`
+/// alone isn't enough, since a non-ASCII *name* would also need non-ASCII bytes in the
+/// file).
 ///
 /// `pyenv_ref`'s path goes into the helper variable `RPYENV_FORWARD_PYENV`, not directly
 /// into the command lines: `&`, `(`, `)`, `^` and `%` are cmd metacharacters, and a real
@@ -224,11 +225,11 @@ fn relative_path(from_dir: &str, to: &str) -> Option<String> {
 /// A `Relative` reference needs the forwarder's own folder, which `%~dp0` misresolves for
 /// a quoted invocation (`"setvar"`) or one without the extension typed (`setvar` without
 /// `.cmd`). Resolved instead by an explicit `call :d` up front, into
-/// `RPYENV_FORWARD_DIR`, only when needed; `:d`'s definition sits after `@goto :eof`, so
-/// it's never reached by falling off the end of the normal lines (which matters when the
-/// target turns out to be a real `.exe`: without `call`, running a `.bat`/`.cmd` target
-/// abandons this script entirely — the usual case, since these are batch forwarders — but
-/// running an `.exe` target returns here afterward, same as any command).
+/// `RPYENV_FORWARD_DIR`, only when needed. The `:d` subroutine comes first, jumped over by
+/// `@goto :m`, so nothing follows the line that runs the target: running a `.bat`/`.cmd`
+/// target without `call` abandons this script (the usual case), but an `.exe` target
+/// returns here, and with any line after it (`goto :eof` and `exit /b` both do this)
+/// `cmd /c setvar` exits 0 instead of with the target's code, though errorlevel is kept.
 ///
 /// The second-to-last line sets `RPYENV_FORWARD_CP` around its `for /f`, after first
 /// clearing `RPYENV_FORWARD_TARGET`: with `RPYENV_FORWARD_CP` set, `pyenv which` writes
@@ -240,7 +241,7 @@ fn relative_path(from_dir: &str, to: &str) -> Option<String> {
 /// using whatever this line left behind. The final line clears every helper variable on
 /// the line that uses them — for the same reason, that doesn't affect its own use of
 /// them — and exits 127 if `for /f` captured nothing (a plain not-found already exited at
-/// line 2; this catches the code-page failure instead).
+/// the first `which` line; this catches the code-page failure instead).
 pub fn forwarder(pyenv_ref: &PyenvRef, name: &str) -> String {
     let (needs_dir, value) = match pyenv_ref {
         PyenvRef::Absolute(p) => (false, p.replace('%', "%%")),
@@ -249,24 +250,22 @@ pub fn forwarder(pyenv_ref: &PyenvRef, name: &str) -> String {
             format!("%RPYENV_FORWARD_DIR%{}", rel.replace('%', "%%")),
         ),
     };
-    let call_d = if needs_dir { "@call :d\r\n" } else { "" };
+    let head = if needs_dir {
+        "@call :d\r\n@goto :m\r\n:d\r\n@set \"RPYENV_FORWARD_DIR=%~dp0\"\r\n@exit /b\r\n:m\r\n"
+    } else {
+        ""
+    };
     let clear_dir = if needs_dir {
         " & (set \"RPYENV_FORWARD_DIR=\")"
     } else {
         ""
     };
-    let tail = if needs_dir {
-        "@goto :eof\r\n:d\r\n@set \"RPYENV_FORWARD_DIR=%~dp0\"\r\n@exit /b\r\n"
-    } else {
-        ""
-    };
     format!(
-        "{call_d}\
+        "{head}\
          @set \"RPYENV_FORWARD_PYENV={value}\"\r\n\
          @\"%RPYENV_FORWARD_PYENV%\" which {name} >nul 2>&1 || (\"%RPYENV_FORWARD_PYENV%\" which {name} & (set \"RPYENV_FORWARD_PYENV=\"){clear_dir} & exit /b 127)\r\n\
          @(set \"RPYENV_FORWARD_TARGET=\") & (set \"RPYENV_FORWARD_CP=1\") & for /f \"delims=\" %%i in ('\"\"%%RPYENV_FORWARD_PYENV%%\" which {name}\"') do @set \"RPYENV_FORWARD_TARGET=%%i\"\r\n\
-         @(set \"RPYENV_FORWARD_CP=\") & (set \"RPYENV_FORWARD_PYENV=\") & (set \"RPYENV_FORWARD_TARGET=\"){clear_dir} & if \"%RPYENV_FORWARD_TARGET%\"==\"\" (exit /b 127) else (\"%RPYENV_FORWARD_TARGET%\" %*)\r\n\
-         {tail}"
+         @(set \"RPYENV_FORWARD_CP=\") & (set \"RPYENV_FORWARD_PYENV=\") & (set \"RPYENV_FORWARD_TARGET=\"){clear_dir} & if \"%RPYENV_FORWARD_TARGET%\"==\"\" (exit /b 127) else (\"%RPYENV_FORWARD_TARGET%\" %*)\r\n"
     )
 }
 
@@ -449,14 +448,15 @@ mod tests {
         assert_eq!(
             forwarder(&PyenvRef::Relative(r"..\bin\pyenv.exe".to_string()), "setvar"),
             "@call :d\r\n\
+             @goto :m\r\n\
+             :d\r\n\
+             @set \"RPYENV_FORWARD_DIR=%~dp0\"\r\n\
+             @exit /b\r\n\
+             :m\r\n\
              @set \"RPYENV_FORWARD_PYENV=%RPYENV_FORWARD_DIR%..\\bin\\pyenv.exe\"\r\n\
              @\"%RPYENV_FORWARD_PYENV%\" which setvar >nul 2>&1 || (\"%RPYENV_FORWARD_PYENV%\" which setvar & (set \"RPYENV_FORWARD_PYENV=\") & (set \"RPYENV_FORWARD_DIR=\") & exit /b 127)\r\n\
              @(set \"RPYENV_FORWARD_TARGET=\") & (set \"RPYENV_FORWARD_CP=1\") & for /f \"delims=\" %%i in ('\"\"%%RPYENV_FORWARD_PYENV%%\" which setvar\"') do @set \"RPYENV_FORWARD_TARGET=%%i\"\r\n\
-             @(set \"RPYENV_FORWARD_CP=\") & (set \"RPYENV_FORWARD_PYENV=\") & (set \"RPYENV_FORWARD_TARGET=\") & (set \"RPYENV_FORWARD_DIR=\") & if \"%RPYENV_FORWARD_TARGET%\"==\"\" (exit /b 127) else (\"%RPYENV_FORWARD_TARGET%\" %*)\r\n\
-             @goto :eof\r\n\
-             :d\r\n\
-             @set \"RPYENV_FORWARD_DIR=%~dp0\"\r\n\
-             @exit /b\r\n"
+             @(set \"RPYENV_FORWARD_CP=\") & (set \"RPYENV_FORWARD_PYENV=\") & (set \"RPYENV_FORWARD_TARGET=\") & (set \"RPYENV_FORWARD_DIR=\") & if \"%RPYENV_FORWARD_TARGET%\"==\"\" (exit /b 127) else (\"%RPYENV_FORWARD_TARGET%\" %*)\r\n"
         );
     }
 

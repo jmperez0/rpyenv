@@ -530,6 +530,43 @@ fn win_forwarder_relative_branch_with_a_quoted_invocation() {
     assert!(!text.contains("RPYENV_FORWARD_TARGET="), "{text}");
 }
 
+/// In the relative branch, an `.exe` target's exit code comes back through `cmd /c`: the
+/// forwarder's last line runs the target, and no later line resets errorlevel.
+#[test]
+fn win_forwarder_relative_branch_keeps_an_exe_targets_exit_code() {
+    let f = Fixture::new();
+    f.install("3.9.1/python.exe");
+    install_setvar(&f);
+    f.install("3.8.2/setvar.exe");
+    // Under the fixture's non-ASCII base, so the reference is relative.
+    let tools = install_tools(&f.base.join("tools"));
+    let forward = [("RPYENV_BATCH_FORWARD", v("setvar"))];
+    assert!(f
+        .command(&tools, &forward)
+        .arg("rehash")
+        .status()
+        .unwrap()
+        .success());
+    let fwd = std::fs::read_to_string(f.root.join("shims").join("setvar.cmd")).unwrap();
+    assert!(fwd.contains("RPYENV_FORWARD_DIR"), "{fwd}");
+    let out = f
+        .command(
+            &cmd_exe(),
+            &[("PYENV_VERSION", v("3.8.2")), ("ARGV_ECHO_EXIT", v("7"))],
+        )
+        .args(["/d", "/c"])
+        .raw_arg(pinned_850("setvar a"))
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(7),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert_eq!(arg_lines(&out), [line("arg", "a")]);
+}
+
 /// An absolute `pyenv.exe` reference with cmd metacharacters in its path (`&`, `(`, `)`,
 /// `^`, `%`) still resolves: the path goes into the `RPYENV_FORWARD_PYENV` helper
 /// variable, never spelled out directly on a command line where those would break it.
