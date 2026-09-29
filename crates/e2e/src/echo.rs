@@ -3,6 +3,14 @@ use std::io::{Read, Write};
 #[cfg(windows)]
 static CAUGHT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// Whether the Ctrl+Break handler has run (never, off Windows).
+fn caught() -> bool {
+    #[cfg(windows)]
+    return CAUGHT.load(std::sync::atomic::Ordering::SeqCst);
+    #[cfg(not(windows))]
+    false
+}
+
 #[cfg(windows)]
 unsafe extern "system" fn catch(_event: u32) -> windows_sys::core::BOOL {
     CAUGHT.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -104,13 +112,17 @@ pub fn main() {
         let _ = std::fs::write(&p, b"");
     }
     if let Some(ms) = var("ARGV_ECHO_SLEEP_MS").and_then(|v| v.parse().ok()) {
-        std::thread::sleep(std::time::Duration::from_millis(ms));
+        // In slices, so a caught Ctrl+Break ends the sleep at once: tests can then give
+        // the break a long window without waiting it out.
+        let end = std::time::Instant::now() + std::time::Duration::from_millis(ms);
+        while std::time::Instant::now() < end && !caught() {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
     }
     if let Some(p) = std::env::var_os("ARGV_ECHO_AFTER") {
         let _ = std::fs::write(&p, b"");
     }
-    #[cfg(windows)]
-    if CAUGHT.load(std::sync::atomic::Ordering::SeqCst) {
+    if caught() {
         std::process::exit(5);
     }
     std::process::exit(

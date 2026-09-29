@@ -129,7 +129,8 @@ fn win_killing_the_shim_kills_the_child() {
 
 /// Review focus 2. The shim gets a windowless console of its own and a process group, the
 /// child shares both, and a helper sends Ctrl+Break to the group. The child catches it and
-/// exits 5 when its sleep ends. A shim that didn't ignore the event would die at once with
+/// exits 5 at once (its sleep, up to 30 s, only bounds how long the break may take to
+/// arrive under load). A shim that didn't ignore the event would die at once with
 /// 0xC000013A.
 #[test]
 fn win_ctrl_break_reaches_the_child_and_the_shim_waits() {
@@ -143,7 +144,7 @@ fn win_ctrl_break_reaches_the_child_and_the_shim_waits() {
             &[
                 ("PYENV_VERSION", v("3.9.1")),
                 ("ARGV_ECHO_CATCH_BREAK", v("1")),
-                ("ARGV_ECHO_SLEEP_MS", v("3000")),
+                ("ARGV_ECHO_SLEEP_MS", v("30000")),
                 ("ARGV_ECHO_READY", ready.as_os_str()),
             ],
         )
