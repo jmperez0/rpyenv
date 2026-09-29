@@ -79,7 +79,9 @@ fn run(gui: bool) -> i32 {
                 raw_tail: crate::wincmd::own_tail(1),
                 ..plan
             };
-            say(gui, flavor, &plan.warnings, true);
+            // A warning is non-fatal; it shouldn't force every GUI launch through an OK
+            // click. It's still in the debug log, from `say` itself.
+            say(false, flavor, &plan.warnings, true);
             match launch::run(&plan, &ctx, rehash_with.as_deref()) {
                 Ok(code) => code,
                 Err(r) => {
