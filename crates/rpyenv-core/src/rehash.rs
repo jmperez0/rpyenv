@@ -262,7 +262,17 @@ fn apply_hardlinks(shims: &Path, source: &Path, wanted: &[Wanted]) -> io::Result
     } else {
         console.clone()
     };
-    let (console_meta, gui_meta) = (fs::metadata(&console)?, fs::metadata(&gui)?);
+    let console_meta = fs::metadata(&console)?;
+    let mut gui_meta = fs::metadata(&gui)?;
+    // The two shim binaries can have one size, and a zip or an installer can give them one
+    // modification time; `fs::copy` keeps it. Then a shim whose kind changed would look
+    // current. Moving the GUI template's time apart tells them apart again; its hardlinked
+    // shims share the file, so they follow it.
+    if gui != console && same_file_data(&console_meta, &gui_meta) {
+        let apart = console_meta.modified()? + Duration::from_secs(2);
+        set_mtime(&gui, apart)?;
+        gui_meta = fs::metadata(&gui)?;
+    }
     let pyenv = pyenv_exe(source, &shims.join(TEMPLATE_DIR));
     let pyenv_ref = pyenv
         .as_deref()
@@ -364,6 +374,20 @@ fn pyenv_exe(source: &Path, template_dir: &Path) -> Option<PathBuf> {
 /// template, copied from a different shim binary, differs in at least one of them.
 fn same_file_data(a: &fs::Metadata, b: &fs::Metadata) -> bool {
     a.is_file() && a.len() == b.len() && a.modified().ok() == b.modified().ok()
+}
+
+/// Sets `p`'s modification time. On Windows the file is opened for its attributes only,
+/// which works while a shim linked to it is running.
+fn set_mtime(p: &Path, t: SystemTime) -> io::Result<()> {
+    let mut options = fs::OpenOptions::new();
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.access_mode(windows_sys::Win32::Storage::FileSystem::FILE_WRITE_ATTRIBUTES);
+    }
+    #[cfg(not(windows))]
+    options.read(true);
+    options.open(p)?.set_modified(t)
 }
 
 /// `shims\.template\<name>`, copied again when `source` has different bytes (spec §8).
@@ -711,6 +735,45 @@ mod tests {
             rehash(&ctx, &shim, Wait::No).unwrap(),
             RehashStats::default()
         );
+    }
+
+    /// An installer or a zip can give both shim binaries one size and one modification
+    /// time. A shim whose kind changed must still be relinked, both ways.
+    #[test]
+    fn a_kind_switch_relinks_when_both_templates_share_size_and_mtime() {
+        let (tmp, ctx, shim) = setup(Flavor::PyenvWin);
+        // The same length as the console shim's "shim binary".
+        fs::write(tmp.path().join(TEMPLATE_GUI_EXE), b"gui  binary").unwrap();
+        let v = ctx.versions_dir();
+        let write = |rel: &str, sub: u16| {
+            let p = v.join(rel);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(p, crate::pe::image(sub)).unwrap();
+        };
+        write("3.9.1/tool.exe", 2);
+        let shims = ctx.shims_dir();
+        let dir = shims.join(TEMPLATE_DIR);
+        let same_mtime = || {
+            let t = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+            for name in [TEMPLATE_EXE, TEMPLATE_GUI_EXE] {
+                set_mtime(&dir.join(name), t).unwrap();
+            }
+            let meta = |n: &str| fs::metadata(dir.join(n)).unwrap();
+            assert!(same_file_data(&meta(TEMPLATE_EXE), &meta(TEMPLATE_GUI_EXE)));
+        };
+        let tool = || fs::read(shims.join("tool.exe")).unwrap();
+        rehash(&ctx, &shim, Wait::No).unwrap();
+        assert_eq!(tool(), b"gui  binary");
+        // GUI -> console: another version's tool.exe is a console program.
+        same_mtime();
+        write("3.8.2/tool.exe", 3);
+        rehash(&ctx, &shim, Wait::No).unwrap();
+        assert_eq!(tool(), b"shim binary");
+        // Console -> GUI: that version is gone again.
+        same_mtime();
+        fs::remove_dir_all(v.join("3.8.2")).unwrap();
+        rehash(&ctx, &shim, Wait::No).unwrap();
+        assert_eq!(tool(), b"gui  binary");
     }
 
     #[test]
