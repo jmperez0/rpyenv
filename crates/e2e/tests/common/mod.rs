@@ -121,3 +121,12 @@ impl Fixture {
         self.shim_command(name, env).args(args).output().unwrap()
     }
 }
+
+/// The `arg=` lines `argv-echo` printed.
+pub fn arg_lines(out: &Output) -> Vec<String> {
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|l| l.starts_with("arg="))
+        .map(String::from)
+        .collect()
+}

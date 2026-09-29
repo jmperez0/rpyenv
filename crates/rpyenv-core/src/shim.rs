@@ -56,6 +56,11 @@ pub fn main() -> i32 {
             report.code
         }
         Ok(plan) => {
+            #[cfg(windows)]
+            let plan = launch::LaunchPlan {
+                raw_tail: crate::wincmd::own_tail(1),
+                ..plan
+            };
             for w in &plan.warnings {
                 eprint!("{w}{}", flavor.eol());
             }

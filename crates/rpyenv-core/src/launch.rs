@@ -17,6 +17,9 @@ pub struct LaunchPlan {
     /// `exec "$PYENV_COMMAND_PATH"` makes it.
     pub program: PathBuf,
     pub args: Vec<OsString>,
+    /// Windows: the caller's command line after the command, unchanged. When set, a
+    /// non-batch child gets it through `raw_arg` instead of `args` (spec §5.3).
+    pub raw_tail: Option<OsString>,
     /// Variables to set (`Some`) or remove (`None`) in the child.
     pub env: Vec<(OsString, Option<OsString>)>,
     /// Upstream's `invalid version` lines, for stderr before starting.
@@ -155,6 +158,7 @@ fn plan_pyenv(
         wait: is_pip_like(command, &args),
         program: found.path,
         args,
+        raw_tail: None,
         env: vars,
         warnings,
     })
@@ -213,6 +217,7 @@ fn plan_win(
     Ok(LaunchPlan {
         program,
         args,
+        raw_tail: None,
         env: vec![(OsString::from("PATH"), Some(path))],
         warnings: Vec::new(),
         wait: true,
@@ -302,6 +307,19 @@ pub fn is_pip_like(command: &str, args: &[OsString]) -> bool {
 /// returned. On Linux, a child that died from a signal makes this process die from it too.
 pub fn run(plan: &LaunchPlan, ctx: &Ctx, rehash_with: Option<&Path>) -> i32 {
     let mut cmd = Command::new(&plan.program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        match &plan.raw_tail {
+            Some(tail) if !is_batch(&plan.program) => {
+                cmd.raw_arg(tail);
+            }
+            _ => {
+                cmd.args(&plan.args);
+            }
+        }
+    }
+    #[cfg(not(windows))]
     cmd.args(&plan.args);
     for (k, v) in &plan.env {
         match v {
@@ -330,6 +348,15 @@ pub fn run(plan: &LaunchPlan, ctx: &Ctx, rehash_with: Option<&Path>) -> i32 {
         Ok(s) => exit_code(s),
         Err(e) => cannot_run(ctx.flavor, &plan.program, &e),
     }
+}
+
+/// A `.bat` or `.cmd` file: std starts it through cmd.exe with its batch-file escaping,
+/// so it gets CRT-split arguments rather than the raw tail (spec §5.3).
+#[cfg(windows)]
+fn is_batch(p: &Path) -> bool {
+    p.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("bat") || e.eq_ignore_ascii_case("cmd"))
 }
 
 fn exit_code(status: ExitStatus) -> i32 {

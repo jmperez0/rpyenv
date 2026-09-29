@@ -15,4 +15,5 @@ pub mod shim;
 pub mod shimset;
 pub mod verfile;
 pub mod vsort;
+pub mod wincmd;
 pub mod winresolve;

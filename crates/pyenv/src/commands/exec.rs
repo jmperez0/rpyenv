@@ -23,6 +23,11 @@ pub fn exec(ctx: &Ctx, args: &[OsString]) -> Output {
     match launch::plan(ctx, Mode::Exec, &command, args[1..].to_vec(), &env) {
         Err(report) => report.into(),
         Ok(plan) => {
+            #[cfg(windows)]
+            let plan = launch::LaunchPlan {
+                raw_tail: rpyenv_core::wincmd::own_tail(3),
+                ..plan
+            };
             let mut before = Output::new();
             for w in &plan.warnings {
                 before.err(w);
