@@ -267,17 +267,27 @@ fn apply_hardlinks(shims: &Path, source: &Path, wanted: &[Wanted]) -> io::Result
     let pyenv_ref = pyenv
         .as_deref()
         .and_then(|p| shimset::pyenv_reference(p, shims));
-    // A forwarder that can't be written safely (no known pyenv.exe, or `pyenv_reference`
-    // finds nothing safe to write) becomes a console exe shim instead — in the name it's
-    // written under as much as in what it runs — so the fallback and `remove_stale` agree;
-    // otherwise a fallback shim would be deleted as stale right after being created; a
-    // stale forwarder from a previous rehash that did know `pyenv.exe` is cleaned up the
-    // same way. This is one decision for every forwarder: `pyenv_ref` doesn't vary by name.
-    let effective: Vec<Wanted> = if pyenv_ref.is_some() {
-        wanted.to_vec()
-    } else {
-        wanted.iter().cloned().map(console_fallback).collect()
-    };
+    // A forwarder that can't be written safely becomes a console exe shim instead — in the
+    // name it's written under as much as in what it runs — so the fallback and
+    // `remove_stale` agree; otherwise a fallback shim would be deleted as stale right
+    // after being created, and a stale forwarder from a previous rehash that could write
+    // one is left behind uncleaned. Two independent reasons: no known `pyenv.exe`, or
+    // `pyenv_reference` finding nothing safe to write, doesn't vary by name — one decision
+    // for every forwarder; the command's own name isn't ASCII (`café`) does vary by name,
+    // since a non-ASCII name needs the same non-ASCII bytes in the file that
+    // `pyenv_reference` already refuses for `pyenv.exe`'s own path.
+    let effective: Vec<Wanted> = wanted
+        .iter()
+        .cloned()
+        .map(|w| {
+            let keep_forward = pyenv_ref.is_some() && w.name.to_string_lossy().is_ascii();
+            if w.kind == ShimKind::Forward && !keep_forward {
+                console_fallback(w)
+            } else {
+                w
+            }
+        })
+        .collect();
     let mut first_err = None;
     let mut linked = 0;
     for w in &effective {
@@ -767,5 +777,26 @@ mod tests {
         apply_hardlinks(&shims, &other_shim, &wanted).unwrap();
         assert_eq!(fs::read(shims.join("setvar.exe")).unwrap(), b"shim binary");
         assert!(!shims.join("setvar.cmd").exists());
+    }
+
+    #[test]
+    fn a_non_ascii_forwarded_name_falls_back_to_a_console_shim_even_with_a_known_pyenv() {
+        let (tmp, ctx, shim) = setup(Flavor::PyenvWin);
+        let pyenv = tmp.path().join("pyenv.exe");
+        fs::write(&pyenv, b"cli").unwrap();
+        let v = ctx.versions_dir();
+        exe(&v.join("3.9.1/python.exe"));
+        exe(&v.join("3.9.1/Scripts/café.bat"));
+        exe(&v.join("3.9.1/Scripts/setvar.bat"));
+        let wanted = shimset::shims_win(&v, &["café".to_string(), "setvar".to_string()]);
+        let shims = ctx.shims_dir();
+        apply_hardlinks(&shims, &shim, &wanted).unwrap();
+        // The ASCII name still gets a real forwarder...
+        assert!(shims.join("setvar.cmd").is_file());
+        // ...but the non-ASCII one, even though `pyenv.exe` is known and ASCII, falls
+        // back: its own name can't go into the file any more safely than a non-ASCII
+        // `pyenv.exe` path could.
+        assert_eq!(fs::read(shims.join("café.exe")).unwrap(), b"shim binary");
+        assert!(!shims.join("café.cmd").exists());
     }
 }

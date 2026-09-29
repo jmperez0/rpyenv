@@ -137,27 +137,43 @@ pub fn forward_names(value: Option<&OsStr>) -> Vec<String> {
         .collect()
 }
 
-/// The text a forwarder embeds for `pyenv.exe`, or `None` when nothing can be written
-/// safely (the caller falls back to a console exe shim, as when `pyenv.exe` isn't known
-/// at all).
+/// Where a forwarder's `pyenv.exe` reference comes from. A `.cmd` file is itself read by
+/// `cmd.exe` in the console's code page (spec §5.3), so a non-ASCII `pyenv` path can't
+/// just be written as bytes into the file — the code page active when the forwarder runs
+/// isn't known at rehash time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PyenvRef {
+    /// `pyenv`'s own path, pure ASCII. Kept absolute, not `%~dp0`-relative, even though
+    /// relative would be simpler: `%~dp0` misresolves when a batch file is invoked quoted
+    /// and without its extension (`pyenv_reference`'s doc has the details).
+    Absolute(String),
+    /// A path relative to `shims` (also ASCII — only the tail after their common ancestor
+    /// need be, since the shared, possibly non-ASCII, root is never written to the file;
+    /// `forwarder` resolves the forwarder's own folder at run time instead of reading it
+    /// from the file).
+    Relative(String),
+}
+
+/// `pyenv`'s reference for a forwarder, or `None` when nothing can be written safely (the
+/// caller falls back to a console exe shim, as when `pyenv.exe` isn't known at all).
 ///
-/// A `.cmd` file is itself read by `cmd.exe` in the console's code page (spec §5.3), so a
-/// non-ASCII `pyenv` path can't just be written as bytes — the code page active when the
-/// forwarder runs isn't known at rehash time. When `pyenv`'s path is pure ASCII, it is
-/// written absolute: `%~dp0` (the forwarder's own folder) misresolves when a batch file is
-/// invoked quoted and without its extension, so it isn't used even though it would be
-/// simpler. Otherwise the reference is `%~dp0` plus a relative path from `shims` to
-/// `pyenv` — cmd resolves `%~dp0` itself at run time rather than reading it from the file,
-/// so only the relative suffix needs to be in the file, and that's usually ASCII even when
-/// the shared root isn't. `None` when `pyenv` and `shims` are on different drives and the
-/// path is non-ASCII: there's no relative reference and the absolute one isn't safe.
-pub fn pyenv_reference(pyenv: &Path, shims: &Path) -> Option<String> {
+/// When `pyenv`'s path is pure ASCII, it is written absolute. Otherwise the reference is a
+/// relative path from `shims` to `pyenv` — cmd resolves the forwarder's own folder itself
+/// at run time (`forwarder`'s `:d` subroutine) rather than reading it from the file, so
+/// only the relative suffix needs to be in the file, and that's usually ASCII even when
+/// the shared root isn't. `None` when that relative path is itself non-ASCII (pyenv and
+/// shims share no ASCII-only tail) or `pyenv` and `shims` are on different drives: there's
+/// no relative reference and the absolute one isn't safe.
+pub fn pyenv_reference(pyenv: &Path, shims: &Path) -> Option<PyenvRef> {
     let text = pyenv.display().to_string();
     if text.is_ascii() {
-        return Some(text);
+        return Some(PyenvRef::Absolute(text));
     }
     let rel = relative_path(&shims.display().to_string(), &text)?;
-    Some(format!("%~dp0{rel}"))
+    if !rel.is_ascii() {
+        return None;
+    }
+    Some(PyenvRef::Relative(rel))
 }
 
 /// A relative path from `from_dir` to `to`, both spelled as absolute Windows paths
@@ -189,24 +205,68 @@ fn relative_path(from_dir: &str, to: &str) -> Option<String> {
     )
 }
 
-/// A `.cmd` forwarder (spec §5.3). `pyenv_ref` is `pyenv_reference`'s text, unquoted; it
-/// resolves `name` with `pyenv which`, then runs it in the caller's cmd, without `call` or
-/// `setlocal`, so whatever the batch file sets stays set. When `name` can't be resolved at
-/// all, `pyenv which` says why (line 1) and errorlevel is 127.
+/// A `.cmd` forwarder (spec §5.3). It resolves `name` with `pyenv which`, then runs it in
+/// the caller's cmd, without `call` or `setlocal`, so whatever the batch file sets stays
+/// set. When `name` can't be resolved at all, `pyenv which` says why (line 2) and
+/// errorlevel is 127. `name` itself must be ASCII (the caller checks; `pyenv_ref` alone
+/// isn't enough, since a non-ASCII *name* would also need non-ASCII bytes in the file).
 ///
-/// The second line sets `RPYENV_FORWARD_CP` around its `for /f`: with it set, `pyenv
-/// which` writes the path in the console's code page instead of UTF-8, since that's how
-/// `for /f` will decode the bytes it reads from the pipe (a path that code page can't
-/// represent makes `pyenv which` fail instead, with its own message). The third line
-/// clears both helper variables on the line that uses them — cmd expands `%…%` when it
-/// reads the whole line, before any command on it runs, so the clearing doesn't affect
-/// that line's own use of them — and exits 127 if `for /f` captured nothing (the code-page
-/// failure above, since a plain not-found already exited at line 1).
-pub fn forwarder(pyenv_ref: &str, name: &str) -> String {
+/// `pyenv_ref`'s path goes into the helper variable `RPYENV_FORWARD_PYENV`, not directly
+/// into the command lines: `&`, `(`, `)`, `^` and `%` are cmd metacharacters, and a real
+/// Windows path (`C:\Program Files (x86)\…`) can contain any of them. Assigned inside a
+/// quoted `set "VAR=value"`, they're inert; used afterward only as `%RPYENV_FORWARD_PYENV%`
+/// inside quotes, they stay inert. A literal `%` in the path itself is doubled first, so
+/// `set` doesn't try to expand it as a variable reference of its own. Inside the `for /f`
+/// command string, the reference is doubled again (`%%RPYENV_FORWARD_PYENV%%`): that
+/// string is parsed twice, once by this line and once by the child cmd `for /f` spawns to
+/// run it.
+///
+/// A `Relative` reference needs the forwarder's own folder, which `%~dp0` misresolves for
+/// a quoted invocation (`"setvar"`) or one without the extension typed (`setvar` without
+/// `.cmd`). Resolved instead by an explicit `call :d` up front, into
+/// `RPYENV_FORWARD_DIR`, only when needed; `:d`'s definition sits after `@goto :eof`, so
+/// it's never reached by falling off the end of the normal lines (which matters when the
+/// target turns out to be a real `.exe`: without `call`, running a `.bat`/`.cmd` target
+/// abandons this script entirely — the usual case, since these are batch forwarders — but
+/// running an `.exe` target returns here afterward, same as any command).
+///
+/// The second-to-last line sets `RPYENV_FORWARD_CP` around its `for /f`, after first
+/// clearing `RPYENV_FORWARD_TARGET`: with `RPYENV_FORWARD_CP` set, `pyenv which` writes
+/// the path in the console's code page instead of UTF-8, since that's how `for /f` will
+/// decode the bytes it reads from the pipe; clearing `RPYENV_FORWARD_TARGET` first means a
+/// value some earlier, unrelated command left behind can't survive a `for /f` that
+/// captures nothing (an unmappable path) and get treated as this run's result — the final
+/// line's own `%RPYENV_FORWARD_TARGET%` is substituted once, when cmd reads that line,
+/// using whatever this line left behind. The final line clears every helper variable on
+/// the line that uses them — for the same reason, that doesn't affect its own use of
+/// them — and exits 127 if `for /f` captured nothing (a plain not-found already exited at
+/// line 2; this catches the code-page failure instead).
+pub fn forwarder(pyenv_ref: &PyenvRef, name: &str) -> String {
+    let (needs_dir, value) = match pyenv_ref {
+        PyenvRef::Absolute(p) => (false, p.replace('%', "%%")),
+        PyenvRef::Relative(rel) => (
+            true,
+            format!("%RPYENV_FORWARD_DIR%{}", rel.replace('%', "%%")),
+        ),
+    };
+    let call_d = if needs_dir { "@call :d\r\n" } else { "" };
+    let clear_dir = if needs_dir {
+        " & (set \"RPYENV_FORWARD_DIR=\")"
+    } else {
+        ""
+    };
+    let tail = if needs_dir {
+        "@goto :eof\r\n:d\r\n@set \"RPYENV_FORWARD_DIR=%~dp0\"\r\n@exit /b\r\n"
+    } else {
+        ""
+    };
     format!(
-        "@\"{pyenv_ref}\" which {name} >nul 2>&1 || (\"{pyenv_ref}\" which {name} & exit /b 127)\r\n\
-         @(set \"RPYENV_FORWARD_CP=1\") & for /f \"delims=\" %%i in ('\"\"{pyenv_ref}\" which {name}\"') do @set \"RPYENV_FORWARD_TARGET=%%i\"\r\n\
-         @(set \"RPYENV_FORWARD_CP=\") & (set \"RPYENV_FORWARD_TARGET=\") & if \"%RPYENV_FORWARD_TARGET%\"==\"\" (exit /b 127) else (\"%RPYENV_FORWARD_TARGET%\" %*)\r\n"
+        "{call_d}\
+         @set \"RPYENV_FORWARD_PYENV={value}\"\r\n\
+         @\"%RPYENV_FORWARD_PYENV%\" which {name} >nul 2>&1 || (\"%RPYENV_FORWARD_PYENV%\" which {name} & (set \"RPYENV_FORWARD_PYENV=\"){clear_dir} & exit /b 127)\r\n\
+         @(set \"RPYENV_FORWARD_TARGET=\") & (set \"RPYENV_FORWARD_CP=1\") & for /f \"delims=\" %%i in ('\"\"%%RPYENV_FORWARD_PYENV%%\" which {name}\"') do @set \"RPYENV_FORWARD_TARGET=%%i\"\r\n\
+         @(set \"RPYENV_FORWARD_CP=\") & (set \"RPYENV_FORWARD_PYENV=\") & (set \"RPYENV_FORWARD_TARGET=\"){clear_dir} & if \"%RPYENV_FORWARD_TARGET%\"==\"\" (exit /b 127) else (\"%RPYENV_FORWARD_TARGET%\" %*)\r\n\
+         {tail}"
     )
 }
 
@@ -376,12 +436,41 @@ mod tests {
     }
 
     #[test]
-    fn forwarder_text() {
+    fn forwarder_text_absolute() {
         assert_eq!(
-            forwarder(r"C:\bin\pyenv.exe", "setvar"),
-            "@\"C:\\bin\\pyenv.exe\" which setvar >nul 2>&1 || (\"C:\\bin\\pyenv.exe\" which setvar & exit /b 127)\r\n\
-             @(set \"RPYENV_FORWARD_CP=1\") & for /f \"delims=\" %%i in ('\"\"C:\\bin\\pyenv.exe\" which setvar\"') do @set \"RPYENV_FORWARD_TARGET=%%i\"\r\n\
-             @(set \"RPYENV_FORWARD_CP=\") & (set \"RPYENV_FORWARD_TARGET=\") & if \"%RPYENV_FORWARD_TARGET%\"==\"\" (exit /b 127) else (\"%RPYENV_FORWARD_TARGET%\" %*)\r\n"
+            forwarder(&PyenvRef::Absolute(r"C:\bin\pyenv.exe".to_string()), "setvar"),
+            "@set \"RPYENV_FORWARD_PYENV=C:\\bin\\pyenv.exe\"\r\n\
+             @\"%RPYENV_FORWARD_PYENV%\" which setvar >nul 2>&1 || (\"%RPYENV_FORWARD_PYENV%\" which setvar & (set \"RPYENV_FORWARD_PYENV=\") & exit /b 127)\r\n\
+             @(set \"RPYENV_FORWARD_TARGET=\") & (set \"RPYENV_FORWARD_CP=1\") & for /f \"delims=\" %%i in ('\"\"%%RPYENV_FORWARD_PYENV%%\" which setvar\"') do @set \"RPYENV_FORWARD_TARGET=%%i\"\r\n\
+             @(set \"RPYENV_FORWARD_CP=\") & (set \"RPYENV_FORWARD_PYENV=\") & (set \"RPYENV_FORWARD_TARGET=\") & if \"%RPYENV_FORWARD_TARGET%\"==\"\" (exit /b 127) else (\"%RPYENV_FORWARD_TARGET%\" %*)\r\n"
+        );
+    }
+
+    #[test]
+    fn forwarder_text_relative_uses_a_call_label_subroutine() {
+        assert_eq!(
+            forwarder(&PyenvRef::Relative(r"..\bin\pyenv.exe".to_string()), "setvar"),
+            "@call :d\r\n\
+             @set \"RPYENV_FORWARD_PYENV=%RPYENV_FORWARD_DIR%..\\bin\\pyenv.exe\"\r\n\
+             @\"%RPYENV_FORWARD_PYENV%\" which setvar >nul 2>&1 || (\"%RPYENV_FORWARD_PYENV%\" which setvar & (set \"RPYENV_FORWARD_PYENV=\") & (set \"RPYENV_FORWARD_DIR=\") & exit /b 127)\r\n\
+             @(set \"RPYENV_FORWARD_TARGET=\") & (set \"RPYENV_FORWARD_CP=1\") & for /f \"delims=\" %%i in ('\"\"%%RPYENV_FORWARD_PYENV%%\" which setvar\"') do @set \"RPYENV_FORWARD_TARGET=%%i\"\r\n\
+             @(set \"RPYENV_FORWARD_CP=\") & (set \"RPYENV_FORWARD_PYENV=\") & (set \"RPYENV_FORWARD_TARGET=\") & (set \"RPYENV_FORWARD_DIR=\") & if \"%RPYENV_FORWARD_TARGET%\"==\"\" (exit /b 127) else (\"%RPYENV_FORWARD_TARGET%\" %*)\r\n\
+             @goto :eof\r\n\
+             :d\r\n\
+             @set \"RPYENV_FORWARD_DIR=%~dp0\"\r\n\
+             @exit /b\r\n"
+        );
+    }
+
+    #[test]
+    fn forwarder_text_doubles_a_literal_percent_in_the_absolute_path() {
+        let text = forwarder(
+            &PyenvRef::Absolute(r"C:\1%0\pyenv.exe".to_string()),
+            "setvar",
+        );
+        assert!(
+            text.starts_with("@set \"RPYENV_FORWARD_PYENV=C:\\1%%0\\pyenv.exe\"\r\n"),
+            "{text}"
         );
     }
 
@@ -389,7 +478,7 @@ mod tests {
     fn pyenv_reference_ascii_path_is_absolute() {
         assert_eq!(
             pyenv_reference(Path::new(r"C:\bin\pyenv.exe"), Path::new(r"C:\root\shims")),
-            Some(r"C:\bin\pyenv.exe".to_string())
+            Some(PyenvRef::Absolute(r"C:\bin\pyenv.exe".to_string()))
         );
     }
 
@@ -400,7 +489,20 @@ mod tests {
                 Path::new(r"C:\Users\José\.pyenv\bin\pyenv.exe"),
                 Path::new(r"C:\Users\José\.pyenv\shims"),
             ),
-            Some(r"%~dp0..\bin\pyenv.exe".to_string())
+            Some(PyenvRef::Relative(r"..\bin\pyenv.exe".to_string()))
+        );
+    }
+
+    #[test]
+    fn pyenv_reference_non_ascii_relative_tail_is_none() {
+        // The shared root ("José") is non-ASCII, but so is the part that differs
+        // ("bín"), so the relative path itself can't be written into the file either.
+        assert_eq!(
+            pyenv_reference(
+                Path::new(r"C:\Users\José\bín\pyenv.exe"),
+                Path::new(r"C:\Users\José\shims"),
+            ),
+            None
         );
     }
 

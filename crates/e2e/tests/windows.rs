@@ -443,6 +443,27 @@ fn install_setvar(f: &Fixture) {
     std::fs::write(scripts.join("setvar.bat"), "@set FROM_BAT=%1\r\n").unwrap();
 }
 
+/// Copies `pyenv`, `pyenv-shim` and `pyenv-shimw` into `dir` (created if needed) and
+/// returns the copy's `pyenv` path, so a forwarder can be built (and rehashed) from a
+/// `pyenv.exe` that doesn't live in the usual `target/debug` build output — the point
+/// being to control what characters are in its path.
+fn install_tools(dir: &std::path::Path) -> std::path::PathBuf {
+    std::fs::create_dir_all(dir).unwrap();
+    for name in ["pyenv", "pyenv-shim", "pyenv-shimw"] {
+        std::fs::copy(built(name), dir.join(format!("{name}{EXE}"))).unwrap();
+    }
+    dir.join(format!("pyenv{EXE}"))
+}
+
+/// The tail after `/d /c`: pins the console's output code page to 850 with the external
+/// `chcp.com` (not the `chcp` builtin, so it needs its full path — `System32` isn't on the
+/// fixture's `PATH`) before `cmdline`, so the test's outcome doesn't depend on whatever
+/// code page the host that runs `cargo test` happens to use (spec §5.3,
+/// `RPYENV_FORWARD_CP`; a 65001 host would otherwise mask a broken encoding).
+fn pinned_850(cmdline: &str) -> String {
+    format!("\"\"%SystemRoot%\\System32\\chcp.com\" 850 >nul & {cmdline}\"")
+}
+
 /// A forwarded batch tool changes the caller's environment, and the helper variable
 /// doesn't stay behind.
 #[test]
@@ -460,7 +481,86 @@ fn win_forwarder_changes_the_callers_environment() {
     let out = f
         .command(&cmd_exe(), &env)
         .args(["/d", "/c"])
-        .raw_arg(r#""setvar hello & set FROM_BAT & set RPYENV_FORWARD_TARGET""#)
+        .raw_arg(pinned_850(
+            "setvar hello & set FROM_BAT & set RPYENV_FORWARD_TARGET",
+        ))
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("FROM_BAT=hello"), "{text}");
+    assert!(!text.contains("RPYENV_FORWARD_TARGET="), "{text}");
+}
+
+/// `pyenv.exe` behind a non-ASCII shared root (the fixture's own base) gets the
+/// `%~dp0`-relative reference and the `RPYENV_FORWARD_DIR` `call :d` subroutine; a quoted
+/// invocation without the extension (`"setvar"`, the case plain `%~dp0` misresolves) still
+/// finds and runs it.
+#[test]
+fn win_forwarder_relative_branch_with_a_quoted_invocation() {
+    let f = Fixture::new();
+    f.install("3.9.1/python.exe");
+    install_setvar(&f);
+    // Ascii except for what the fixture's own base already contributes ("py env ñ"), so
+    // the relative tail `pyenv_reference` computes stays writable.
+    let tools = install_tools(&f.base.join("tools (x86) & co"));
+    let env = [
+        ("PYENV_VERSION", v("3.9.1")),
+        ("RPYENV_BATCH_FORWARD", v("setvar")),
+    ];
+    assert!(f
+        .command(&tools, &env)
+        .arg("rehash")
+        .status()
+        .unwrap()
+        .success());
+    let fwd = std::fs::read_to_string(f.root.join("shims").join("setvar.cmd")).unwrap();
+    assert!(fwd.contains("RPYENV_FORWARD_DIR"), "{fwd}");
+    assert!(!f.shim("setvar").exists());
+    let out = f
+        .command(&cmd_exe(), &env)
+        .args(["/d", "/c"])
+        .raw_arg(pinned_850(
+            "\"setvar\" hello & set FROM_BAT & set RPYENV_FORWARD_TARGET",
+        ))
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("FROM_BAT=hello"), "{text}");
+    assert!(!text.contains("RPYENV_FORWARD_TARGET="), "{text}");
+}
+
+/// An absolute `pyenv.exe` reference with cmd metacharacters in its path (`&`, `(`, `)`,
+/// `^`, `%`) still resolves: the path goes into the `RPYENV_FORWARD_PYENV` helper
+/// variable, never spelled out directly on a command line where those would break it.
+#[test]
+fn win_forwarder_absolute_branch_with_special_characters() {
+    let f = Fixture::new();
+    f.install("3.9.1/python.exe");
+    install_setvar(&f);
+    // The fixture's own base is non-ASCII; the absolute branch needs a pure-ASCII path,
+    // so the tools folder goes under its own, separate ASCII temp directory.
+    let ascii_tmp = tempfile::tempdir().unwrap();
+    let tools = install_tools(&ascii_tmp.path().join(r"a(b) & ^ % dir"));
+    let env = [
+        ("PYENV_VERSION", v("3.9.1")),
+        ("RPYENV_BATCH_FORWARD", v("setvar")),
+    ];
+    assert!(f
+        .command(&tools, &env)
+        .arg("rehash")
+        .status()
+        .unwrap()
+        .success());
+    let fwd = std::fs::read_to_string(f.root.join("shims").join("setvar.cmd")).unwrap();
+    assert!(!fwd.contains("RPYENV_FORWARD_DIR"), "{fwd}");
+    // A literal `%` in the path is doubled when written into the file.
+    assert!(fwd.contains(r"a(b) & ^ %% dir"), "{fwd}");
+    let out = f
+        .command(&cmd_exe(), &env)
+        .args(["/d", "/c"])
+        .raw_arg(pinned_850(
+            "setvar hello & set FROM_BAT & set RPYENV_FORWARD_TARGET",
+        ))
         .output()
         .unwrap();
     let text = String::from_utf8_lossy(&out.stdout);
