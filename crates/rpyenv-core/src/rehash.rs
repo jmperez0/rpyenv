@@ -249,7 +249,8 @@ fn symlink(target: &Path, link: &Path) -> io::Result<()> {
 /// Windows: each shim is a hardlink to `shims\.template\pyenv-shim.exe` or
 /// `shims\.template\pyenv-shimw.exe`, matching its kind, or a copy when a hardlink isn't
 /// possible. A `.cmd` forwarder is a text file instead (spec §5.3), and falls back to the
-/// console shim when `pyenv.exe` isn't known. A failed shim doesn't stop the others; the
+/// console shim when `pyenv.exe` isn't known, or (`shimset::pyenv_reference`) when its path
+/// can't be written into the forwarder safely. A failed shim doesn't stop the others; the
 /// first error is returned, so the state isn't stored and the next check tries again.
 fn apply_hardlinks(shims: &Path, source: &Path, wanted: &[Wanted]) -> io::Result<RehashStats> {
     let console = refresh_template(shims, source, TEMPLATE_EXE)?;
@@ -263,13 +264,27 @@ fn apply_hardlinks(shims: &Path, source: &Path, wanted: &[Wanted]) -> io::Result
     };
     let (console_meta, gui_meta) = (fs::metadata(&console)?, fs::metadata(&gui)?);
     let pyenv = pyenv_exe(source, &shims.join(TEMPLATE_DIR));
+    let pyenv_ref = pyenv
+        .as_deref()
+        .and_then(|p| shimset::pyenv_reference(p, shims));
+    // A forwarder that can't be written safely (no known pyenv.exe, or `pyenv_reference`
+    // finds nothing safe to write) becomes a console exe shim instead — in the name it's
+    // written under as much as in what it runs — so the fallback and `remove_stale` agree;
+    // otherwise a fallback shim would be deleted as stale right after being created; a
+    // stale forwarder from a previous rehash that did know `pyenv.exe` is cleaned up the
+    // same way. This is one decision for every forwarder: `pyenv_ref` doesn't vary by name.
+    let effective: Vec<Wanted> = if pyenv_ref.is_some() {
+        wanted.to_vec()
+    } else {
+        wanted.iter().cloned().map(console_fallback).collect()
+    };
     let mut first_err = None;
     let mut linked = 0;
-    for w in wanted {
-        if let (ShimKind::Forward, Some(pyenv)) = (w.kind, &pyenv) {
+    for w in &effective {
+        if let (ShimKind::Forward, Some(pyenv_ref)) = (w.kind, &pyenv_ref) {
             let p = shims.join(&w.name);
             let file = w.name.to_string_lossy();
-            let text = shimset::forwarder(pyenv, file.strip_suffix(".cmd").unwrap_or(&file));
+            let text = shimset::forwarder(pyenv_ref, file.strip_suffix(".cmd").unwrap_or(&file));
             if fs::read_to_string(&p).ok().as_deref() != Some(text.as_str()) {
                 remove_or_rename(&p);
                 match fs::write(&p, &text) {
@@ -299,8 +314,22 @@ fn apply_hardlinks(shims: &Path, source: &Path, wanted: &[Wanted]) -> io::Result
             }
         }
     }
-    let removed = remove_stale(shims, wanted, true)?;
+    let removed = remove_stale(shims, &effective, true)?;
     first_err.map_or(Ok(RehashStats { linked, removed }), Err)
+}
+
+/// A `Forward` entry (`<stem>.cmd`) that can't get a forwarder becomes a `Console` entry
+/// (`<stem>.exe`) instead; every other entry is unchanged.
+fn console_fallback(w: Wanted) -> Wanted {
+    if w.kind != ShimKind::Forward {
+        return w;
+    }
+    let file = w.name.to_string_lossy();
+    let stem = file.strip_suffix(".cmd").unwrap_or(&file);
+    Wanted {
+        name: OsString::from(format!("{stem}.exe")),
+        kind: ShimKind::Console,
+    }
 }
 
 /// The `pyenv.exe` forwarders call. `pyenv rehash` passes the shim binary installed next
@@ -686,9 +715,10 @@ mod tests {
         let shims = ctx.shims_dir();
         let stats = apply_hardlinks(&shims, &shim, &wanted).unwrap();
         assert_eq!(stats.linked, 2);
+        let pyenv_ref = shimset::pyenv_reference(&pyenv, &shims).unwrap();
         assert_eq!(
             fs::read_to_string(shims.join("setvar.cmd")).unwrap(),
-            shimset::forwarder(&pyenv, "setvar")
+            shimset::forwarder(&pyenv_ref, "setvar")
         );
         assert!(!shims.join("setvar.exe").exists());
         // A shim's exit check passes the template; the recorded path keeps the forwarder.
@@ -697,5 +727,45 @@ mod tests {
             apply_hardlinks(&shims, &template, &wanted).unwrap(),
             RehashStats::default()
         );
+    }
+
+    #[test]
+    fn without_a_known_pyenv_a_forwarder_falls_back_to_a_working_console_shim() {
+        let (_t, ctx, shim) = setup(Flavor::PyenvWin);
+        // No `pyenv.exe` next to `shim`, so `pyenv_exe` finds nothing.
+        let v = ctx.versions_dir();
+        exe(&v.join("3.9.1/python.exe"));
+        exe(&v.join("3.9.1/Scripts/setvar.bat"));
+        let wanted = shimset::shims_win(&v, &["setvar".to_string()]);
+        let shims = ctx.shims_dir();
+        let stats = apply_hardlinks(&shims, &shim, &wanted).unwrap();
+        assert_eq!(stats.linked, 2);
+        // A real console shim, not a `.cmd` forwarder pointing nowhere, and not deleted by
+        // this same rehash's `remove_stale` pass.
+        assert_eq!(fs::read(shims.join("setvar.exe")).unwrap(), b"shim binary");
+        assert!(!shims.join("setvar.cmd").exists());
+    }
+
+    #[test]
+    fn a_forwarder_that_loses_its_pyenv_becomes_a_console_shim_and_the_old_cmd_is_removed() {
+        let (tmp, ctx, shim) = setup(Flavor::PyenvWin);
+        let pyenv = tmp.path().join("pyenv.exe");
+        fs::write(&pyenv, b"cli").unwrap();
+        let v = ctx.versions_dir();
+        exe(&v.join("3.9.1/python.exe"));
+        exe(&v.join("3.9.1/Scripts/setvar.bat"));
+        let wanted = shimset::shims_win(&v, &["setvar".to_string()]);
+        let shims = ctx.shims_dir();
+        apply_hardlinks(&shims, &shim, &wanted).unwrap();
+        assert!(shims.join("setvar.cmd").is_file());
+        // `pyenv.exe` disappears (or a differently-placed `shim` source is used, as when
+        // rehash is called with a binary that isn't installed next to `pyenv.exe`).
+        fs::remove_file(&pyenv).unwrap();
+        let other_shim = tmp.path().join("elsewhere").join("pyenv-shim");
+        fs::create_dir_all(other_shim.parent().unwrap()).unwrap();
+        fs::write(&other_shim, b"shim binary").unwrap();
+        apply_hardlinks(&shims, &other_shim, &wanted).unwrap();
+        assert_eq!(fs::read(shims.join("setvar.exe")).unwrap(), b"shim binary");
+        assert!(!shims.join("setvar.cmd").exists());
     }
 }

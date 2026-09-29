@@ -20,5 +20,7 @@ pub mod verfile;
 pub mod vsort;
 pub mod wincmd;
 #[cfg(windows)]
+pub mod wincp;
+#[cfg(windows)]
 pub mod winproc;
 pub mod winresolve;
