@@ -536,9 +536,11 @@ fn win_forwarder_changes_the_callers_environment() {
 }
 
 /// `pyenv.exe` behind a non-ASCII shared root (the fixture's own base) gets the
-/// `%~dp0`-relative reference and the `RPYENV_FORWARD_DIR` `call :d` subroutine; a quoted
-/// invocation without the extension (`"setvar"`, the case plain `%~dp0` misresolves) still
-/// finds and runs it.
+/// `%~dp0`-relative reference and the `RPYENV_FORWARD_DIR` `call :d` subroutine. Plain
+/// `%~dp0` misresolves for any quoted invocation, with or without the extension; this test
+/// runs the quoted form without it (`"setvar"`), from a tools folder whose name holds `(`,
+/// `)` and `&`, and checks that the batch tool set `FROM_BAT` in the caller and that
+/// `RPYENV_FORWARD_TARGET` didn't stay behind.
 #[test]
 fn win_forwarder_relative_branch_with_a_quoted_invocation() {
     let f = Fixture::new();
