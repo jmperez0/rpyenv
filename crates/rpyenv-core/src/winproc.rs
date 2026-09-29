@@ -88,14 +88,23 @@ fn usable(h: HANDLE) -> bool {
     !h.is_null() && h != INVALID_HANDLE_VALUE
 }
 
-/// A disk file or a pipe (the doc's "redirected"). These are this process's own handles,
-/// with no I/O pending, so `GetFileType` can't block.
-fn redirected(which: STD_HANDLE) -> bool {
+/// This process's own standard handle's file type, or `None` when the handle itself isn't
+/// usable. These are this process's own handles, with no I/O pending, so `GetFileType`
+/// can't block.
+fn std_file_type(which: STD_HANDLE) -> Option<u32> {
     // SAFETY: reads this process's own standard handle and asks for its type.
     unsafe {
         let h = GetStdHandle(which);
-        usable(h) && matches!(GetFileType(h), FILE_TYPE_DISK | FILE_TYPE_PIPE)
+        usable(h).then(|| GetFileType(h))
     }
+}
+
+/// A disk file or a pipe (the doc's "redirected").
+fn redirected(which: STD_HANDLE) -> bool {
+    matches!(
+        std_file_type(which),
+        Some(FILE_TYPE_DISK) | Some(FILE_TYPE_PIPE)
+    )
 }
 
 pub fn probe() -> Probe {
@@ -168,11 +177,7 @@ pub fn std_handle_usable(stderr: bool) -> bool {
     } else {
         STD_OUTPUT_HANDLE
     };
-    // SAFETY: reads this process's own standard handle and asks for its type.
-    unsafe {
-        let h = GetStdHandle(which);
-        usable(h) && GetFileType(h) != FILE_TYPE_UNKNOWN
-    }
+    std_file_type(which).is_some_and(|t| t != FILE_TYPE_UNKNOWN)
 }
 
 /// A modal error box titled "rpyenv", for the GUI shim when there is nowhere to print.
