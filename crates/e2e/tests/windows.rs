@@ -67,6 +67,19 @@ fn win_exec_is_transparent_to_raw_command_lines() {
 const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
+/// Waits (up to 20 s) until `path` exists: argv-echo creates it once it is running and set up.
+fn wait_for(path: &std::path::Path) {
+    let start = std::time::Instant::now();
+    while !path.exists() {
+        assert!(
+            start.elapsed() < Duration::from_secs(20),
+            "{} never appeared",
+            path.display()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
 /// Exit codes are DWORDs; STATUS_CONTROL_C_EXIT must come back unchanged.
 #[test]
 fn win_exit_codes_pass_through_unchanged() {
@@ -90,6 +103,7 @@ fn win_killing_the_shim_kills_the_child() {
     f.install("3.9.1/python.exe");
     f.rehash();
     let after = f.base.join("after");
+    let ready = f.base.join("ready");
     let mut shim = f
         .shim_command(
             "python",
@@ -97,12 +111,13 @@ fn win_killing_the_shim_kills_the_child() {
                 ("PYENV_VERSION", v("3.9.1")),
                 ("ARGV_ECHO_SLEEP_MS", v("3000")),
                 ("ARGV_ECHO_AFTER", after.as_os_str()),
+                ("ARGV_ECHO_READY", ready.as_os_str()),
             ],
         )
         .stdout(Stdio::null())
         .spawn()
         .unwrap();
-    std::thread::sleep(Duration::from_millis(800));
+    wait_for(&ready);
     shim.kill().unwrap();
     let _ = shim.wait();
     std::thread::sleep(Duration::from_millis(3500));
@@ -121,6 +136,7 @@ fn win_ctrl_break_reaches_the_child_and_the_shim_waits() {
     let f = Fixture::new();
     f.install("3.9.1/python.exe");
     f.rehash();
+    let ready = f.base.join("ready");
     let mut shim = f
         .shim_command(
             "python",
@@ -128,13 +144,14 @@ fn win_ctrl_break_reaches_the_child_and_the_shim_waits() {
                 ("PYENV_VERSION", v("3.9.1")),
                 ("ARGV_ECHO_CATCH_BREAK", v("1")),
                 ("ARGV_ECHO_SLEEP_MS", v("3000")),
+                ("ARGV_ECHO_READY", ready.as_os_str()),
             ],
         )
         .creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW)
         .stdout(Stdio::null())
         .spawn()
         .unwrap();
-    std::thread::sleep(Duration::from_millis(1000));
+    wait_for(&ready);
     let sent = Command::new(built("argv-echo"))
         .env("ARGV_ECHO_BREAK_PID", shim.id().to_string())
         .status()

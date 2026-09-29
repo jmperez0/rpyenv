@@ -11,7 +11,8 @@
 //! On Windows, `ARGV_ECHO_CATCH_BREAK=1` catches console events and makes the exit code 5
 //! if one arrived by the end of the sleep, and `ARGV_ECHO_BREAK_PID=<pid>` only sends
 //! Ctrl+Break to that process group (attaching to its console) and exits 0, or 2 or 3 on
-//! failure.
+//! failure. `ARGV_ECHO_READY=<path>` creates that file just before the sleep, so a test can
+//! wait until the program is running and set up.
 
 use std::io::{Read, Write};
 
@@ -105,6 +106,9 @@ fn main() {
     let _ = stdout.write_all(out.as_bytes());
     let _ = stdout.flush();
     drop(stdout);
+    if let Some(p) = std::env::var_os("ARGV_ECHO_READY") {
+        let _ = std::fs::write(&p, b"");
+    }
     if let Some(ms) = var("ARGV_ECHO_SLEEP_MS").and_then(|v| v.parse().ok()) {
         std::thread::sleep(std::time::Duration::from_millis(ms));
     }
