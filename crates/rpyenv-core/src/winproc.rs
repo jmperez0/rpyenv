@@ -11,7 +11,9 @@ use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use windows_sys::core::BOOL;
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE, TRUE};
-use windows_sys::Win32::Storage::FileSystem::{GetFileType, FILE_TYPE_DISK, FILE_TYPE_PIPE};
+use windows_sys::Win32::Storage::FileSystem::{
+    GetFileType, FILE_TYPE_DISK, FILE_TYPE_PIPE, FILE_TYPE_UNKNOWN,
+};
 use windows_sys::Win32::System::Console::{
     GetConsoleProcessList, GetStdHandle, SetConsoleCtrlHandler, STD_ERROR_HANDLE, STD_HANDLE,
     STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
@@ -22,6 +24,7 @@ use windows_sys::Win32::System::JobObjects::{
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK,
 };
 use windows_sys::Win32::System::Threading::{CREATE_NO_WINDOW, DETACHED_PROCESS};
+use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
 
 /// A Job Object whose processes end when its last handle closes, which happens when this
 /// process ends, however it ends. Processes they start break away silently and live on,
@@ -155,4 +158,34 @@ pub fn spawn_and_wait(cmd: &mut Command, program: &Path) -> io::Result<ExitStatu
     let status = child.wait();
     drop(job);
     status
+}
+
+/// Whether this process has a usable stdout (or, with `stderr`, stderr) to write to. A
+/// GUI program started from Explorer has neither.
+pub fn std_handle_usable(stderr: bool) -> bool {
+    let which = if stderr {
+        STD_ERROR_HANDLE
+    } else {
+        STD_OUTPUT_HANDLE
+    };
+    // SAFETY: reads this process's own standard handle and asks for its type.
+    unsafe {
+        let h = GetStdHandle(which);
+        usable(h) && GetFileType(h) != FILE_TYPE_UNKNOWN
+    }
+}
+
+/// A modal error box titled "rpyenv", for the GUI shim when there is nowhere to print.
+pub fn message_box(text: &str) {
+    let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
+    let (text, title) = (wide(text), wide("rpyenv"));
+    // SAFETY: both buffers are NUL-terminated UTF-16 and outlive the call; no owner window.
+    unsafe {
+        MessageBoxW(
+            std::ptr::null_mut(),
+            text.as_ptr(),
+            title.as_ptr(),
+            MB_OK | MB_ICONERROR,
+        );
+    }
 }

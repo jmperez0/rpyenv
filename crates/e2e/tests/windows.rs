@@ -251,3 +251,39 @@ fn win_a_shim_with_a_console_shares_it() {
     assert_eq!(mode_in(&log), "INHERIT");
     assert!(console_count(&out) >= 2);
 }
+
+/// Review focus 5: a GUI program's shim is the GUI shim, and it passes arguments and the
+/// exit code on like the console shim.
+#[test]
+fn win_gui_programs_get_the_gui_shim() {
+    let f = Fixture::new();
+    f.install("3.9.1/python.exe");
+    let pythonw = f.root.join("versions").join("3.9.1").join("pythonw.exe");
+    std::fs::copy(built("argv-echow"), &pythonw).unwrap();
+    f.rehash();
+    let read = |p: std::path::PathBuf| std::fs::read(p).unwrap();
+    assert_eq!(read(f.shim("pythonw")), read(built("pyenv-shimw")));
+    assert_eq!(read(f.shim("python")), read(built("pyenv-shim")));
+    let out = f.run_shim(
+        "pythonw",
+        &["a b".into()],
+        &[("PYENV_VERSION", v("3.9.1")), ("ARGV_ECHO_EXIT", v("7"))],
+    );
+    assert_eq!(arg_lines(&out), [line("arg", "a b")]);
+    assert_eq!(out.status.code(), Some(7));
+}
+
+/// With an output to write to, the GUI shim reports there, not in a message box (which
+/// would block this test).
+#[test]
+fn win_gui_shim_reports_on_a_given_output() {
+    let f = Fixture::new();
+    f.install("3.9.1/python.exe");
+    let tool = f.root.join("versions").join("3.8.2").join("tool.exe");
+    std::fs::create_dir_all(tool.parent().unwrap()).unwrap();
+    std::fs::copy(built("argv-echow"), &tool).unwrap();
+    f.rehash();
+    let out = f.run_shim("tool", &[], &[("PYENV_VERSION", v("3.9.1"))]);
+    assert_eq!(out.status.code(), Some(127));
+    assert!(String::from_utf8_lossy(&out.stdout).starts_with("pyenv: tool: command not found\r\n"));
+}

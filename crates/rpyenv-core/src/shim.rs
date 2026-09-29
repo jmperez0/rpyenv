@@ -11,24 +11,42 @@ use std::path::{Path, PathBuf};
 /// The shim binary's own name, which is never a command.
 pub const SHIM_NAME: &str = "pyenv-shim";
 
-/// Runs the shim and returns the exit code, unless the command replaced this process.
+/// The GUI-subsystem shim binary's own name, which is never a command.
+pub const SHIMW_NAME: &str = "pyenv-shimw";
+
+/// The console shim's main. Returns the exit code, unless the command replaced this process.
 pub fn main() -> i32 {
+    run(false)
+}
+
+/// The GUI shim's main: the same, except that a message with nowhere to go appears in a
+/// message box.
+pub fn main_gui() -> i32 {
+    run(true)
+}
+
+/// Runs the shim and returns the exit code, unless the command replaced this process.
+fn run(gui: bool) -> i32 {
     let flavor = Flavor::current();
     let mut argv = std::env::args_os();
     let argv0 = argv.next().unwrap_or_default();
     let args: Vec<OsString> = argv.collect();
     let own = std::env::current_exe().ok();
     let Some(program) = command_name(flavor, &argv0, own.as_deref()) else {
-        eprint!(
-            "pyenv-shim: run this through a shim (such as `python`), not directly{}",
-            flavor.eol()
+        say(
+            gui,
+            flavor,
+            &[format!(
+                "{SHIM_NAME}: run this through a shim (such as `python`), not directly"
+            )],
+            true,
         );
         return 1;
     };
     let mut ctx = match Ctx::from_process() {
         Ok(ctx) => ctx,
         Err(e) => {
-            eprint!("{}{}", e.message(), flavor.eol());
+            say(gui, flavor, &[e.message()], true);
             return 1;
         }
     };
@@ -52,10 +70,7 @@ pub fn main() -> i32 {
     let env = ExecEnv::from_process(&program, own);
     match launch::plan(&ctx, Mode::Shim, &program, args, &env) {
         Err(report) => {
-            for line in &report.lines {
-                crate::debuglog::append(line);
-            }
-            report.emit(flavor);
+            say(gui, flavor, &report.lines, report.stderr);
             report.code
         }
         Ok(plan) => {
@@ -64,12 +79,34 @@ pub fn main() -> i32 {
                 raw_tail: crate::wincmd::own_tail(1),
                 ..plan
             };
-            for w in &plan.warnings {
-                eprint!("{w}{}", flavor.eol());
-            }
+            say(gui, flavor, &plan.warnings, true);
             launch::run(&plan, &ctx, rehash_with.as_deref())
         }
     }
+}
+
+/// Prints what the shim has to say on its stream, and logs it to `RPYENV_DEBUG_LOG`. The
+/// GUI shim, when that stream isn't a usable handle, shows a message box instead
+/// (plan decision 4).
+fn say(gui: bool, flavor: Flavor, lines: &[String], to_stderr: bool) {
+    if lines.is_empty() {
+        return;
+    }
+    for line in lines {
+        crate::debuglog::append(line);
+    }
+    #[cfg(windows)]
+    if gui && !crate::winproc::std_handle_usable(to_stderr) {
+        crate::winproc::message_box(&lines.join("\r\n"));
+        return;
+    }
+    let _ = gui;
+    crate::lookup::Report {
+        lines: lines.to_vec(),
+        stderr: to_stderr,
+        code: 0,
+    }
+    .emit(flavor);
 }
 
 /// The command a shim stands for: `argv[0]`'s last component on Linux, where every shim
@@ -80,7 +117,10 @@ pub fn command_name(flavor: Flavor, argv0: &OsStr, own: Option<&Path>) -> Option
         Flavor::Pyenv => Path::new(argv0).file_name()?.to_string_lossy().into_owned(),
         Flavor::PyenvWin => own?.file_stem()?.to_string_lossy().into_owned(),
     };
-    (!name.is_empty() && !name.eq_ignore_ascii_case(SHIM_NAME)).then_some(name)
+    (!name.is_empty()
+        && !name.eq_ignore_ascii_case(SHIM_NAME)
+        && !name.eq_ignore_ascii_case(SHIMW_NAME))
+    .then_some(name)
 }
 
 /// The parent of the `shims` folder the shim was run from: the root upstream bakes into
@@ -157,6 +197,7 @@ mod tests {
         let win = |own: &str| command_name(Flavor::PyenvWin, OsStr::new("x"), Some(Path::new(own)));
         assert_eq!(win("python.exe"), Some("python".to_string()));
         assert_eq!(win("PYENV-SHIM.EXE"), None);
+        assert_eq!(win("pyenv-shimw.exe"), None);
         assert_eq!(command_name(Flavor::PyenvWin, OsStr::new("x"), None), None);
     }
 
