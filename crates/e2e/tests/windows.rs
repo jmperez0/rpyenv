@@ -289,3 +289,144 @@ fn win_gui_shim_reports_on_a_given_output() {
     assert_eq!(out.status.code(), Some(127));
     assert!(String::from_utf8_lossy(&out.stdout).starts_with("pyenv: tool: command not found\r\n"));
 }
+
+/// Fix round 1, Important: a GUI shim whose target can't be started must still say so, even
+/// when it was started the way Explorer starts a GUI program: no console, no inherited
+/// handles, nothing on `STARTF_USESTDHANDLES`. This drives `CreateProcessW` by hand to
+/// reproduce exactly that (a `Command`/`Stdio` launch always gives the child *some* usable
+/// handle), then polls for the "rpyenv" message box by window title and owning pid. It's
+/// `#[ignore]`d because a real message box blocks until dismissed and needs a desktop to
+/// show on; run it with `cargo test -p rpyenv-e2e --test windows -- --ignored`.
+#[test]
+#[ignore = "shows a message box; needs an interactive desktop"]
+fn win_gui_shim_shows_a_message_box_when_it_has_nowhere_to_print() {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::core::BOOL;
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, HWND, LPARAM};
+    use windows_sys::Win32::System::Threading::{
+        CreateProcessW, TerminateProcess, CREATE_UNICODE_ENVIRONMENT, PROCESS_INFORMATION,
+        STARTUPINFOW,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible,
+    };
+
+    let f = Fixture::new();
+    f.install("3.9.1/python.exe");
+    let bad = f.root.join("versions").join("3.9.1").join("bad.exe");
+    std::fs::copy(built("argv-echow"), &bad).unwrap();
+    f.rehash();
+    std::fs::write(&bad, b"not a PE file").unwrap();
+
+    // Build the launch the same way the other tests do, then take the program, environment
+    // and working directory back out of it: `CreateProcessW` needs them as raw wide
+    // buffers, since it (unlike `std::process::Command`) is what lets this test control
+    // inherited handles and `STARTF_USESTDHANDLES` directly.
+    let cmd = f.shim_command("bad", &[("PYENV_VERSION", v("3.9.1"))]);
+    let wide = |s: &OsStr| -> Vec<u16> { s.encode_wide().chain(Some(0)).collect() };
+    let program = wide(cmd.get_program());
+    let dir = wide(cmd.get_current_dir().unwrap().as_os_str());
+    let mut env_block: Vec<u16> = Vec::new();
+    for (k, val) in cmd.get_envs() {
+        let Some(val) = val else { continue };
+        env_block.extend(k.encode_wide());
+        env_block.push(u16::from(b'='));
+        env_block.extend(val.encode_wide());
+        env_block.push(0);
+    }
+    env_block.push(0);
+
+    let startup = STARTUPINFOW {
+        cb: std::mem::size_of::<STARTUPINFOW>() as u32,
+        ..Default::default()
+    };
+    let mut pi = PROCESS_INFORMATION::default();
+    // SAFETY: `program`, `env_block` and `dir` are NUL-terminated (env double-NUL-terminated)
+    // wide buffers kept alive until the call returns; `startup` and `pi` are valid, correctly
+    // sized in/out parameters. `bInheritHandles` is FALSE and `startup.dwFlags` has no
+    // `STARTF_USESTDHANDLES`, so the child gets no std handles at all, as a GUI program
+    // started from Explorer does.
+    let ok = unsafe {
+        CreateProcessW(
+            program.as_ptr(),
+            std::ptr::null_mut(),
+            std::ptr::null(),
+            std::ptr::null(),
+            0,
+            CREATE_UNICODE_ENVIRONMENT,
+            env_block.as_ptr().cast(),
+            dir.as_ptr(),
+            &startup,
+            &mut pi,
+        )
+    };
+    assert_ne!(
+        ok,
+        0,
+        "CreateProcessW failed: {}",
+        std::io::Error::last_os_error()
+    );
+    // SAFETY: `pi.hThread` came from the call above; it isn't needed past this point.
+    unsafe { CloseHandle(pi.hThread) };
+
+    /// Ends and closes the child no matter how this test leaves: a passing assert, a
+    /// failing one, or a panic. Without this, a failure here would leave a live process
+    /// and a message box open on the desktop.
+    struct Killer(HANDLE);
+    impl Drop for Killer {
+        fn drop(&mut self) {
+            // SAFETY: `self.0` came from `CreateProcessW` above, and this guard is its
+            // only owner.
+            unsafe {
+                TerminateProcess(self.0, 1);
+                CloseHandle(self.0);
+            }
+        }
+    }
+    let _killer = Killer(pi.hProcess);
+
+    struct Search {
+        pid: u32,
+        found: bool,
+    }
+    unsafe extern "system" fn each_window(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        // SAFETY: `lparam` is `&mut Search`, valid for the whole `EnumWindows` call below.
+        let search = unsafe { &mut *(lparam as *mut Search) };
+        let mut owner = 0u32;
+        // SAFETY: `hwnd` is a window handle `EnumWindows` just supplied.
+        unsafe { GetWindowThreadProcessId(hwnd, &mut owner) };
+        if owner != search.pid || unsafe { IsWindowVisible(hwnd) } == 0 {
+            return 1; // keep enumerating
+        }
+        let mut buf = [0u16; 256];
+        // SAFETY: `hwnd` is valid for the call; `buf`'s length is passed alongside it.
+        let len = unsafe { GetWindowTextW(hwnd, buf.as_mut_ptr(), buf.len() as i32) };
+        let title = String::from_utf16_lossy(&buf[..usize::try_from(len.max(0)).unwrap_or(0)]);
+        if title == "rpyenv" {
+            search.found = true;
+            return 0; // stop: found it
+        }
+        1
+    }
+
+    let mut search = Search {
+        pid: pi.dwProcessId,
+        found: false,
+    };
+    let start = std::time::Instant::now();
+    while start.elapsed() < Duration::from_secs(10) && !search.found {
+        // SAFETY: `each_window` only dereferences the pointer for the duration of this
+        // call, and `search` outlives it.
+        unsafe {
+            EnumWindows(Some(each_window), std::ptr::addr_of_mut!(search) as isize);
+        }
+        if !search.found {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+    assert!(
+        search.found,
+        "no visible \"rpyenv\" window appeared for pid {} within 10s",
+        search.pid
+    );
+}
