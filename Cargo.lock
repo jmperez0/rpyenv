@@ -94,6 +94,7 @@ name = "rpyenv-e2e"
 version = "0.1.0"
 dependencies = [
  "tempfile",
+ "windows-sys",
 ]
 
 [[package]]

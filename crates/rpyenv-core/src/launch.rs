@@ -339,7 +339,9 @@ pub fn run(plan: &LaunchPlan, ctx: &Ctx, rehash_with: Option<&Path>) -> i32 {
     }
     #[cfg(unix)]
     let status = sig::spawn_and_wait(&mut cmd);
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    let status = crate::winproc::spawn_and_wait(&mut cmd, &plan.program);
+    #[cfg(not(any(unix, windows)))]
     let status = cmd.status();
     if let Some(exe) = rehash_with {
         rehash::check(ctx, exe);

@@ -12,5 +12,8 @@ name = "argv-echo"
 path = "src/bin/argv_echo.rs"
 test = false
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Console"] }
+
 [dev-dependencies]
 tempfile.workspace = true

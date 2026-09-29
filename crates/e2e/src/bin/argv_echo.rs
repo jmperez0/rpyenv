@@ -7,10 +7,58 @@
 //! script; `ARGV_ECHO_SLEEP_MS` waits, after which `ARGV_ECHO_AFTER=<path>` creates that
 //! file, so a test can tell whether the process was still running past the sleep;
 //! `ARGV_ECHO_EXIT` is the exit code (default 0).
+//!
+//! On Windows, `ARGV_ECHO_CATCH_BREAK=1` catches console events and makes the exit code 5
+//! if one arrived by the end of the sleep, and `ARGV_ECHO_BREAK_PID=<pid>` only sends
+//! Ctrl+Break to that process group (attaching to its console) and exits 0, or 2 or 3 on
+//! failure.
 
 use std::io::{Read, Write};
 
+#[cfg(windows)]
+static CAUGHT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(windows)]
+unsafe extern "system" fn catch(_event: u32) -> windows_sys::core::BOOL {
+    CAUGHT.store(true, std::sync::atomic::Ordering::SeqCst);
+    1
+}
+
+/// Sends Ctrl+Break to process group `pid`, which must own a console: this helper leaves
+/// its own console and attaches to that one first.
+#[cfg(windows)]
+fn send_break(pid: u32) -> i32 {
+    use windows_sys::Win32::System::Console::{
+        AttachConsole, FreeConsole, GenerateConsoleCtrlEvent, CTRL_BREAK_EVENT,
+    };
+    // SAFETY: console calls that affect only this helper process.
+    unsafe {
+        FreeConsole();
+        if AttachConsole(pid) == 0 {
+            return 2;
+        }
+        if GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, pid) == 0 {
+            return 3;
+        }
+    }
+    0
+}
+
 fn main() {
+    #[cfg(windows)]
+    if let Some(pid) = std::env::var("ARGV_ECHO_BREAK_PID")
+        .ok()
+        .and_then(|p| p.parse::<u32>().ok())
+    {
+        std::process::exit(send_break(pid));
+    }
+    #[cfg(windows)]
+    if std::env::var("ARGV_ECHO_CATCH_BREAK").as_deref() == Ok("1") {
+        // SAFETY: the handler only stores to an atomic.
+        unsafe {
+            windows_sys::Win32::System::Console::SetConsoleCtrlHandler(Some(catch), 1);
+        }
+    }
     let mut out = String::new();
     let mut args = std::env::args_os();
     out.push_str(&format!("argv0={:?}\n", args.next().unwrap_or_default()));
@@ -62,6 +110,10 @@ fn main() {
     }
     if let Some(p) = std::env::var_os("ARGV_ECHO_AFTER") {
         let _ = std::fs::write(&p, b"");
+    }
+    #[cfg(windows)]
+    if CAUGHT.load(std::sync::atomic::Ordering::SeqCst) {
+        std::process::exit(5);
     }
     std::process::exit(
         var("ARGV_ECHO_EXIT")
