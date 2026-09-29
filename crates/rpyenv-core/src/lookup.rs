@@ -182,10 +182,11 @@ fn replace_tilde(s: &OsStr, home: &OsStr) -> PathBuf {
     PathBuf::from(std::ffi::OsString::from_vec(out))
 }
 
-/// The Linux flavor off Unix only runs in tests.
+/// The Linux flavor off Unix only runs in tests. There `~` is left alone: Windows short
+/// names such as `C:\Users\RUNNER~1` contain it, and expanding it would break test paths.
 #[cfg(not(unix))]
-fn replace_tilde(s: &OsStr, home: &OsStr) -> PathBuf {
-    PathBuf::from(s.to_string_lossy().replace('~', &home.to_string_lossy()))
+fn replace_tilde(s: &OsStr, _home: &OsStr) -> PathBuf {
+    PathBuf::from(s)
 }
 
 /// Upstream `pyenv whence`: each entry of `versions --bare` (envs and aliases included)
