@@ -104,7 +104,7 @@ CASES = (
     # D-23: a failed `--unset` must not report success. Here `.python-version` is a folder,
     # which pyenv-win's DeleteFile leaves in place with no message and exit 0.
     Case("local --unset when .python-version is a folder", ("local", "--unset"), os="Windows",
-         files=(("work/.python-version/x", ""),), allow=("D-23",)),
+         files=(("work/.python-version/x", ""),), compare=("work/.python-version",), allow=("D-23",)),
     # D-24: `rm -f`'s error text (here `.python-version` is a folder).
     Case("local --unset when .python-version is a directory", ("local", "--unset"), os="Linux",
          files=(("work/.python-version/x", ""),), allow=("D-24",)),
