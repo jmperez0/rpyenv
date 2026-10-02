@@ -18,6 +18,13 @@ class Case:
     allow: tuple = ()  # allowlist rows explaining a difference
 
 
+# Limit of the "stale" check (diff.py verdict): a row is reported stale only when its case's
+# outputs are identical AND no other row of the case still allows a difference. A case that
+# lists two rows therefore keeps reading "allowed" while either one still differs, so the
+# other can go stale unnoticed. Today that applies to D-02 (case with D-01), D-13 (with D-12)
+# and D-20 (with D-01 and D-49): if upstream stopped showing one of those differences, its case
+# would still read allowed. rpyenv's side of each is still pinned by its golden. When touching
+# those areas, give each of D-02, D-13 and D-20 its own single-row case.
 CASES = (
     Case("--version", ("--version",), allow=("D-01",)),
     Case("root", ("root",), allow=("D-12",)),
