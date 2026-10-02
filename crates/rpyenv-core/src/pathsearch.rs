@@ -104,8 +104,9 @@ fn same_dir(a: &Path, b: &Path, flavor: Flavor) -> bool {
     norm(a) == norm(b)
 }
 
-/// A regular file (following symlinks) that the caller may run: on Unix, `access(X_OK)`,
-/// which is what upstream's `[ -x ]` checks (allowlist D-29). A path with a NUL can't be.
+/// The lookup's test: a regular file (following symlinks) that the caller may run. On Unix
+/// that is `faccessat(X_OK, AT_EACCESS)`, the effective IDs, which is what upstream's
+/// `[ -x ]` checks (allowlist D-29). A path with a NUL can't be.
 #[cfg(unix)]
 pub fn is_runnable(p: &Path) -> bool {
     use std::os::unix::ffi::OsStrExt;
@@ -115,13 +116,30 @@ pub fn is_runnable(p: &Path) -> bool {
     let Ok(c) = std::ffi::CString::new(p.as_os_str().as_bytes()) else {
         return false;
     };
-    // SAFETY: `c` is a valid NUL-terminated string that outlives the call; `access` only
-    // reads it.
-    unsafe { libc::access(c.as_ptr(), libc::X_OK) == 0 }
+    // SAFETY: `c` is a valid NUL-terminated string that outlives the call; `faccessat`
+    // only reads it, and `AT_FDCWD` makes a relative path resolve against the current
+    // folder, as `access` would.
+    unsafe { libc::faccessat(libc::AT_FDCWD, c.as_ptr(), libc::X_OK, libc::AT_EACCESS) == 0 }
 }
 
 #[cfg(not(unix))]
 pub fn is_runnable(p: &Path) -> bool {
+    p.is_file()
+}
+
+/// The shim listing's test: a regular file (following symlinks) with any execute bit, for
+/// anyone. It differs from [`is_runnable`] on purpose: upstream's listing is a plain glob
+/// with no `-x`, and the shim set must not depend on who rehashed last (allowlist D-33).
+#[cfg(unix)]
+pub fn has_exec_bit(p: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    p.metadata()
+        .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+pub fn has_exec_bit(p: &Path) -> bool {
     p.is_file()
 }
 

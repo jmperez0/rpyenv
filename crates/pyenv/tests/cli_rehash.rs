@@ -31,6 +31,30 @@ fn rehash_links_each_executable_and_shims_lists_them() {
     assert_eq!(f.pyenv(&["shims", "--short"]).stdout, "pip\npython\n");
 }
 
+/// The listing counts a regular file with any x bit, whoever may run it, as upstream's
+/// listing does: a file only group and others may run still gets a shim and is listed, so
+/// the shim set doesn't depend on who rehashed (allowlist D-33). The lookup's `-x` check
+/// (D-29) applies only when a shim or `exec` looks the name up. Root may run any file with
+/// an x bit, so the check is skipped there.
+#[cfg(unix)]
+#[test]
+fn rehash_shims_a_file_the_caller_may_not_run() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new();
+    f.exe("3.12.1/bin/python");
+    let locked = f.exe("3.12.1/bin/locked");
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o011)).unwrap();
+    if fs::read(&locked).is_ok() {
+        eprintln!("running as root: skipping rehash_shims_a_file_the_caller_may_not_run");
+        return;
+    }
+    let r = f.pyenv(&["versions", "--executables"]);
+    assert_eq!((r.stdout.as_str(), r.code), ("locked\npython\n", 0));
+    let r = f.pyenv(&["rehash"]);
+    assert_eq!((r.stdout.as_str(), r.stderr.as_str(), r.code), ("", "", 0));
+    assert_eq!(f.pyenv(&["shims", "--short"]).stdout, "locked\npython\n");
+}
+
 #[cfg(unix)]
 #[test]
 fn rehash_lock_timeout_and_unwritable_messages() {
