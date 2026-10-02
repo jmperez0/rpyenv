@@ -151,6 +151,50 @@ fn version_file_read_and_write() {
 
 #[cfg(windows)]
 #[test]
+fn win_version_file_read_and_write() {
+    let f = Fixture::new();
+    f.version("3.12.1").version("3.11.9");
+    f.file(&f.work.join("vf"), "3.12.1\r\n3.11.9\r\n");
+    assert_eq!(
+        f.pyenv(&["version-file-read", "vf"]).stdout,
+        "3.12.1:3.11.9\r\n"
+    );
+    f.file(&f.work.join("empty"), "");
+    let r = f.pyenv(&["version-file-read", "empty"]);
+    assert_eq!((r.stdout.as_str(), r.stderr.as_str(), r.code), ("", "", 1));
+    let r = f.pyenv(&["version-file-read", "missing"]);
+    assert_eq!((r.stdout.as_str(), r.stderr.as_str(), r.code), ("", "", 1));
+    assert_eq!(
+        f.pyenv(&["version-file-write", "out", "3.12.1", "3.11.9"])
+            .code,
+        0
+    );
+    assert_eq!(
+        std::fs::read(f.work.join("out")).unwrap(),
+        b"3.12.1\r\n3.11.9\r\n"
+    );
+    let r = f.pyenv(&["version-file-write", "out", "9.9"]);
+    assert_eq!(
+        (r.stdout.as_str(), r.stderr.as_str(), r.code),
+        ("", "pyenv: version `9.9' not installed\r\n", 1)
+    );
+    assert_eq!(
+        std::fs::read(f.work.join("out")).unwrap(),
+        b"3.12.1\r\n3.11.9\r\n"
+    );
+    let r = f.pyenv(&["version-file-write", "out"]);
+    assert_eq!(
+        (r.stdout.as_str(), r.stderr.as_str(), r.code),
+        (
+            "",
+            "Usage: pyenv version-file-write [-f|--force] <file> <version> [...]\r\n",
+            1
+        )
+    );
+}
+
+#[cfg(windows)]
+#[test]
 fn win_nothing_selected() {
     let r = Fixture::new().pyenv(&["version"]);
     assert_eq!(r.code, 1);

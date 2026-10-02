@@ -127,6 +127,48 @@ fn win_killing_the_shim_kills_the_child() {
     );
 }
 
+/// Review focus 5: a program that can't start is reported on stderr and in the debug log,
+/// named, with exit code 126 (allowlist D-43), and without a literal `%1`.
+#[test]
+fn win_a_start_failure_reaches_the_debug_log() {
+    let f = Fixture::new();
+    f.install("3.9.1/python.exe");
+    let bad = f.root.join("versions").join("3.9.1").join("bad.exe");
+    std::fs::copy(built("argv-echo"), &bad).unwrap();
+    f.rehash();
+    std::fs::write(&bad, b"not a PE file").unwrap();
+    let log = f.base.join("debug.log");
+    let out = f
+        .shim_command(
+            "bad",
+            &[
+                ("PYENV_VERSION", v("3.9.1")),
+                ("RPYENV_DEBUG_LOG", log.as_os_str()),
+            ],
+        )
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(126));
+    let text = std::fs::read_to_string(&log).unwrap();
+    let line = text
+        .lines()
+        .find(|l| l.starts_with("rpyenv-shim: pyenv: "))
+        .unwrap_or_else(|| panic!("no start-failure line in the log:\n{text}"));
+    assert!(line.contains("bad.exe: "), "{line}");
+    assert!(!line.contains("%1"), "{line}");
+}
+
+/// Ends the child when a test leaves early (a failed assert or a panic), so a failure
+/// never leaves a shim and its 30-second child running.
+struct KillOnDrop(std::process::Child);
+
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 /// Review focus 2. The shim gets a windowless console of its own and a process group, the
 /// child shares both, and a helper sends Ctrl+Break to the group. The child catches it and
 /// exits 5 at once (its sleep, up to 30 s, only bounds how long the break may take to
@@ -138,8 +180,8 @@ fn win_ctrl_break_reaches_the_child_and_the_shim_waits() {
     f.install("3.9.1/python.exe");
     f.rehash();
     let ready = f.base.join("ready");
-    let mut shim = f
-        .shim_command(
+    let mut shim = KillOnDrop(
+        f.shim_command(
             "python",
             &[
                 ("PYENV_VERSION", v("3.9.1")),
@@ -151,14 +193,15 @@ fn win_ctrl_break_reaches_the_child_and_the_shim_waits() {
         .creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW)
         .stdout(Stdio::null())
         .spawn()
-        .unwrap();
+        .unwrap(),
+    );
     wait_for(&ready);
     let sent = Command::new(built("argv-echo"))
-        .env("ARGV_ECHO_BREAK_PID", shim.id().to_string())
+        .env("ARGV_ECHO_BREAK_PID", shim.0.id().to_string())
         .status()
         .unwrap();
     assert_eq!(sent.code(), Some(0), "could not send Ctrl+Break");
-    assert_eq!(shim.wait().unwrap().code(), Some(5));
+    assert_eq!(shim.0.wait().unwrap().code(), Some(5));
 }
 
 /// Spec §5.3 bans `SetConsoleCtrlHandler(NULL, TRUE)` in the shim: children inherit it and
@@ -178,8 +221,8 @@ fn win_ctrl_c_reaches_the_child_through_the_shim() {
     f.install("3.9.1/python.exe");
     f.rehash();
     let ready = f.base.join("ready");
-    let mut shim = f
-        .shim_command(
+    let mut shim = KillOnDrop(
+        f.shim_command(
             "python",
             &[
                 ("PYENV_VERSION", v("3.9.1")),
@@ -191,17 +234,15 @@ fn win_ctrl_c_reaches_the_child_through_the_shim() {
         .creation_flags(CREATE_NO_WINDOW)
         .stdout(Stdio::null())
         .spawn()
-        .unwrap();
+        .unwrap(),
+    );
     wait_for(&ready);
     let sent = Command::new(built("argv-echo"))
-        .env("ARGV_ECHO_CTRLC_PID", shim.id().to_string())
+        .env("ARGV_ECHO_CTRLC_PID", shim.0.id().to_string())
         .status()
         .unwrap();
-    if sent.code() != Some(0) {
-        let _ = shim.kill();
-    }
     assert_eq!(sent.code(), Some(0), "could not send Ctrl+C");
-    assert_eq!(shim.wait().unwrap().code(), Some(5));
+    assert_eq!(shim.0.wait().unwrap().code(), Some(5));
 }
 
 const DETACHED_PROCESS: u32 = 0x0000_0008;
@@ -372,7 +413,8 @@ fn win_gui_shim_shows_a_message_box_when_it_has_nowhere_to_print() {
         STARTUPINFOW,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        EnumWindows, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible,
+        EnumChildWindows, EnumWindows, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible,
+        SendMessageW, WM_GETTEXT,
     };
 
     let f = Fixture::new();
@@ -452,6 +494,7 @@ fn win_gui_shim_shows_a_message_box_when_it_has_nowhere_to_print() {
     struct Search {
         pid: u32,
         found: bool,
+        text: String,
     }
     unsafe extern "system" fn each_window(hwnd: HWND, lparam: LPARAM) -> BOOL {
         // SAFETY: `lparam` is `&mut Search`, valid for the whole `EnumWindows` call below.
@@ -468,6 +511,32 @@ fn win_gui_shim_shows_a_message_box_when_it_has_nowhere_to_print() {
         let title = String::from_utf16_lossy(&buf[..usize::try_from(len.max(0)).unwrap_or(0)]);
         if title == "rpyenv" {
             search.found = true;
+            unsafe extern "system" fn each_child(child: HWND, lparam: LPARAM) -> BOOL {
+                // SAFETY: `lparam` is `&mut String`, valid for the whole
+                // `EnumChildWindows` call below.
+                let text = unsafe { &mut *(lparam as *mut String) };
+                let mut buf = [0u16; 1024];
+                // SAFETY: `WM_GETTEXT` copies at most `buf.len()` UTF-16 units into `buf`;
+                // the system marshals it across processes, which `GetWindowTextW` would not
+                // do for another process's control.
+                let len = unsafe {
+                    SendMessageW(child, WM_GETTEXT, buf.len(), buf.as_mut_ptr() as isize)
+                };
+                text.push_str(&String::from_utf16_lossy(
+                    &buf[..usize::try_from(len.max(0)).unwrap_or(0)],
+                ));
+                text.push('\n');
+                1
+            }
+            // SAFETY: `each_child` only dereferences the pointer during this call, and
+            // `search.text` outlives it.
+            unsafe {
+                EnumChildWindows(
+                    hwnd,
+                    Some(each_child),
+                    std::ptr::addr_of_mut!(search.text) as isize,
+                );
+            }
             return 0; // stop: found it
         }
         1
@@ -476,6 +545,7 @@ fn win_gui_shim_shows_a_message_box_when_it_has_nowhere_to_print() {
     let mut search = Search {
         pid: pi.dwProcessId,
         found: false,
+        text: String::new(),
     };
     let start = std::time::Instant::now();
     while start.elapsed() < Duration::from_secs(10) && !search.found {
@@ -492,6 +562,11 @@ fn win_gui_shim_shows_a_message_box_when_it_has_nowhere_to_print() {
         search.found,
         "no visible \"rpyenv\" window appeared for pid {} within 10s",
         search.pid
+    );
+    assert!(
+        search.text.contains("bad.exe: "),
+        "box text: {}",
+        search.text
     );
 }
 
