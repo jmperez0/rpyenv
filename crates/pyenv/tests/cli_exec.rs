@@ -127,3 +127,27 @@ fn win_exec_runs_a_batch_file() {
     let r = f.pyenv_env(&["exec", "hello", "world"], &WIN_ENV);
     assert_eq!((r.stdout.as_str(), r.code), ("hello world\r\n", 0));
 }
+
+/// The debug log names `pyenv exec` as the source of what that command writes to it.
+#[test]
+fn exec_debug_log_lines_name_pyenv_exec() {
+    let f = Fixture::new();
+    f.version("3.12.1");
+    let log = f.base.join("debug.log");
+    let r = f.pyenv_env(
+        &["exec", "nosuchcmd"],
+        &[
+            ("PYENV_VERSION", "3.12.1"),
+            ("RPYENV_DEBUG_LOG", log.to_str().unwrap()),
+        ],
+    );
+    assert_ne!(r.code, 0);
+    let text = std::fs::read_to_string(&log).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert!(!lines.is_empty());
+    assert!(
+        lines.iter().all(|l| l.starts_with("pyenv exec: ")),
+        "{text}"
+    );
+    assert!(lines.iter().any(|l| l.contains("nosuchcmd")), "{text}");
+}
