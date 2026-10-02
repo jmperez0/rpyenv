@@ -411,6 +411,8 @@ fn cannot_run(program: &Path, err: &std::io::Error) -> Report {
 
 /// The interpreter a script's `#!` line names: the first word after `#!`, from the first 256
 /// bytes. None when the file has no `#!` or can't be read (bash's `bad interpreter` message).
+/// Words end at a space or tab only, as the kernel splits them, so a CRLF line's `\r` stays
+/// part of the name; bash shows it as `^M`, which is why such a script fails to start.
 #[cfg(unix)]
 fn shebang_interpreter(program: &Path) -> Option<String> {
     use std::io::Read;
@@ -423,9 +425,13 @@ fn shebang_interpreter(program: &Path) -> Option<String> {
     let line = head.strip_prefix(b"#!")?;
     let line = line.split(|&b| b == b'\n').next()?;
     let word = line
-        .split(|b| b.is_ascii_whitespace())
+        .split(|&b| b == b' ' || b == b'\t')
         .find(|w| !w.is_empty())?;
-    Some(String::from_utf8_lossy(word).into_owned())
+    let name = String::from_utf8_lossy(word);
+    Some(match name.strip_suffix('\r') {
+        Some(stem) => format!("{stem}^M"),
+        None => name.into_owned(),
+    })
 }
 
 /// `io_reason`, with the `%1` that some Windows messages leave for the program's name

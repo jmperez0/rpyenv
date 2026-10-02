@@ -27,26 +27,36 @@ fn exec_runs_the_file_with_the_upstream_environment() {
 
 /// A file that exists but can't be started gets `pyenv: <path>: <reason>` on stderr
 /// instead of bash's errors, and exit 126 as in bash: here its `#!` interpreter is missing
-/// (bash's `bad interpreter`) (allowlist D-43). A file without `#!` is no trigger:
-/// `execvp` hands it to `/bin/sh`. Exit 127, for a file that is itself gone, is pinned in
-/// `launch.rs`.
+/// (bash's `bad interpreter`) (allowlist D-43). A CRLF `#!` line names `/bin/sh\r`, which
+/// bash shows as `/bin/sh^M`. A file without `#!` is no trigger: `execvp` hands it to
+/// `/bin/sh`. Exit 127, for a file that is itself gone, is pinned in `launch.rs`.
 #[cfg(unix)]
 #[test]
 fn exec_start_failure_exits_126() {
     let f = Fixture::new();
-    let orphan = f.exe("3.12.10/bin/orphan");
-    std::fs::write(&orphan, "#!/nonexistent/interpreter\n").unwrap();
-    let r = f.pyenv_env(&["exec", "orphan"], &[("PYENV_VERSION", "3.12.10")]);
-    assert_eq!(
-        (r.stderr, r.code),
+    for (name, script, interp) in [
         (
-            format!(
-                "pyenv: {}: /nonexistent/interpreter: bad interpreter: No such file or directory\n",
-                orphan.display()
+            "orphan",
+            "#!/nonexistent/interpreter\n",
+            "/nonexistent/interpreter",
+        ),
+        ("crlf", "#!/bin/sh\r\necho hi\r\n", "/bin/sh^M"),
+    ] {
+        let path = f.exe(&format!("3.12.10/bin/{name}"));
+        std::fs::write(&path, script).unwrap();
+        let r = f.pyenv_env(&["exec", name], &[("PYENV_VERSION", "3.12.10")]);
+        assert_eq!(
+            (r.stderr, r.code),
+            (
+                format!(
+                    "pyenv: {}: {interp}: bad interpreter: No such file or directory\n",
+                    path.display()
+                ),
+                126
             ),
-            126
-        )
-    );
+            "{name}"
+        );
+    }
 }
 
 /// A file only group and others may run doesn't count for its owner: upstream's `[ -x ]`

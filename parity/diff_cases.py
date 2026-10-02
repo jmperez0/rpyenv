@@ -22,7 +22,7 @@ class Case:
 # outputs are identical AND no other row of the case still allows a difference. A case that
 # lists two rows therefore keeps reading "allowed" while either one still differs, so the
 # other can go stale unnoticed. Today that applies to D-02 (case with D-01), D-13 (with D-12)
-# and D-20 (with D-01 and D-49): if upstream stopped showing one of those differences, its case
+# and D-20 (with D-01, on Windows): if upstream stopped showing one of those differences, its case
 # would still read allowed. rpyenv's side of each is still pinned by its golden. When touching
 # those areas, give each of D-02, D-13 and D-20 its own single-row case.
 CASES = (
