@@ -40,7 +40,10 @@ fn exec_start_failure_exits_126() {
     assert_eq!(
         (r.stderr, r.code),
         (
-            format!("pyenv: {}: No such file or directory\n", orphan.display()),
+            format!(
+                "pyenv: {}: /nonexistent/interpreter: bad interpreter: No such file or directory\n",
+                orphan.display()
+            ),
             126
         )
     );

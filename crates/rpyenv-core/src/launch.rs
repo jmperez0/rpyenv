@@ -384,6 +384,20 @@ fn cannot_run(program: &Path, err: &std::io::Error) -> Report {
     } else {
         126
     };
+    #[cfg(unix)]
+    if code == 126 && err.kind() == std::io::ErrorKind::NotFound {
+        if let Some(interp) = shebang_interpreter(program) {
+            return Report {
+                lines: vec![format!(
+                    "pyenv: {}: {}: bad interpreter: No such file or directory",
+                    program.display(),
+                    interp
+                )],
+                stderr: true,
+                code,
+            };
+        }
+    }
     Report {
         lines: vec![format!(
             "pyenv: {}: {}",
@@ -393,6 +407,25 @@ fn cannot_run(program: &Path, err: &std::io::Error) -> Report {
         stderr: true,
         code,
     }
+}
+
+/// The interpreter a script's `#!` line names: the first word after `#!`, from the first 256
+/// bytes. None when the file has no `#!` or can't be read (bash's `bad interpreter` message).
+#[cfg(unix)]
+fn shebang_interpreter(program: &Path) -> Option<String> {
+    use std::io::Read;
+    let mut head = Vec::new();
+    std::fs::File::open(program)
+        .ok()?
+        .take(256)
+        .read_to_end(&mut head)
+        .ok()?;
+    let line = head.strip_prefix(b"#!")?;
+    let line = line.split(|&b| b == b'\n').next()?;
+    let word = line
+        .split(|b| b.is_ascii_whitespace())
+        .find(|w| !w.is_empty())?;
+    Some(String::from_utf8_lossy(word).into_owned())
 }
 
 /// `io_reason`, with the `%1` that some Windows messages leave for the program's name
