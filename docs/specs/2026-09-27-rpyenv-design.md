@@ -310,7 +310,9 @@ instructions, as upstream does.
   program that writes into one shim would overwrite `pyenv-shim` itself and
   break every shim beyond what `pyenv rehash` can repair; with the copy, only
   the copy is damaged, and rehash replaces it when its bytes differ from the
-  installed binary. Linux's `fs.protected_hardlinks` also forbids a hardlink
+  installed binary. Every shim then fails until `pyenv rehash`, because the
+  shims share the copy and so no shim can run its own check; `pyenv rehash`
+  restores them from the installed binary, which stays intact. Linux's `fs.protected_hardlinks` also forbids a hardlink
   to a file the user doesn't own, as Windows does below.
 - Windows:
   - `.exe` → a hardlink to the copy of `pyenv-shim.exe` or `pyenv-shimw.exe`
@@ -387,9 +389,10 @@ instructions, as upstream does.
   Windows) by their bytes. It refreshes the copies and recreates the
   hardlinks. A shim's own exit check never refreshes an existing template; on
   Linux it creates a missing one from the running shim (rpyenv 0.1 roots).
-  `pyenv rehash` refreshes it, and so does any rehash a CLI command runs (for
-  example `pyenv exec` when the versions changed). Until then, shims keep
-  running the previous copy.
+  Besides `pyenv rehash`, what refreshes it is, on Linux, `pyenv exec` running
+  a pip command (any other `pyenv exec` replaces its own process and runs no
+  check); on Windows, any `pyenv exec` that runs a rehash. Until then, shims
+  keep running the previous copy.
 
 ## 9. Installer
 
@@ -545,12 +548,14 @@ warns when it finds one. pyenv-win has the same limitation.
   - LAZY mode opens the console and keeps it open on error.
   - NO-WINDOW and MIRROR modes write to the caller's stderr and, if set, to
     `RPYENV_DEBUG_LOG`.
-- **Encoding (Windows):** text rpyenv writes to a pipe, a file or NUL is in
+- **Encoding (Windows):** text rpyenv's stdout and stderr write when they go to
+  a pipe, a file or NUL is in
   the console's output code page (with no console, the ANSI code page), as
   cmd.exe and pyenv-win write theirs. When a character doesn't fit that code
   page, the whole text is written as UTF-8 instead of turning the character
   into `?` (allowlist D-48); a console set to code page 65001 gets UTF-8
-  always. Text written to a console is Unicode. Linux writes UTF-8.
+  always. Text written to a console is Unicode. `RPYENV_DEBUG_LOG` is always
+  UTF-8. Linux writes UTF-8.
 - **Debugging:** `PYENV_DEBUG=1` (upstream's variable) prints where the
   version came from and which executable was chosen.
 - **Downloads:** retry with backoff, then report the URL and suggest
@@ -614,7 +619,7 @@ warns when it finds one. pyenv-win has the same limitation.
 | `PYTHON_BUILD_MIRROR_URL`, `PYTHON_CONFIGURE_OPTS`, `PYTHON_CFLAGS`, `MAKE_OPTS`, `PYTHON_MAKE_OPTS` | upstream | Installer options |
 | `RPYENV_CONSOLE` | rpyenv | `lazy` or `eager` (Windows, when the shim has no console) |
 | `RPYENV_LIVE_REHASH` | rpyenv | `1` enables the live watcher |
-| `RPYENV_DEBUG_LOG` | rpyenv | File for shim diagnostics when there is no console |
+| `RPYENV_DEBUG_LOG` | rpyenv | File for diagnostics from shims and `pyenv exec` when there is no console |
 | `RPYENV_BATCH_FORWARD` | rpyenv | `;`-separated batch-target names that get a `.cmd` forwarder instead of an exe shim (Windows) |
 | `RPYENV_CATALOG_URL` | rpyenv | Alternative location (a mirror) for the rpyenv-published Windows catalog |
 | `RPYENV_BUILD_DEPS` | rpyenv (M8) | `system`, `install`, or `build`: how `pyenv install` resolves missing Linux build dependencies when there is no terminal to ask |
