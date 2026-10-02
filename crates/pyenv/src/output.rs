@@ -51,17 +51,16 @@ impl Output {
             Flavor::Pyenv => s.to_string(),
             Flavor::PyenvWin => s.replace('\n', "\r\n"),
         };
-        let _ = std::io::stderr().write_all(convert(&self.stderr).as_bytes());
-        let mut stdout = std::io::stdout().lock();
+        rpyenv_core::textout::write(true, &convert(&self.stderr));
         match &self.raw_stdout {
+            // Already encoded for the console (`RPYENV_FORWARD_CP`): written as it is.
             Some(bytes) => {
+                let mut stdout = std::io::stdout().lock();
                 let _ = stdout.write_all(bytes);
+                let _ = stdout.flush();
             }
-            None => {
-                let _ = stdout.write_all(convert(&self.stdout).as_bytes());
-            }
+            None => rpyenv_core::textout::write(false, &convert(&self.stdout)),
         }
-        let _ = stdout.flush();
     }
 }
 

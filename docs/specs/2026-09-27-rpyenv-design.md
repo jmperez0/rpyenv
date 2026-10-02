@@ -545,6 +545,12 @@ warns when it finds one. pyenv-win has the same limitation.
   - LAZY mode opens the console and keeps it open on error.
   - NO-WINDOW and MIRROR modes write to the caller's stderr and, if set, to
     `RPYENV_DEBUG_LOG`.
+- **Encoding (Windows):** text rpyenv writes to a pipe, a file or NUL is in
+  the console's output code page (with no console, the ANSI code page), as
+  cmd.exe and pyenv-win write theirs. When a character doesn't fit that code
+  page, the whole text is written as UTF-8 instead of turning the character
+  into `?` (allowlist D-48); a console set to code page 65001 gets UTF-8
+  always. Text written to a console is Unicode. Linux writes UTF-8.
 - **Debugging:** `PYENV_DEBUG=1` (upstream's variable) prints where the
   version came from and which executable was chosen.
 - **Downloads:** retry with backoff, then report the URL and suggest

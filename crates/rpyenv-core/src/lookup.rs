@@ -4,7 +4,6 @@ use crate::ctx::Ctx;
 use crate::flavor::Flavor;
 use crate::{installed, pathsearch, prefix, select};
 use std::ffi::OsStr;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 /// What a failed command prints, on which stream, and its exit code.
@@ -23,13 +22,7 @@ impl Report {
             .iter()
             .map(|l| format!("{l}{}", flavor.eol()))
             .collect();
-        if self.stderr {
-            let _ = std::io::stderr().write_all(text.as_bytes());
-        } else {
-            let mut out = std::io::stdout().lock();
-            let _ = out.write_all(text.as_bytes());
-            let _ = out.flush();
-        }
+        crate::textout::write(self.stderr, &text);
     }
 }
 

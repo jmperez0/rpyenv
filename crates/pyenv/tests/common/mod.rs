@@ -96,10 +96,10 @@ impl Fixture {
         self.run(dir, args, &[])
     }
 
-    fn run(&self, dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Run {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_pyenv"));
-        cmd.args(args)
-            .current_dir(dir)
+    /// A command for `program` with this fixture's clean environment, run in `dir`.
+    pub fn command(&self, program: &Path, dir: &Path, env: &[(&str, &str)]) -> Command {
+        let mut cmd = Command::new(program);
+        cmd.current_dir(dir)
             .env_clear()
             .env("PYENV_ROOT", &self.root)
             .env("HOME", &self.base)
@@ -112,12 +112,33 @@ impl Fixture {
         for (k, v) in env {
             cmd.env(k, v);
         }
-        let out = cmd.output().unwrap();
+        cmd
+    }
+
+    fn run(&self, dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Run {
+        let out = self
+            .command(Path::new(env!("CARGO_BIN_EXE_pyenv")), dir, env)
+            .args(args)
+            .output()
+            .unwrap();
         Run {
-            stdout: String::from_utf8(out.stdout).unwrap(),
-            stderr: String::from_utf8(out.stderr).unwrap(),
+            stdout: decode(&out.stdout),
+            stderr: decode(&out.stderr),
             code: out.status.code().unwrap(),
         }
+    }
+}
+
+/// rpyenv's redirected output as text. On Windows it is in the console's output code page
+/// (spec §11); this test process shares that console with the `pyenv` it ran.
+pub fn decode(bytes: &[u8]) -> String {
+    #[cfg(windows)]
+    {
+        rpyenv_core::wincp::decode(bytes, rpyenv_core::wincp::output_cp())
+    }
+    #[cfg(not(windows))]
+    {
+        String::from_utf8(bytes.to_vec()).unwrap()
     }
 }
 

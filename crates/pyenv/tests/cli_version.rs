@@ -277,3 +277,32 @@ fn win_path_check_ignores_forward_slashes_in_pyenv_root() {
     let root_out = f.pyenv_env(&["root"], &[("PYENV_ROOT", root_fwd.as_str())]);
     assert_eq!(root_out.stdout, format!("{}\r\n", f.root.display()));
 }
+
+/// Review focus 3. The fixture's root holds `ñ`. With the console's code page pinned in a
+/// console of the test's own, redirected output must be in that code page, as cmd.exe and
+/// pyenv-win write it: `ñ` is 0xA4 in code page 850 and 0xC3 0xB1 in UTF-8 (65001).
+#[cfg(windows)]
+#[test]
+fn win_redirected_output_uses_the_console_code_page() {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let f = Fixture::new();
+    let system = std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32");
+    let pyenv = env!("CARGO_BIN_EXE_pyenv");
+    let run = |cp: u32| {
+        f.command(&system.join("cmd.exe"), &f.work, &[])
+            .raw_arg(format!(
+                r#"/d /s /c ""{}" {cp} >nul & "{pyenv}" root""#,
+                system.join("chcp.com").display()
+            ))
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .unwrap()
+            .stdout
+    };
+    let has = |hay: &[u8], needle: &[u8]| hay.windows(needle.len()).any(|w| w == needle);
+    let oem = run(850);
+    assert!(has(&oem, b"py env \xa4\\root\r\n"), "{oem:?}");
+    let utf8 = run(65001);
+    assert!(has(&utf8, "py env ñ\\root\r\n".as_bytes()), "{utf8:?}");
+}

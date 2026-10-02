@@ -523,7 +523,9 @@ fn install_tools(dir: &std::path::Path) -> std::path::PathBuf {
 /// `chcp.com` (not the `chcp` builtin, so it needs its full path — `System32` isn't on the
 /// fixture's `PATH`) before `cmdline`, so the test's outcome doesn't depend on whatever
 /// code page the host that runs `cargo test` happens to use (spec §5.3,
-/// `RPYENV_FORWARD_CP`; a 65001 host would otherwise mask a broken encoding).
+/// `RPYENV_FORWARD_CP`; a 65001 host would otherwise mask a broken encoding). Callers start
+/// cmd.exe with `CREATE_NO_WINDOW`, so the `chcp` changes a console of its own, not the one
+/// this test shares with parallel tests.
 fn pinned_850(cmdline: &str) -> String {
     format!("\"\"%SystemRoot%\\System32\\chcp.com\" 850 >nul & {cmdline}\"")
 }
@@ -548,6 +550,7 @@ fn win_forwarder_changes_the_callers_environment() {
         .raw_arg(pinned_850(
             "setvar hello & set FROM_BAT & set RPYENV_FORWARD_TARGET",
         ))
+        .creation_flags(CREATE_NO_WINDOW)
         .output()
         .unwrap();
     let text = String::from_utf8_lossy(&out.stdout);
@@ -588,6 +591,7 @@ fn win_forwarder_relative_branch_with_a_quoted_invocation() {
         .raw_arg(pinned_850(
             "\"setvar\" hello & set FROM_BAT & set RPYENV_FORWARD_TARGET",
         ))
+        .creation_flags(CREATE_NO_WINDOW)
         .output()
         .unwrap();
     let text = String::from_utf8_lossy(&out.stdout);
@@ -621,6 +625,7 @@ fn win_forwarder_relative_branch_keeps_an_exe_targets_exit_code() {
         )
         .args(["/d", "/c"])
         .raw_arg(pinned_850("setvar a"))
+        .creation_flags(CREATE_NO_WINDOW)
         .output()
         .unwrap();
     assert_eq!(
@@ -664,6 +669,7 @@ fn win_forwarder_absolute_branch_with_special_characters() {
         .raw_arg(pinned_850(
             "setvar hello & set FROM_BAT & set RPYENV_FORWARD_TARGET",
         ))
+        .creation_flags(CREATE_NO_WINDOW)
         .output()
         .unwrap();
     let text = String::from_utf8_lossy(&out.stdout);
