@@ -26,31 +26,14 @@ fn exec_runs_the_file_with_the_upstream_environment() {
 }
 
 /// A file that exists but can't be started gets `pyenv: <path>: <reason>` on stderr
-/// instead of bash's errors, and exit 126 as in bash: here only group and others may run
-/// it (`execve` refuses its owner), or its `#!` interpreter is missing (bash's `bad
-/// interpreter`) (allowlist D-43). A file without `#!` is no trigger: `execvp` hands it to
-/// `/bin/sh`. Exit 127, for a file that is itself gone, is pinned in `launch.rs`.
+/// instead of bash's errors, and exit 126 as in bash: here its `#!` interpreter is missing
+/// (bash's `bad interpreter`) (allowlist D-43). A file without `#!` is no trigger:
+/// `execvp` hands it to `/bin/sh`. Exit 127, for a file that is itself gone, is pinned in
+/// `launch.rs`.
 #[cfg(unix)]
 #[test]
-fn exec_start_failures_exit_126() {
-    use std::os::unix::fs::PermissionsExt;
+fn exec_start_failure_exits_126() {
     let f = Fixture::new();
-    let locked = f.exe("3.12.10/bin/locked");
-    std::fs::write(&locked, "#!/bin/sh\n").unwrap();
-    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o011)).unwrap();
-    if std::fs::read(&locked).is_ok() {
-        // Root reads and runs it anyway, so the 126 half can't be reached.
-        eprintln!("running as root: skipping the 126 half");
-    } else {
-        let r = f.pyenv_env(&["exec", "locked"], &[("PYENV_VERSION", "3.12.10")]);
-        assert_eq!(
-            (r.stderr, r.code),
-            (
-                format!("pyenv: {}: Permission denied\n", locked.display()),
-                126
-            )
-        );
-    }
     let orphan = f.exe("3.12.10/bin/orphan");
     std::fs::write(&orphan, "#!/nonexistent/interpreter\n").unwrap();
     let r = f.pyenv_env(&["exec", "orphan"], &[("PYENV_VERSION", "3.12.10")]);
@@ -61,6 +44,32 @@ fn exec_start_failures_exit_126() {
             126
         )
     );
+}
+
+/// A file only group and others may run doesn't count for its owner: upstream's `[ -x ]`
+/// checks the caller's access, so the lookup gives `command not found`, exit 127, before
+/// anything is started (allowlist D-29). Root may run any file with an x bit, as `-x`
+/// says too, so the check is skipped there.
+#[cfg(unix)]
+#[test]
+fn a_file_the_caller_may_not_run_is_not_found() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new();
+    let locked = f.exe("3.12.10/bin/locked");
+    std::fs::write(&locked, "#!/bin/sh\n").unwrap();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o011)).unwrap();
+    if std::fs::read(&locked).is_ok() {
+        eprintln!("running as root: skipping a_file_the_caller_may_not_run_is_not_found");
+        return;
+    }
+    for cmd in ["exec", "which"] {
+        let r = f.pyenv_env(&[cmd, "locked"], &[("PYENV_VERSION", "3.12.10")]);
+        assert_eq!(
+            (r.stdout.as_str(), r.stderr.as_str(), r.code),
+            ("", "pyenv: locked: command not found\n", 127),
+            "{cmd}"
+        );
+    }
 }
 
 #[cfg(unix)]

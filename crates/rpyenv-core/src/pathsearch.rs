@@ -104,13 +104,20 @@ fn same_dir(a: &Path, b: &Path, flavor: Flavor) -> bool {
     norm(a) == norm(b)
 }
 
-/// A regular file (following symlinks) that can be run: any execute bit on Unix.
+/// A regular file (following symlinks) that the caller may run: on Unix, `access(X_OK)`,
+/// which is what upstream's `[ -x ]` checks (allowlist D-29). A path with a NUL can't be.
 #[cfg(unix)]
 pub fn is_runnable(p: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    p.metadata()
-        .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-        .unwrap_or(false)
+    use std::os::unix::ffi::OsStrExt;
+    if !p.metadata().map(|m| m.is_file()).unwrap_or(false) {
+        return false;
+    }
+    let Ok(c) = std::ffi::CString::new(p.as_os_str().as_bytes()) else {
+        return false;
+    };
+    // SAFETY: `c` is a valid NUL-terminated string that outlives the call; `access` only
+    // reads it.
+    unsafe { libc::access(c.as_ptr(), libc::X_OK) == 0 }
 }
 
 #[cfg(not(unix))]
@@ -230,6 +237,23 @@ mod tests {
             Some(b.join("x.py"))
         );
         assert_eq!(find_cmd("x", &path, None, tmp.path()), None);
+    }
+
+    /// A file only group and others may run isn't runnable for its owner, as with `[ -x ]`
+    /// (allowlist D-29). Root may run it, as `-x` says too, so the check is skipped there.
+    #[cfg(unix)]
+    #[test]
+    fn a_file_the_caller_may_not_run_is_not_runnable() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let p = make_exe(tmp.path(), "locked");
+        assert!(is_runnable(&p));
+        fs::set_permissions(&p, fs::Permissions::from_mode(0o011)).unwrap();
+        if fs::read(&p).is_ok() {
+            eprintln!("running as root: skipping a_file_the_caller_may_not_run_is_not_runnable");
+            return;
+        }
+        assert!(!is_runnable(&p));
     }
 
     /// cmd.exe would run a `tool.exe` from the current folder before searching PATH; rpyenv
