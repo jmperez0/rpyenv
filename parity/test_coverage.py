@@ -1,3 +1,5 @@
+import contextlib
+import io
 import os
 import tempfile
 import textwrap
@@ -46,9 +48,30 @@ class RustCitations(unittest.TestCase):
         self.assertTrue(where.endswith("::pins_it"), where)
 
 
+class Matching(unittest.TestCase):
+    def test_only_the_allowlist_wording_counts(self):
+        d = crate({"a/t.rs": "// unlike D-07\n#[test]\nfn a() {}\n"})
+        self.assertEqual(coverage.rust_test_citations(d), {})
+        d = crate({"a/t.rs": "// (allowlist D-07)\n#[test]\nfn a() {}\n"})
+        self.assertEqual(list(coverage.rust_test_citations(d)), ["D-07"])
+
+    def test_a_one_line_test_fn_counts(self):
+        d = crate({"a/t.rs": "// allowlist D-07\n#[test] fn a() {}\n"})
+        self.assertEqual(list(coverage.rust_test_citations(d)), ["D-07"])
+
+
 class Main(unittest.TestCase):
     def test_report_mode_never_fails(self):
-        self.assertEqual(coverage.main(["--report"]), 0)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(coverage.main(["--report"]), 0)
+
+    def test_enforced_mode_fails_on_a_gap_or_a_dangling_citation(self):
+        table = {"D-01": "both", "D-02": "both"}
+        self.assertEqual(coverage.verdict(table, {"D-01": ["x"], "D-02": ["y"]}, False)[0], 0)
+        self.assertEqual(coverage.verdict(table, {"D-01": ["x"]}, False), (1, ["D-02"], []))
+        full = {"D-01": ["x"], "D-02": ["y"], "D-99": ["z"]}
+        self.assertEqual(coverage.verdict(table, full, False), (1, [], ["D-99"]))
+        self.assertEqual(coverage.verdict(table, {}, True)[0], 0)
 
 
 if __name__ == "__main__":

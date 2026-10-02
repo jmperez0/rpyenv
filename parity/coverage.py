@@ -15,7 +15,7 @@ import allowlist  # noqa: E402
 import diff_cases  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ID = re.compile(r"\bD-\d{2}\b")
+ID = re.compile(r"\ballowlist\s+(D-\d{2})\b")
 FN = re.compile(r"(pub(\([^)]*\))?\s+)?(async\s+)?fn\s+(\w+)")
 
 
@@ -39,8 +39,12 @@ def rust_test_citations(crates_dir):
             with open(path, encoding="utf-8") as f:
                 lines = f.read().splitlines()
             block, is_test = [], False
-            for line in lines:
-                s = line.strip()
+            pending = list(reversed(lines))
+            while pending:
+                s = pending.pop().strip()
+                if s.startswith("#[test]") and s != "#[test]":
+                    pending.append(s[len("#[test]"):])  # `#[test] fn x() {}` on one line
+                    s = "#[test]"
                 if s.startswith("//") and not s.startswith("//!"):
                     if is_test:  # a comment after the attributes starts over
                         block, is_test = [], False
@@ -81,12 +85,18 @@ def citations():
     return out
 
 
+def verdict(table, cited, report):
+    """(exit code, uncovered rows, dangling citations); report mode always exits 0."""
+    dangling = sorted(set(cited) - set(table))
+    uncovered = [row for row in table if row not in cited]
+    return (0 if report or not (uncovered or dangling) else 1), uncovered, dangling
+
+
 def main(argv):
     report = "--report" in argv
     table = allowlist.rows()
     cited = citations()
-    dangling = sorted(set(cited) - set(table))
-    uncovered = [row for row in table if row not in cited]
+    code, uncovered, dangling = verdict(table, cited, report)
     print(f"allowlist rows: {len(table)}; covered: {len(table) - len(uncovered)}")
     for row in uncovered:
         print(f"uncovered: {row}")
@@ -97,9 +107,7 @@ def main(argv):
         with open(summary, "a", encoding="utf-8") as f:
             f.write(f"### Allowlist coverage\n\n{len(table) - len(uncovered)} of {len(table)} rows "
                     f"covered. Uncovered: {', '.join(uncovered) or 'none'}.\n\n")
-    if report:
-        return 0
-    return 1 if uncovered or dangling else 0
+    return code
 
 
 if __name__ == "__main__":

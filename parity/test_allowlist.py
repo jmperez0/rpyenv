@@ -38,6 +38,13 @@ class Rows(unittest.TestCase):
         self.assertTrue(all(v in ("both", "Linux", "Windows") for v in table.values()))
 
 
+class Malformed(unittest.TestCase):
+    def test_a_malformed_row_is_an_error(self):
+        for bad in ("| D-100 | Linux | x |", "| D-02 | linux | x |", "| D-03 | Both | x |"):
+            with self.assertRaises(ValueError, msg=bad):
+                allowlist.rows(write(SAMPLE + bad + "\n"))
+
+
 class Reasons(unittest.TestCase):
     """Review focus 3."""
 

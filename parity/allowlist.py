@@ -6,6 +6,7 @@ import re
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ALLOWLIST = os.path.join(REPO, "docs", "parity", "allowlist.md")
 ROW = re.compile(r"^\|\s*(D-\d{2})\s*\|\s*(both|Linux|Windows)\s*\|")
+MALFORMED = re.compile(r"^\|\s*D-")
 # A test of a command rpyenv doesn't implement yet fails for that reason alone; its reason
 # cites the milestone that brings the command (spec §14) instead of a row.
 MILESTONES = ("M2", "M3", "M4", "M5", "M6", "M7", "M8", "M9")
@@ -17,6 +18,8 @@ def rows(path=ALLOWLIST):
     with open(path, encoding="utf-8") as f:
         for line in f:
             m = ROW.match(line)
+            if not m and MALFORMED.match(line):
+                raise ValueError(f"{path}: malformed allowlist row: {line.strip()[:60]}")
             if m:
                 if m.group(1) in out:
                     raise ValueError(f"{path}: row {m.group(1)} appears twice")
