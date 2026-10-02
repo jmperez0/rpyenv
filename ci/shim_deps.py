@@ -34,12 +34,15 @@ def main() -> int:
         return 0
     failed = False
     for shim in SHIMS:
-        tree = subprocess.run(
+        proc = subprocess.run(
             ["cargo", "tree", "-p", shim, "-e", "normal", "--prefix", "none", "--target", "all"],
-            check=True,
             capture_output=True,
             encoding="utf-8",
-        ).stdout
+        )
+        if proc.returncode != 0:
+            print(f"cargo tree failed for {shim}:\n{proc.stderr}")
+            return 1
+        tree = proc.stdout
         extra = unexpected(shim, tree)
         if extra:
             print(f"{shim} depends on crates outside spec §3's allowance: {', '.join(extra)}")

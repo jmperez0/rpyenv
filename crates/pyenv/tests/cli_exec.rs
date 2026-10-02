@@ -188,7 +188,7 @@ fn exec_debug_log_lines_name_pyenv_exec() {
             ("RPYENV_DEBUG_LOG", log.to_str().unwrap()),
         ],
     );
-    assert_ne!(r.code, 0);
+    assert_eq!(r.code, if cfg!(windows) { 1 } else { 127 });
     let text = std::fs::read_to_string(&log).unwrap();
     let lines: Vec<&str> = text.lines().collect();
     assert!(!lines.is_empty());

@@ -63,8 +63,8 @@ fn which_win_output(ctx: &Ctx, command: &str, result: Result<Found, NotFound>) -
 
 /// Like `found_or_report`, but a resolved path is written encoded in the console's output
 /// code page, strictly: no UTF-8 fallback, since a `.cmd` forwarder's `for /f` decodes the
-/// piped stdout that way and would garble it. A path that code page can't represent fails the same way an
-/// unresolved command does: a `pyenv:` message on stderr and exit 127.
+/// piped stdout that way and would garble it. A path that code page can't represent fails the
+/// same way an unresolved command does: a `pyenv:` message on stderr and exit 127.
 #[cfg(windows)]
 fn found_or_report_cp(ctx: &Ctx, command: &str, result: Result<Found, NotFound>) -> Output {
     match result {
