@@ -9,6 +9,7 @@ junction on Windows), `pyenv rehash` makes its shims, and hyperfine times both c
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -38,31 +39,34 @@ def main(argv):
     python = os.path.abspath(a.python)
     prefix = os.path.dirname(python) if windows else os.path.dirname(os.path.dirname(python))
     base = tempfile.mkdtemp(prefix="rpyenv-bench-")
-    root = os.path.join(base, "root")
-    os.makedirs(os.path.join(root, "versions"))
-    link = os.path.join(root, "versions", "bench")
-    if windows:
-        subprocess.run(["cmd", "/d", "/c", "mklink", "/J", link, prefix], check=True, capture_output=True)
-    else:
-        os.symlink(prefix, link)
-    with open(os.path.join(root, "version"), "w", encoding="utf-8") as f:
-        f.write("bench\n")
-    env = dict(os.environ, PYENV_ROOT=root)
-    subprocess.run([os.path.join(os.path.abspath(a.rpyenv), "pyenv" + exe), "rehash"], env=env, check=True)
-    shim = os.path.join(root, "shims", os.path.basename(python))  # python3 on a distro with no `python`
-    out = os.path.join(base, "bench.json")
-    subprocess.run(
-        ["hyperfine", "-N", "--warmup", "5", "--runs", str(a.runs), "--export-json", out,
-         "-n", "through the shim", f'"{shim}" -c pass', "-n", "directly", f'"{python}" -c pass'],
-        env=env, check=True,
-    )
-    with open(out, encoding="utf-8") as f:
-        text = summary(json.load(f)["results"])
-    print(text)
-    target = os.environ.get("GITHUB_STEP_SUMMARY")
-    if target:
-        with open(target, "a", encoding="utf-8") as f:
-            f.write(f"### Shim overhead ({sys.platform})\n\n{text}\n")
+    try:
+        root = os.path.join(base, "root")
+        os.makedirs(os.path.join(root, "versions"))
+        link = os.path.join(root, "versions", "bench")
+        if windows:
+            subprocess.run(["cmd", "/d", "/c", "mklink", "/J", link, prefix], check=True, capture_output=True)
+        else:
+            os.symlink(prefix, link)
+        with open(os.path.join(root, "version"), "w", encoding="utf-8") as f:
+            f.write("bench\n")
+        env = dict(os.environ, PYENV_ROOT=root)
+        subprocess.run([os.path.join(os.path.abspath(a.rpyenv), "pyenv" + exe), "rehash"], env=env, check=True)
+        shim = os.path.join(root, "shims", os.path.basename(python))  # python3 on a distro with no `python`
+        out = os.path.join(base, "bench.json")
+        subprocess.run(
+            ["hyperfine", "-N", "--warmup", "5", "--runs", str(a.runs), "--export-json", out,
+             "-n", "through the shim", f'"{shim}" -c pass', "-n", "directly", f'"{python}" -c pass'],
+            env=env, check=True,
+        )
+        with open(out, encoding="utf-8") as f:
+            text = summary(json.load(f)["results"])
+        print(text)
+        target = os.environ.get("GITHUB_STEP_SUMMARY")
+        if target:
+            with open(target, "a", encoding="utf-8") as f:
+                f.write(f"### Shim overhead ({sys.platform})\n\n{text}\n")
+    finally:
+        shutil.rmtree(base, ignore_errors=True)  # removes the Windows junction without following it
     return 0
 
 
