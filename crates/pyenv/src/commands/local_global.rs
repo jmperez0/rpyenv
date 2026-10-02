@@ -4,6 +4,7 @@ use crate::commands::version::write_checked;
 use crate::output::Output;
 use rpyenv_core::ctx::Ctx;
 use rpyenv_core::flavor::Flavor;
+use rpyenv_core::launch::io_reason;
 use rpyenv_core::{prefix, verfile};
 use std::path::Path;
 
@@ -109,12 +110,18 @@ fn remove_checked(ctx: &Ctx, file: &Path) -> Output {
         Ok(()) => Output::new(),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Output::new(),
         Err(e) => match ctx.flavor {
-            Flavor::Pyenv => {
-                Output::error(format!("pyenv: cannot remove `{}': {e}", file.display()))
-            }
+            Flavor::Pyenv => Output::error(format!(
+                "pyenv: cannot remove `{}': {}",
+                file.display(),
+                io_reason(&e)
+            )),
             Flavor::PyenvWin => {
                 let mut o = Output::new();
-                o.out(format!("pyenv: cannot remove '{}': {e}", file.display()));
+                o.out(format!(
+                    "pyenv: cannot remove '{}': {}",
+                    file.display(),
+                    io_reason(&e)
+                ));
                 o.with_code(1)
             }
         },
@@ -148,7 +155,11 @@ fn win_write(ctx: &Ctx, file: &Path, versions: &[&str]) -> Output {
         Ok(()) => Output::new(),
         Err(e) => {
             let mut o = Output::new();
-            o.out(format!("pyenv: cannot write '{}': {e}", file.display()));
+            o.out(format!(
+                "pyenv: cannot write '{}': {}",
+                file.display(),
+                io_reason(&e)
+            ));
             o.with_code(1)
         }
     }

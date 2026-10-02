@@ -1,1 +1,1 @@
-pyenv: cannot remove `{work}/.python-version': Is a directory (os error 21)
+pyenv: cannot remove `{work}/.python-version': Is a directory

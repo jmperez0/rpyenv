@@ -3,6 +3,7 @@
 use crate::output::Output;
 use rpyenv_core::ctx::Ctx;
 use rpyenv_core::flavor::Flavor;
+use rpyenv_core::launch::io_reason;
 use rpyenv_core::paths::{lexical_normalize, win_path_key};
 use rpyenv_core::{pathsearch, prefix, select, verfile};
 use std::path::Path;
@@ -209,6 +210,10 @@ pub fn write_checked(ctx: &Ctx, file: &Path, versions: &[&str], force: bool) -> 
     }
     match verfile::write_versions(file, versions, ctx.flavor) {
         Ok(()) => Output::new(),
-        Err(e) => Output::error(format!("pyenv: cannot write `{}': {e}", file.display())),
+        Err(e) => Output::error(format!(
+            "pyenv: cannot write `{}': {}",
+            file.display(),
+            io_reason(&e)
+        )),
     }
 }
