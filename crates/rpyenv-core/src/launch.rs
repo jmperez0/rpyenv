@@ -17,6 +17,9 @@ pub struct LaunchPlan {
     /// `exec "$PYENV_COMMAND_PATH"` makes it.
     pub program: PathBuf,
     pub args: Vec<OsString>,
+    /// Windows: the caller's command line after the command, unchanged. When set, a
+    /// non-batch child gets it through `raw_arg` instead of `args` (spec §5.3).
+    pub raw_tail: Option<OsString>,
     /// Variables to set (`Some`) or remove (`None`) in the child.
     pub env: Vec<(OsString, Option<OsString>)>,
     /// Upstream's `invalid version` lines, for stderr before starting.
@@ -155,6 +158,7 @@ fn plan_pyenv(
         wait: is_pip_like(command, &args),
         program: found.path,
         args,
+        raw_tail: None,
         env: vars,
         warnings,
     })
@@ -186,28 +190,34 @@ fn plan_win(
         .collect();
     let path = win_child_path(ctx, &names, env.appdata.as_deref());
     let program = match mode {
-        // A shim finds its file like `pyenv which`; not found is exit 127 (D-42).
+        // A shim finds its file like `pyenv which`, launching only files Windows can start
+        // (M1b review M-4); not found is exit 127 (D-42).
         Mode::Shim => {
-            lookup::which_win(ctx, command)
+            lookup::which_win_runnable(ctx, command)
                 .map_err(|nf| lookup::not_found_report(ctx, command, &nf, true))?
                 .path
         }
         // `exec` lets the command line find it on the new PATH (D-40).
         Mode::Exec => {
             win_exec_version_check(ctx, &names)?;
-            pathsearch::find_cmd(command, &path, ctx.pathext.as_deref()).ok_or_else(|| Report {
-                lines: vec![
-                    format!("'{command}' is not recognized as an internal or external command,"),
-                    "operable program or batch file.".to_string(),
-                ],
-                stderr: true,
-                code: 1,
-            })?
+            pathsearch::find_cmd(command, &path, ctx.pathext.as_deref(), &ctx.pwd).ok_or_else(
+                || Report {
+                    lines: vec![
+                        format!(
+                            "'{command}' is not recognized as an internal or external command,"
+                        ),
+                        "operable program or batch file.".to_string(),
+                    ],
+                    stderr: true,
+                    code: 1,
+                },
+            )?
         }
     };
     Ok(LaunchPlan {
         program,
         args,
+        raw_tail: None,
         env: vec![(OsString::from("PATH"), Some(path))],
         warnings: Vec::new(),
         wait: true,
@@ -295,8 +305,23 @@ pub fn is_pip_like(command: &str, args: &[OsString]) -> bool {
 /// returns only if that fails. With `wait`, the child runs to the end, the rehash check
 /// runs (`rehash_with` is the shim binary rehash uses), and the child's exit code is
 /// returned. On Linux, a child that died from a signal makes this process die from it too.
-pub fn run(plan: &LaunchPlan, ctx: &Ctx, rehash_with: Option<&Path>) -> i32 {
+/// `Err` means the program couldn't be started at all: the caller decides where that goes
+/// (a GUI shim may have nowhere to print it).
+pub fn run(plan: &LaunchPlan, ctx: &Ctx, rehash_with: Option<&Path>) -> Result<i32, Report> {
     let mut cmd = Command::new(&plan.program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        match &plan.raw_tail {
+            Some(tail) if !is_batch(&plan.program) => {
+                cmd.raw_arg(tail);
+            }
+            _ => {
+                cmd.args(&plan.args);
+            }
+        }
+    }
+    #[cfg(not(windows))]
     cmd.args(&plan.args);
     for (k, v) in &plan.env {
         match v {
@@ -312,19 +337,30 @@ pub fn run(plan: &LaunchPlan, ctx: &Ctx, rehash_with: Option<&Path>) -> i32 {
     if !plan.wait {
         use std::os::unix::process::CommandExt;
         let err = cmd.exec();
-        return cannot_run(ctx.flavor, &plan.program, &err);
+        return Err(cannot_run(&plan.program, &err));
     }
     #[cfg(unix)]
     let status = sig::spawn_and_wait(&mut cmd);
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    let status = crate::winproc::spawn_and_wait(&mut cmd, &plan.program);
+    #[cfg(not(any(unix, windows)))]
     let status = cmd.status();
     if let Some(exe) = rehash_with {
         rehash::check(ctx, exe);
     }
     match status {
-        Ok(s) => exit_code(s),
-        Err(e) => cannot_run(ctx.flavor, &plan.program, &e),
+        Ok(s) => Ok(exit_code(s)),
+        Err(e) => Err(cannot_run(&plan.program, &e)),
     }
+}
+
+/// A `.bat` or `.cmd` file: std starts it through cmd.exe with its batch-file escaping,
+/// so it gets CRT-split arguments rather than the raw tail (spec §5.3).
+#[cfg(windows)]
+fn is_batch(p: &Path) -> bool {
+    p.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("bat") || e.eq_ignore_ascii_case("cmd"))
 }
 
 fn exit_code(status: ExitStatus) -> i32 {
@@ -339,13 +375,26 @@ fn exit_code(status: ExitStatus) -> i32 {
 }
 
 /// A file that can't be started: exit 127 when it is missing, else 126, as a shell
-/// would (allowlist D-43).
-fn cannot_run(flavor: Flavor, program: &Path, err: &std::io::Error) -> i32 {
-    eprint!("pyenv: {}: {err}{}", program.display(), flavor.eol());
-    if err.kind() == std::io::ErrorKind::NotFound {
+/// would (allowlist D-43). Only builds the report; the caller prints and logs it.
+fn cannot_run(program: &Path, err: &std::io::Error) -> Report {
+    let code = if err.kind() == std::io::ErrorKind::NotFound {
         127
     } else {
         126
+    };
+    Report {
+        lines: vec![format!("pyenv: {}: {}", program.display(), io_reason(err))],
+        stderr: true,
+        code,
+    }
+}
+
+/// An I/O error's text without Rust's ` (os error N)` suffix, as a shell prints it (D-43).
+pub fn io_reason(err: &std::io::Error) -> String {
+    let text = err.to_string();
+    match text.rfind(" (os error ") {
+        Some(i) if text.ends_with(')') => text[..i].to_string(),
+        _ => text,
     }
 }
 
@@ -431,26 +480,36 @@ mod sig {
                 Ok(())
             });
         }
-        let mut child = cmd.spawn()?;
-        CHILD.store(child.id() as i32, Ordering::SeqCst);
-        let result = child.wait();
-        // No PID is left for `forward` to signal, and this process's own dispositions are
-        // back to what the caller had, for the rehash check that runs next.
-        CHILD.store(0, Ordering::SeqCst);
-        // SAFETY: restoring this process's own signal dispositions to exactly what `current`
-        // read on entry, before anything was changed.
+        let result = match cmd.spawn() {
+            Ok(mut child) => {
+                CHILD.store(child.id() as i32, Ordering::SeqCst);
+                child.wait()
+            }
+            Err(e) => Err(e),
+        };
+        // Restore first, then clear CHILD, on both paths: a TERM or HUP that arrives in
+        // between meets the caller's own disposition, not a forwarder with no child.
+        // SAFETY: restoring this process's own dispositions to exactly what `current` read
+        // on entry, before anything was changed.
         unsafe {
             for (signal, original) in SIGNALS.iter().zip(on_entry) {
                 install(*signal, original);
             }
         }
+        CHILD.store(0, Ordering::SeqCst);
         result
     }
 
-    /// Dies from `signal`, as the child did, so the caller sees the same status.
+    /// Dies from `signal`, as the child did, so the caller sees the same status. No core
+    /// file: the child made one if it was going to, and the shim's would overwrite it.
     pub fn die_by(signal: i32) -> ! {
-        // SAFETY: plain libc calls on this process.
+        // SAFETY: plain libc calls on this process; lowering our own core limit is allowed.
         unsafe {
+            let none = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
+            libc::setrlimit(libc::RLIMIT_CORE, &none);
             libc::signal(signal, libc::SIG_DFL);
             libc::raise(signal);
         }
@@ -666,6 +725,14 @@ mod tests {
         ctx.pyenv_version = Some("3.9.1 3.7.7".to_string());
         let r = plan(&ctx, Mode::Exec, "python", vec![], &ExecEnv::default()).unwrap_err();
         assert_eq!(r.lines, WIN_EXEC_NO_VERSION);
+    }
+
+    #[test]
+    fn io_reasons_drop_the_os_error_suffix() {
+        let reason = io_reason(&std::io::Error::from_raw_os_error(2));
+        assert!(!reason.is_empty());
+        assert!(!reason.contains("os error"), "{reason}");
+        assert_eq!(io_reason(&std::io::Error::other("plain")), "plain");
     }
 
     #[test]

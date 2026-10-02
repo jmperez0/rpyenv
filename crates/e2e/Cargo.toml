@@ -12,5 +12,19 @@ name = "argv-echo"
 path = "src/bin/argv_echo.rs"
 test = false
 
+[[bin]]
+name = "argv-echow"
+path = "src/bin/argv_echow.rs"
+test = false
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Console",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
 [dev-dependencies]
 tempfile.workspace = true

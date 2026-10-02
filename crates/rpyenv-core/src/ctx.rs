@@ -24,6 +24,8 @@ pub struct Ctx {
     pub arch_suffix: &'static str,
     /// `HOME` when set and non-empty; upstream's `system` search expands `~` in `PATH` with it.
     pub home: Option<PathBuf>,
+    /// `RPYENV_BATCH_FORWARD` as set, empty or not (Windows rehash, spec §5.3).
+    pub batch_forward: Option<OsString>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -101,10 +103,12 @@ impl Ctx {
             pathext: get("PATHEXT"),
             arch_suffix,
             home: non_empty("HOME").map(PathBuf::from),
+            batch_forward: get("RPYENV_BATCH_FORWARD"),
         })
     }
 
-    /// A context for tests: no `PYENV_VERSION`, no `PATH`, no arch suffix.
+    /// A context for tests: no `PYENV_VERSION`, no `PATH`, no arch suffix, no
+    /// `RPYENV_BATCH_FORWARD`.
     pub fn for_test(flavor: Flavor, root: &Path, pwd: &Path) -> Ctx {
         Ctx {
             flavor,
@@ -116,6 +120,7 @@ impl Ctx {
             pathext: None,
             arch_suffix: "",
             home: None,
+            batch_forward: None,
         }
     }
 }

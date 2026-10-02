@@ -9,6 +9,10 @@ pub struct Output {
     pub stdout: String,
     pub stderr: String,
     pub code: i32,
+    /// When set, `emit` writes these bytes to stdout as-is instead of `stdout` (Windows
+    /// `RPYENV_FORWARD_CP`, spec §5.3): a path encoded in the console's code page isn't
+    /// valid UTF-8 in general, so it can't go through the `String` field.
+    pub raw_stdout: Option<Vec<u8>>,
 }
 
 impl Output {
@@ -49,7 +53,14 @@ impl Output {
         };
         let _ = std::io::stderr().write_all(convert(&self.stderr).as_bytes());
         let mut stdout = std::io::stdout().lock();
-        let _ = stdout.write_all(convert(&self.stdout).as_bytes());
+        match &self.raw_stdout {
+            Some(bytes) => {
+                let _ = stdout.write_all(bytes);
+            }
+            None => {
+                let _ = stdout.write_all(convert(&self.stdout).as_bytes());
+            }
+        }
         let _ = stdout.flush();
     }
 }

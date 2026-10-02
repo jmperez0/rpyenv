@@ -11,24 +11,42 @@ use std::path::{Path, PathBuf};
 /// The shim binary's own name, which is never a command.
 pub const SHIM_NAME: &str = "pyenv-shim";
 
-/// Runs the shim and returns the exit code, unless the command replaced this process.
+/// The GUI-subsystem shim binary's own name, which is never a command.
+pub const SHIMW_NAME: &str = "pyenv-shimw";
+
+/// The console shim's main. Returns the exit code, unless the command replaced this process.
 pub fn main() -> i32 {
+    run(false)
+}
+
+/// The GUI shim's main: the same, except that a message with nowhere to go appears in a
+/// message box.
+pub fn main_gui() -> i32 {
+    run(true)
+}
+
+/// Runs the shim and returns the exit code, unless the command replaced this process.
+fn run(gui: bool) -> i32 {
     let flavor = Flavor::current();
     let mut argv = std::env::args_os();
     let argv0 = argv.next().unwrap_or_default();
     let args: Vec<OsString> = argv.collect();
     let own = std::env::current_exe().ok();
     let Some(program) = command_name(flavor, &argv0, own.as_deref()) else {
-        eprint!(
-            "pyenv-shim: run this through a shim (such as `python`), not directly{}",
-            flavor.eol()
+        say(
+            gui,
+            flavor,
+            &[format!(
+                "{SHIM_NAME}: run this through a shim (such as `python`), not directly"
+            )],
+            true,
         );
         return 1;
     };
     let mut ctx = match Ctx::from_process() {
         Ok(ctx) => ctx,
         Err(e) => {
-            eprint!("{}{}", e.message(), flavor.eol());
+            say(gui, flavor, &[e.message()], true);
             return 1;
         }
     };
@@ -52,16 +70,51 @@ pub fn main() -> i32 {
     let env = ExecEnv::from_process(&program, own);
     match launch::plan(&ctx, Mode::Shim, &program, args, &env) {
         Err(report) => {
-            report.emit(flavor);
+            say(gui, flavor, &report.lines, report.stderr);
             report.code
         }
         Ok(plan) => {
-            for w in &plan.warnings {
-                eprint!("{w}{}", flavor.eol());
+            #[cfg(windows)]
+            let plan = launch::LaunchPlan {
+                raw_tail: crate::wincmd::own_tail(1),
+                ..plan
+            };
+            // A warning is non-fatal; it shouldn't force every GUI launch through an OK
+            // click. It's still in the debug log, from `say` itself.
+            say(false, flavor, &plan.warnings, true);
+            match launch::run(&plan, &ctx, rehash_with.as_deref()) {
+                Ok(code) => code,
+                Err(r) => {
+                    say(gui, flavor, &r.lines, r.stderr);
+                    r.code
+                }
             }
-            launch::run(&plan, &ctx, rehash_with.as_deref())
         }
     }
+}
+
+/// Prints what the shim has to say on its stream, and logs it to `RPYENV_DEBUG_LOG`. The
+/// GUI shim, when that stream isn't a usable handle, shows a message box instead
+/// (plan decision 4).
+fn say(gui: bool, flavor: Flavor, lines: &[String], to_stderr: bool) {
+    if lines.is_empty() {
+        return;
+    }
+    for line in lines {
+        crate::debuglog::append(line);
+    }
+    #[cfg(windows)]
+    if gui && !crate::winproc::std_handle_usable(to_stderr) {
+        crate::winproc::message_box(&lines.join("\r\n"));
+        return;
+    }
+    let _ = gui;
+    crate::lookup::Report {
+        lines: lines.to_vec(),
+        stderr: to_stderr,
+        code: 0,
+    }
+    .emit(flavor);
 }
 
 /// The command a shim stands for: `argv[0]`'s last component on Linux, where every shim
@@ -72,7 +125,10 @@ pub fn command_name(flavor: Flavor, argv0: &OsStr, own: Option<&Path>) -> Option
         Flavor::Pyenv => Path::new(argv0).file_name()?.to_string_lossy().into_owned(),
         Flavor::PyenvWin => own?.file_stem()?.to_string_lossy().into_owned(),
     };
-    (!name.is_empty() && !name.eq_ignore_ascii_case(SHIM_NAME)).then_some(name)
+    (!name.is_empty()
+        && !name.eq_ignore_ascii_case(SHIM_NAME)
+        && !name.eq_ignore_ascii_case(SHIMW_NAME))
+    .then_some(name)
 }
 
 /// The parent of the `shims` folder the shim was run from: the root upstream bakes into
@@ -107,15 +163,17 @@ pub fn own_root(
 }
 
 /// The path the shim was actually invoked as, on Linux: `argv0` itself when it contains a
-/// `/` (joined onto `cwd` when relative, then lexically normalized); otherwise the first
-/// `PATH` entry whose `<dir>/<argv0>` canonicalizes to the same file as `own`. The result is
-/// kept as spelled (not canonicalized), matching what upstream bakes in.
+/// `/` (joined onto `cwd` when relative, then lexically normalized) and it canonicalizes to
+/// the same file as `own`; otherwise the first `PATH` entry whose `<dir>/<argv0>`
+/// canonicalizes to the same file as `own`. The result is kept as spelled (not
+/// canonicalized), matching what upstream bakes in.
 fn linux_invoked_path(
     argv0: &OsStr,
     own: Option<&Path>,
     path: Option<&OsStr>,
     cwd: &Path,
 ) -> Option<PathBuf> {
+    let own_canon = std::fs::canonicalize(own?).ok()?;
     if argv0.as_encoded_bytes().contains(&b'/') {
         let p = Path::new(argv0);
         let joined = if p.is_relative() {
@@ -123,9 +181,10 @@ fn linux_invoked_path(
         } else {
             p.to_path_buf()
         };
-        return Some(crate::paths::lexical_normalize(&joined));
+        // Any program can set argv[0]: trust it only when it really is this shim.
+        let canon = std::fs::canonicalize(&joined).ok()?;
+        return (canon == own_canon).then(|| crate::paths::lexical_normalize(&joined));
     }
-    let own_canon = std::fs::canonicalize(own?).ok()?;
     std::env::split_paths(path?).find_map(|dir| {
         let candidate = dir.join(argv0);
         let canon = std::fs::canonicalize(&candidate).ok()?;
@@ -146,6 +205,7 @@ mod tests {
         let win = |own: &str| command_name(Flavor::PyenvWin, OsStr::new("x"), Some(Path::new(own)));
         assert_eq!(win("python.exe"), Some("python".to_string()));
         assert_eq!(win("PYENV-SHIM.EXE"), None);
+        assert_eq!(win("pyenv-shimw.exe"), None);
         assert_eq!(command_name(Flavor::PyenvWin, OsStr::new("x"), None), None);
     }
 
@@ -183,12 +243,37 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn own_root_linux_uses_an_argv0_with_a_slash() {
+    fn own_root_linux_trusts_an_argv0_with_a_slash_only_when_it_is_the_shim() {
         let tmp = tempfile::tempdir().unwrap();
-        let argv0 = tmp.path().join("root").join("shims").join("python");
+        let shims = tmp.path().join("root").join("shims");
+        std::fs::create_dir_all(&shims).unwrap();
+        let own_bin = tmp.path().join("pyenv-shim");
+        std::fs::write(&own_bin, b"bin").unwrap();
+        std::os::unix::fs::symlink(&own_bin, shims.join("python")).unwrap();
+        let argv0 = shims.join("python");
         assert_eq!(
-            own_root(Flavor::Pyenv, argv0.as_os_str(), None, None, tmp.path()),
+            own_root(
+                Flavor::Pyenv,
+                argv0.as_os_str(),
+                Some(&own_bin),
+                None,
+                tmp.path()
+            ),
             Some(tmp.path().join("root"))
+        );
+        // Any program can set argv[0]; a path that isn't this shim is not trusted.
+        let fake = tmp.path().join("fake").join("shims").join("python");
+        std::fs::create_dir_all(fake.parent().unwrap()).unwrap();
+        std::fs::write(&fake, b"other").unwrap();
+        assert_eq!(
+            own_root(
+                Flavor::Pyenv,
+                fake.as_os_str(),
+                Some(&own_bin),
+                None,
+                tmp.path()
+            ),
+            None
         );
     }
 

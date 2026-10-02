@@ -20,7 +20,7 @@ pub fn which(ctx: &Ctx, args: &[&str]) -> Output {
             let skip = Skip::from_env(c, crate::shim_exe());
             found_or_report(ctx, c, lookup::which_pyenv(ctx, c, nosystem, &skip), advice)
         }
-        (Flavor::PyenvWin, Some(c)) => found_or_report(ctx, c, lookup::which_win(ctx, c), true),
+        (Flavor::PyenvWin, Some(c)) => which_win_output(ctx, c, lookup::which_win(ctx, c)),
     }
 }
 
@@ -40,6 +40,55 @@ fn found_or_report(
             o
         }
         Err(nf) => lookup::not_found_report(ctx, command, &nf, advice).into(),
+    }
+}
+
+/// `pyenv which`'s Windows output: the normal UTF-8 line, unless `RPYENV_FORWARD_CP` asks
+/// for the path in the console's code page instead (a `.cmd` forwarder's `for /f`, spec
+/// §5.3) — `found_or_report_cp` on Windows, `found_or_report` everywhere else (the
+/// environment variable never applies off Windows).
+#[cfg(windows)]
+fn which_win_output(ctx: &Ctx, command: &str, result: Result<Found, NotFound>) -> Output {
+    if std::env::var_os("RPYENV_FORWARD_CP").is_some() {
+        return found_or_report_cp(ctx, command, result);
+    }
+    found_or_report(ctx, command, result, true)
+}
+
+#[cfg(not(windows))]
+fn which_win_output(ctx: &Ctx, command: &str, result: Result<Found, NotFound>) -> Output {
+    found_or_report(ctx, command, result, true)
+}
+
+/// Like `found_or_report`, but a resolved path is written encoded in the console's output
+/// code page instead of UTF-8, since a `.cmd` forwarder's `for /f` decodes the piped
+/// stdout that way. A path that code page can't represent fails the same way an
+/// unresolved command does: a `pyenv:` message on stderr and exit 127.
+#[cfg(windows)]
+fn found_or_report_cp(ctx: &Ctx, command: &str, result: Result<Found, NotFound>) -> Output {
+    match result {
+        Ok(found) => {
+            let mut o = Output::new();
+            for w in &found.warnings {
+                o.err(w);
+            }
+            let path = found.path.display().to_string();
+            match rpyenv_core::wincp::encode_for_console(&path) {
+                Ok(bytes) => {
+                    let mut raw = bytes;
+                    raw.extend_from_slice(b"\r\n");
+                    o.raw_stdout = Some(raw);
+                }
+                Err(cp) => {
+                    o.err(format!(
+                        "pyenv: {command}: the path can't be written in code page {cp}"
+                    ));
+                    o.code = 127;
+                }
+            }
+            o
+        }
+        Err(nf) => lookup::not_found_report(ctx, command, &nf, true).into(),
     }
 }
 

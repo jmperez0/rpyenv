@@ -602,6 +602,8 @@ warns when it finds one. pyenv-win has the same limitation.
 | `RPYENV_CATALOG_URL` | rpyenv | Alternative location (a mirror) for the rpyenv-published Windows catalog |
 | `RPYENV_BUILD_DEPS` | rpyenv (M8) | `system`, `install`, or `build`: how `pyenv install` resolves missing Linux build dependencies when there is no terminal to ask |
 
+`RPYENV_FORWARD_CP`, `RPYENV_FORWARD_PYENV`, `RPYENV_FORWARD_TARGET` and `RPYENV_FORWARD_DIR` are internal helpers that `.cmd` forwarders set and clear while they run; they are not user settings (allowlist D-47).
+
 rpyenv-only variables use the `RPYENV_` prefix so they can't collide with a
 future upstream `PYENV_` variable.
 
