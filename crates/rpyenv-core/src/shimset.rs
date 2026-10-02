@@ -312,6 +312,8 @@ mod tests {
         let _ = runnable;
     }
 
+    /// No shim for `activate` or `deactivate` with any extension, `activate.bat` included
+    /// (the Windows half of allowlist D-34).
     #[test]
     fn activation_scripts() {
         for n in [
