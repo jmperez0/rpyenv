@@ -14,6 +14,7 @@ import allowlist  # noqa: E402
 HERE = os.path.dirname(os.path.abspath(__file__))
 PLAN = re.compile(r"^([^\t]+)\t1\.\.(\d+)$")
 LINE = re.compile(r"^([^\t]+)\t(ok|not ok) \d+ (.*?)(?: # skip.*)?$")
+SKIP = re.compile(r"^([^\t]+)\tok \d+ (.*?) # skip\b")
 
 
 def parse_tap(text):
@@ -23,6 +24,18 @@ def parse_tap(text):
         m = LINE.match(line)
         if m:
             out[(m.group(1), m.group(3))] = m.group(2) == "ok"
+    return out
+
+
+def skipped(text):
+    """[(file, test name)] of the tests that reported `ok N name # skip ...`, in log order.
+    They count as passes, but how many there are must be visible: a skip for a missing
+    locale or tool means the test did not run."""
+    out = []
+    for line in text.splitlines():
+        m = SKIP.match(line)
+        if m:
+            out.append((m.group(1), m.group(2)))
     return out
 
 
@@ -85,14 +98,25 @@ def main(argv):
     found = structure_problems(text, read_files(os.path.join(HERE, "expected", "bats-files.txt")))
     found += problems(results, expected, allowlist.rows())
     failed = sum(1 for ok in results.values() if not ok)
-    line = f"bats: {len(results)} tests, {failed} failing, {len(expected)} expected to fail, {len(found)} problems"
+    skips = skipped(text)
+    line = (
+        f"bats: {len(results)} tests, {failed} failing, {len(expected)} expected to fail, "
+        f"{len(found)} problems, {len(skips)} skipped"
+    )
     print(line)
+    for f, name in skips:
+        print(f"  skipped: {f} | {name}")
     for p in found:
         print("FAIL " + p)
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
         with open(summary, "a", encoding="utf-8") as f:
-            f.write(f"### Upstream pyenv bats suite\n\n{line}\n\n" + "".join(f"- {p}\n" for p in found) + "\n")
+            f.write(
+                f"### Upstream pyenv bats suite\n\n{line}\n\n"
+                + "".join(f"- {p}\n" for p in found)
+                + "".join(f"- skipped: {sf} | {name}\n" for sf, name in skips)
+                + "\n"
+            )
     return 1 if found or not results else 0
 
 

@@ -43,13 +43,15 @@ jobs:
           mv "upstream/bats-core-${BATS_VERSION}" upstream/bats
       - name: Differential tests (spec §12.4)
         run: python3 parity/diff.py --rpyenv target/debug --upstream upstream/pyenv
+      # `locales` (a few MB) with en_US.UTF-8 generated, not `locales-all` (hundreds of MB): upstream's
+      # multibyte-path rehash test skips itself without that locale.
       # The binaries are built on ubuntu-latest and run in trixie-slim. That works while the
       # runner's glibc is no newer than trixie's (2.41).
       - name: Upstream bats suite in debian:trixie-slim (spec §12.3)
         if: ${{ !cancelled() }}
         run: |
           docker run --rm -v "$PWD:/w" -w /w debian:trixie-slim bash -c \
-            'apt-get update -qq && apt-get install -y -qq --no-install-recommends gawk git >/dev/null && bash parity/bats_run.sh /w/target/debug /w/upstream/pyenv /w/upstream/bats /w/bats-tap.txt'
+            'apt-get update -qq && apt-get install -y -qq --no-install-recommends gawk git locales >/dev/null && sed -i "/en_US.UTF-8/s/^# //" /etc/locale.gen && locale-gen >/dev/null && bash parity/bats_run.sh /w/target/debug /w/upstream/pyenv /w/upstream/bats /w/bats-tap.txt'
           python3 parity/bats_check.py bats-tap.txt
 
   windows:

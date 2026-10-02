@@ -23,6 +23,17 @@ class Parse(unittest.TestCase):
         })
 
 
+class Skips(unittest.TestCase):
+    def test_lists_the_skipped_tests_and_only_those(self):
+        self.assertEqual(bats_check.skipped(TAP), [("a.bats", "skipped one")])
+
+    def test_a_log_without_skips_has_none(self):
+        self.assertEqual(bats_check.skipped("a.bats\tok 1 x\na.bats\tnot ok 2 y\n"), [])
+
+    def test_a_name_that_merely_contains_skip_is_not_a_skip(self):
+        self.assertEqual(bats_check.skipped("a.bats\tok 1 does not # skipx name\n"), [])
+
+
 class StaleEntries(unittest.TestCase):
     """Review focus 1."""
 
