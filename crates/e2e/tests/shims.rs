@@ -309,7 +309,8 @@ fn linux_exit_check_converts_a_0_1_root_of_symlink_shims() {
     assert_eq!(std::fs::read(built("pyenv-shim")).unwrap(), installed);
 }
 
-/// Review focus 1: a symlink to a shim elsewhere on PATH must not make `system` recurse.
+/// Review focus 1: a symlink to a shim elsewhere on PATH must not make `system` recurse:
+/// the hit that resolves into the shims folder is passed over (allowlist D-30).
 #[cfg(unix)]
 #[test]
 fn system_command_never_finds_the_shim() {
@@ -373,6 +374,8 @@ fn win_shim_uses_the_root_it_lives_in() {
     assert_eq!(out.status.code(), Some(7));
 }
 
+/// A command the selected version lacks is looked up only in the installed versions:
+/// `which`'s message on stdout, listing the versions that have it, exit 127 (allowlist D-42).
 #[cfg(windows)]
 #[test]
 fn win_not_found_exits_127() {
@@ -388,6 +391,7 @@ fn win_not_found_exits_127() {
     assert_eq!(out.status.code(), Some(127));
 }
 
+/// Every shim waits for its child, then runs the stored-state check (allowlist D-39).
 #[cfg(windows)]
 #[test]
 fn win_every_shim_runs_the_rehash_check() {
@@ -409,6 +413,8 @@ fn win_every_shim_runs_the_rehash_check() {
     assert!(f.shim("black").is_file(), "the exit check did not rehash");
 }
 
+/// A batch tool in `Scripts` gets the console exe shim, which runs it in a child cmd
+/// (allowlist D-47).
 #[cfg(windows)]
 #[test]
 fn win_batch_target_runs_through_its_exe_shim() {

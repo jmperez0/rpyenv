@@ -129,3 +129,27 @@ fn win_rehash_and_shims() {
     let r = f.pyenv(&["shims", "--other"]);
     assert_eq!((r.stdout, r.code), (format!("{help}\r\n"), 0));
 }
+
+/// A version with `bin/conda` doesn't hide tools from rehash: `curl` and `clear` get shims,
+/// and with that version selected `which` finds conda's copies. Upstream's conda.bash hook
+/// drops the names in conda.d/default.list (allowlist D-44).
+#[cfg(unix)]
+#[test]
+fn rehash_keeps_the_tools_of_a_conda_version() {
+    let f = Fixture::new();
+    f.exe("miniconda3-latest/bin/python");
+    f.exe("miniconda3-latest/bin/conda");
+    let curl = f.exe("miniconda3-latest/bin/curl");
+    f.exe("miniconda3-latest/bin/clear");
+    let r = f.pyenv(&["rehash"]);
+    assert_eq!((r.stdout.as_str(), r.stderr.as_str(), r.code), ("", "", 0));
+    assert_eq!(
+        f.pyenv(&["shims", "--short"]).stdout,
+        "clear\nconda\ncurl\npython\n"
+    );
+    let r = f.pyenv_env(
+        &["which", "curl"],
+        &[("PYENV_VERSION", "miniconda3-latest")],
+    );
+    assert_eq!(r.stdout, format!("{}\n", curl.display()));
+}
