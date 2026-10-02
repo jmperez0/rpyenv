@@ -374,10 +374,12 @@ fn exit_code(status: ExitStatus) -> i32 {
     status.code().unwrap_or(1)
 }
 
-/// A file that can't be started: exit 127 when it is missing, else 126, as a shell
-/// would (allowlist D-43). Only builds the report; the caller prints and logs it.
+/// A file that can't be started: exit 127 when the file itself is missing, else 126, as
+/// bash does (allowlist D-43). A NotFound for a file that exists (a missing `#!`
+/// interpreter) is 126, bash's `bad interpreter`. Only builds the report; the caller
+/// prints and logs it.
 fn cannot_run(program: &Path, err: &std::io::Error) -> Report {
-    let code = if err.kind() == std::io::ErrorKind::NotFound {
+    let code = if err.kind() == std::io::ErrorKind::NotFound && !program.exists() {
         127
     } else {
         126

@@ -25,13 +25,14 @@ fn exec_runs_the_file_with_the_upstream_environment() {
     );
 }
 
-/// A file that can't be started gets `pyenv: <path>: <reason>` on stderr instead of bash's
-/// errors: exit 126 when it can't be run (here only group and others may run it, so
-/// `execve` refuses its owner) and 127 when it is missing (here its `#!` interpreter)
-/// (allowlist D-43). A file without `#!` is no trigger: `execvp` hands it to `/bin/sh`.
+/// A file that exists but can't be started gets `pyenv: <path>: <reason>` on stderr
+/// instead of bash's errors, and exit 126 as in bash: here only group and others may run
+/// it (`execve` refuses its owner), or its `#!` interpreter is missing (bash's `bad
+/// interpreter`) (allowlist D-43). A file without `#!` is no trigger: `execvp` hands it to
+/// `/bin/sh`. Exit 127, for a file that is itself gone, is pinned in `launch.rs`.
 #[cfg(unix)]
 #[test]
-fn exec_start_failures_exit_126_or_127() {
+fn exec_start_failures_exit_126() {
     use std::os::unix::fs::PermissionsExt;
     let f = Fixture::new();
     let locked = f.exe("3.12.10/bin/locked");
@@ -57,7 +58,7 @@ fn exec_start_failures_exit_126_or_127() {
         (r.stderr, r.code),
         (
             format!("pyenv: {}: No such file or directory\n", orphan.display()),
-            127
+            126
         )
     );
 }
