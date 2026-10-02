@@ -10,7 +10,7 @@ class Case:
     name: str
     args: tuple
     os: str = "both"  # "both", "Linux" or "Windows"
-    env: tuple = ()  # (name, value) pairs; value None removes the variable; {v0}/{v1} expand
+    env: tuple = ()  # (name, value) pairs; value None removes the variable; {v0}/{v1}/{sysroot} expand
     files: tuple = ()  # (path, content) pairs; path "root/…" or "work/…"; {v0}/{v1} expand
     remove: tuple = ()  # paths removed after the fixture is built
     readonly: tuple = ()  # paths made read-only after the fixture is built
@@ -87,10 +87,10 @@ CASES = (
          files=(("work/.python-version", "{v0}\n"),), readonly=("work/.python-version",),
          compare=("work/.python-version",), allow=("D-21",)),
     # D-22: with an extra argument the PATH check is skipped (pyenv.bat routes on %1%2). The
-    # shims folder is off PATH (C:\Windows is where GitHub's runners have it) and both tools'
+    # shims folder is off PATH (only the system folders, from {sysroot}) and both tools'
     # python shims exist, so the check would warn.
     Case("version extra with the shims off PATH", ("version", "extra"), os="Windows",
-         env=(("PATH", r"C:\Windows\System32;C:\Windows"),),
+         env=(("PATH", r"{sysroot}\System32;{sysroot}"),),
          files=(("root/shims/python.bat", ""), ("root/shims/python.exe", "")), allow=("D-22",)),
     # D-11: `--unset` with a missing file prints a VBScript runtime error (exit 0).
     Case("local --unset without a local file", ("local", "--unset"), os="Windows", allow=("D-11",)),
@@ -165,6 +165,6 @@ CASES = (
     # D-54: the PATH check's `where python` finds nothing and prints its INFO line on stderr.
     # As in the D-22 case, the shims folder is off PATH and both tools' python shims exist.
     Case("version with no python on PATH", ("version",), os="Windows",
-         env=(("PATH", r"C:\Windows\System32;C:\Windows"),),
+         env=(("PATH", r"{sysroot}\System32;{sysroot}"),),
          files=(("root/shims/python.bat", ""), ("root/shims/python.exe", "")), allow=("D-54",)),
 )

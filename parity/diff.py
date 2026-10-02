@@ -28,7 +28,9 @@ BASE = os.path.join(allowlist.REPO, "target", "parity-diff")
 
 
 def expand(text):
-    return text.replace("{v0}", VERSIONS[0]).replace("{v1}", VERSIONS[1])
+    """{v0}/{v1} become the fixture's versions and {sysroot} the harness's SystemRoot (Windows)."""
+    text = text.replace("{v0}", VERSIONS[0]).replace("{v1}", VERSIONS[1])
+    return text.replace("{sysroot}", os.environ.get("SystemRoot", ""))
 
 
 def applicable(case, table, os_name=OS_NAME):

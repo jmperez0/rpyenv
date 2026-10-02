@@ -49,6 +49,13 @@ class Placeholders(unittest.TestCase):
         self.assertEqual(diff.from_placeholders(out, root, work), data)
 
 
+class Expand(unittest.TestCase):
+    def test_versions_and_the_system_root(self):
+        with mock.patch.dict(diff.os.environ, {"SystemRoot": r"Q:\Win"}):
+            self.assertEqual(diff.expand(r"{v0} {v1} {sysroot}\System32"),
+                             f"{diff.VERSIONS[0]} {diff.VERSIONS[1]} " + r"Q:\Win\System32")
+
+
 class Judge(unittest.TestCase):
     root, work = "/fx/root", "/fx/work"
     golden = (0, b"{root}\n", b"", b"")
