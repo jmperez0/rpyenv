@@ -59,11 +59,17 @@ fn run(gui: bool) -> i32 {
     }
     // Shims are hardlinks to the template, so the exit check passes the template itself
     // and nothing is copied (spec §8).
-    let rehash_with = Some(
-        ctx.shims_dir()
-            .join(rehash::TEMPLATE_DIR)
-            .join(rehash::template_name(flavor)),
-    );
+    let template = ctx
+        .shims_dir()
+        .join(rehash::TEMPLATE_DIR)
+        .join(rehash::template_name(flavor));
+    // A root from rpyenv 0.1 has no template yet; the running shim's own binary (for a 0.1
+    // symlink shim, the installed `pyenv-shim`) seeds it.
+    let rehash_with = if template.is_file() {
+        Some(template)
+    } else {
+        own.clone()
+    };
     let env = ExecEnv::from_process(&program, own);
     match launch::plan(&ctx, Mode::Shim, &program, args, &env) {
         Err(report) => {

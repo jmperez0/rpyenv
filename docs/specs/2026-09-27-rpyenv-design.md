@@ -383,8 +383,12 @@ instructions, as upstream does.
 - A stale shim that is running can't be deleted on Windows, so it is renamed
   to `*.old` and deleted by a later rehash.
 - After an rpyenv upgrade, rehash notices that the installed shim binaries no
-  longer match the copies in `shims\.template\` (by size and hash). It
-  refreshes the copies and recreates the hardlinks.
+  longer match the copies in `shims/.template/` (`shims\.template\` on
+  Windows) by their bytes. It refreshes the copies and recreates the
+  hardlinks. A shim's own exit check never refreshes the template; `pyenv
+  rehash` does, and so does any rehash a CLI command runs (for example
+  `pyenv exec` when the versions changed). Until then, shims keep running the
+  previous copy.
 
 ## 9. Installer
 

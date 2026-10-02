@@ -395,7 +395,9 @@ fn same_file_data(a: &fs::Metadata, b: &fs::Metadata) -> bool {
 }
 
 /// Whether a shim, with metadata `m` read without following symlinks, already is the
-/// template whose metadata is `t`. On Unix that's the same inode. Everywhere, a file with
+/// template whose metadata is `t`. On Unix that's the same inode; the inode check documents
+/// intent, since a hardlink also shares the template's size and modification time, so
+/// `same_file_data` alone would accept it. Everywhere, a file with
 /// the template's size and modification time also counts: a hardlink shares both on
 /// Windows, and a copy made by `copy_template` gets both. A symlink is never current, so
 /// rpyenv 0.1's symlink shims are replaced (Review focus 1).
@@ -431,7 +433,7 @@ fn set_mtime(p: &Path, t: SystemTime) -> io::Result<()> {
     options.open(p)?.set_modified(t)
 }
 
-/// `shims\.template\<name>`, copied again when `source` has different bytes (spec §8).
+/// `shims/.template/<name>`, copied again when `source` has different bytes (spec §8).
 /// Old copies renamed aside by an earlier refresh, and leftover `.tmp` files, are deleted
 /// first.
 fn refresh_template(shims: &Path, source: &Path, name: &str) -> io::Result<PathBuf> {
