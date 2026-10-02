@@ -149,6 +149,15 @@ fn win_a_start_failure_reaches_the_debug_log() {
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(126));
+    // stderr is in the console's code page, or the OEM one when this process has no console
+    // (the shim then gets a console of its own).
+    let cp = match rpyenv_core::wincp::output_cp() {
+        0 => rpyenv_core::wincp::oem_cp(),
+        cp => cp,
+    };
+    let stderr = rpyenv_core::wincp::decode(&out.stderr, cp);
+    assert!(stderr.contains("bad.exe: "), "{stderr}");
+    assert!(!stderr.contains("%1"), "{stderr}");
     let text = std::fs::read_to_string(&log).unwrap();
     let line = text
         .lines()
