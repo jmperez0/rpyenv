@@ -41,8 +41,8 @@ class InstalledEnv(unittest.TestCase):
         import sys
         sys.path.insert(0, HERE)
         from pyenv_win_run import installed_env
-        home = os.path.join("D:" + os.sep, "w", "pyenv-win")
-        host = os.path.join("C:" + os.sep, "Users", "me", ".pyenv", "pyenv-win")
+        home = os.path.join(os.sep, "w", "pyenv-win")
+        host = os.path.join(os.sep, "Users", "me", ".pyenv", "pyenv-win")
         base = {
             "PYENV": host + os.sep,
             "PATH": os.pathsep.join([os.path.join(host, "bin"), "X", os.path.join(host, "shims"), "Y"]),
