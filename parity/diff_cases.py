@@ -162,4 +162,9 @@ CASES = (
     # D-48 isn't involved.
     Case("version-name with a non-ASCII name in the local file", ("version-name",), os="Windows",
          files=(("work/.python-version", "3.9.1-\u00e9\n"),), allow=("D-53",)),
+    # D-54: the PATH check's `where python` finds nothing and prints its INFO line on stderr.
+    # As in the D-22 case, the shims folder is off PATH and both tools' python shims exist.
+    Case("version with no python on PATH", ("version",), os="Windows",
+         env=(("PATH", r"C:\Windows\System32;C:\Windows"),),
+         files=(("root/shims/python.bat", ""), ("root/shims/python.exe", "")), allow=("D-54",)),
 )
