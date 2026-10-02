@@ -195,8 +195,12 @@ def run(tool, rpyenv, upstream, places, case):
             env.pop(k, None)
         else:
             env[k] = expand(v)
+    # On Windows each run gets a hidden console of its own, in the OEM code page. pyenv.bat
+    # runs `chcp 65001` and never restores it, so in a shared console every later run, rpyenv's
+    # included, would write for code page 65001 instead (D-48, D-53).
+    flags = 0x08000000 if WINDOWS else 0  # CREATE_NO_WINDOW
     p = subprocess.run(cmd + [expand(a) for a in case.args], cwd=work, env=env,
-                       capture_output=True, stdin=subprocess.DEVNULL, timeout=120)
+                       capture_output=True, stdin=subprocess.DEVNULL, timeout=120, creationflags=flags)
     files = NEXT_FILE.join(b"<missing>" if x is None else x
                            for x in map(snapshot, (resolve(places, r) for r in case.compare)))
     return (p.returncode, p.stdout, p.stderr, files)
