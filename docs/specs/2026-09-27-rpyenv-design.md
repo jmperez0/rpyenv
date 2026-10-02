@@ -584,6 +584,14 @@ warns when it finds one. pyenv-win has the same limitation.
      `pyenv-<cmd>` calls, on Linux
    - expected failures (batch internals, cmd `shell` semantics) are listed
      with reasons
+
+   When a milestone ships a command, its plan must: (1) add the milestone to
+   `DELIVERED` in `parity/allowlist.py`, which makes the expected lists reject
+   it as a reason; (2) add a `pyenv-<cmd>` wrapper in `parity/bats_run.sh`;
+   (3) remove the now-passing entries from `parity/expected/*.txt`; and
+   (4) regenerate the affected goldens with `parity/diff.py --update-golden`,
+   reviewing `git diff parity/golden`. Without (2) the command's bats tests
+   would keep failing under the milestone's name and the gate would stay green.
 4. **Differential testing.** CI installs real pyenv (Linux) and pyenv-win
    (Windows), runs the same commands against both tools on shared fixture
    roots, and compares stdout, stderr, and exit codes. Intended differences

@@ -10,6 +10,8 @@ MALFORMED = re.compile(r"^\|\s*D-")
 # A test of a command rpyenv doesn't implement yet fails for that reason alone; its reason
 # cites the milestone that brings the command (spec §14) instead of a row.
 MILESTONES = ("M2", "M3", "M4", "M5", "M6", "M7", "M8", "M9")
+# milestones that have shipped; add yours when your plan lands
+DELIVERED = ("M1",)
 
 
 def rows(path=ALLOWLIST):
@@ -37,6 +39,11 @@ def check_reason(reason, os_name, table):
     """None when `reason` starts with a milestone, or with a row of `table` that applies to
     `os_name` ("Linux" or "Windows"); otherwise what is wrong with it."""
     t = tag(reason)
+    if t in DELIVERED:
+        return (
+            f"{t} is delivered: the test should pass now (add its pyenv-<cmd> wrapper in "
+            "bats_run.sh / update expected lists), or cite an allowlist row"
+        )
     if t in MILESTONES:
         return None
     if t not in table:

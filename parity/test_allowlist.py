@@ -54,6 +54,20 @@ class Reasons(unittest.TestCase):
         self.assertIsNone(allowlist.check_reason("D-35 the lock", "Linux", self.table))
         self.assertIsNone(allowlist.check_reason("D-01 fixed line", "Windows", self.table))
 
+    def test_a_delivered_milestone_is_rejected(self):
+        self.assertIsNone(allowlist.check_reason("M2 not yet", "Linux", self.table))
+        old = allowlist.DELIVERED
+        allowlist.DELIVERED = old + ("M2",)
+        try:
+            msg = allowlist.check_reason("M2 not yet", "Linux", self.table)
+        finally:
+            allowlist.DELIVERED = old
+        self.assertIn("M2 is delivered", msg)
+        self.assertIn("pyenv-<cmd> wrapper", msg)
+
+    def test_m1_is_delivered_and_rejected(self):
+        self.assertIn("M1 is delivered", allowlist.check_reason("M1 x", "Linux", self.table))
+
     def test_a_milestone_is_accepted(self):
         self.assertIsNone(allowlist.check_reason("M3 shell integration", "Linux", self.table))
 
