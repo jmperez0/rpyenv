@@ -17,7 +17,7 @@ pub fn is_activation(file_name: &str) -> bool {
     stem.eq_ignore_ascii_case("activate") || stem.eq_ignore_ascii_case("deactivate")
 }
 
-/// Upstream `pyenv versions --executables`, filtered: the runnable files in every
+/// Upstream `pyenv versions --executables`, filtered: the files with an execute bit in every
 /// `versions/*/bin` and `versions/*/envs/*/bin`, without dotfiles or activation scripts.
 /// Byte order, no duplicates (allowlist D-33).
 pub fn executables_pyenv(versions_dir: &Path) -> Vec<OsString> {
@@ -33,7 +33,7 @@ pub fn executables_pyenv(versions_dir: &Path) -> Vec<OsString> {
                 let text = name.to_string_lossy();
                 if !text.starts_with('.')
                     && !is_activation(&text)
-                    && pathsearch::is_runnable(&f.path())
+                    && pathsearch::has_exec_bit(&f.path())
                 {
                     names.insert(name);
                 }
@@ -312,6 +312,8 @@ mod tests {
         let _ = runnable;
     }
 
+    /// No shim for `activate` or `deactivate` with any extension, `activate.bat` included
+    /// (the Windows half of allowlist D-34).
     #[test]
     fn activation_scripts() {
         for n in [

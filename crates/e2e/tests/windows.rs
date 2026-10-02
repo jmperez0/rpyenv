@@ -96,7 +96,7 @@ fn win_exit_codes_pass_through_unchanged() {
     assert_eq!(out.status.code(), Some(code));
 }
 
-/// Review focus 3.
+/// Review focus 3: killing the shim ends the child, through the Job Object (allowlist D-45).
 #[test]
 fn win_killing_the_shim_kills_the_child() {
     let f = Fixture::new();
@@ -347,7 +347,7 @@ fn win_a_shim_with_a_console_shares_it() {
 }
 
 /// Review focus 5: a GUI program's shim is the GUI shim, and it passes arguments and the
-/// exit code on like the console shim.
+/// exit code on like the console shim (allowlist D-46).
 #[test]
 fn win_gui_programs_get_the_gui_shim() {
     let f = Fixture::new();
@@ -615,7 +615,7 @@ fn pinned_850(cmdline: &str) -> String {
 }
 
 /// A forwarded batch tool changes the caller's environment, and the helper variable
-/// doesn't stay behind.
+/// doesn't stay behind (allowlist D-47).
 #[test]
 fn win_forwarder_changes_the_callers_environment() {
     let f = Fixture::new();

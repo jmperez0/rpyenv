@@ -1,0 +1,24 @@
+pyenv 2.8.6 (rpyenv 0.1.0)
+Usage: pyenv <command> [<args>]
+
+Some useful pyenv commands are:
+   --version   Display the version of pyenv
+   commands    List all available pyenv commands
+   exec        Run an executable with the selected Python version
+   global      Set or show the global Python version(s)
+   help        Display help for a command
+   local       Set or show the local application-specific Python version(s)
+   prefix      Display prefixes for Python versions
+   rehash      Rehash pyenv shims (run this after installing executables)
+   root        Display the root directory where versions and shims are kept
+   shims       List existing pyenv shims
+   version     Show the current Python version(s) and its origin
+   version-file   Detect the file that sets the current pyenv version
+   version-name   Show the current Python version
+   version-origin   Explain how the current Python version is set
+   versions    List all Python versions available to pyenv
+   whence      List all Python versions that contain the given executable
+   which       Display the full path to an executable
+
+See `pyenv help <command>' for information on a specific command.
+For full documentation, see: https://github.com/pyenv/pyenv#readme

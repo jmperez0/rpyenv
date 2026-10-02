@@ -350,3 +350,58 @@ fn win_redirected_output_uses_the_console_code_page() {
     let utf8 = run(65001);
     assert!(has(&utf8, "py env ñ\\root\r\n".as_bytes()), "{utf8:?}");
 }
+
+/// A drive letter `subst`ed to a folder, removed again on drop.
+#[cfg(windows)]
+struct Subst(char);
+
+#[cfg(windows)]
+impl Subst {
+    /// The first free letter from `Z:` down, mapped to `dir`.
+    fn new(dir: &std::path::Path) -> Subst {
+        for letter in ('G'..='Z').rev() {
+            if std::path::Path::new(&format!("{letter}:\\")).exists() {
+                continue;
+            }
+            let ok = std::process::Command::new("subst")
+                .arg(format!("{letter}:"))
+                .arg(dir)
+                .status()
+                .unwrap()
+                .success();
+            if ok {
+                return Subst(letter);
+            }
+        }
+        panic!("no free drive letter for subst");
+    }
+}
+
+#[cfg(windows)]
+impl Drop for Subst {
+    fn drop(&mut self) {
+        let _ = std::process::Command::new("subst")
+            .args([format!("{}:", self.0), "/d".to_string()])
+            .status();
+    }
+}
+
+/// A `.python-version` at a drive root is named `X:\.python-version`, with one backslash;
+/// pyenv-win doubles it (allowlist D-25). The drive is a `subst` of the work folder.
+#[cfg(windows)]
+#[test]
+fn win_a_local_file_at_a_drive_root_has_one_backslash() {
+    let f = Fixture::new();
+    f.version("3.9.1");
+    f.file(&f.work.join(".python-version"), "3.9.1\r\n");
+    let drive = Subst::new(&f.work);
+    let root = std::path::PathBuf::from(format!("{}:\\", drive.0));
+    assert_eq!(
+        f.pyenv_in(&root, &["version"]).stdout,
+        format!("3.9.1 (set by {}:\\.python-version)\r\n", drive.0)
+    );
+    assert_eq!(
+        f.pyenv_in(&root, &["version-origin"]).stdout,
+        format!("{}:\\.python-version\r\n", drive.0)
+    );
+}

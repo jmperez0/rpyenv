@@ -5,3 +5,6 @@
 /.claude/
 /.remember/
 /CLAUDE.md
+
+# Python bytecode
+__pycache__/

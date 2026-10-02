@@ -104,9 +104,34 @@ fn same_dir(a: &Path, b: &Path, flavor: Flavor) -> bool {
     norm(a) == norm(b)
 }
 
-/// A regular file (following symlinks) that can be run: any execute bit on Unix.
+/// The lookup's test: a regular file (following symlinks) that the caller may run. On Unix
+/// that is `faccessat(X_OK, AT_EACCESS)`, the effective IDs, which is what upstream's
+/// `[ -x ]` checks (allowlist D-29). A path with a NUL can't be.
 #[cfg(unix)]
 pub fn is_runnable(p: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    if !p.metadata().map(|m| m.is_file()).unwrap_or(false) {
+        return false;
+    }
+    let Ok(c) = std::ffi::CString::new(p.as_os_str().as_bytes()) else {
+        return false;
+    };
+    // SAFETY: `c` is a valid NUL-terminated string that outlives the call; `faccessat`
+    // only reads it, and `AT_FDCWD` makes a relative path resolve against the current
+    // folder, as `access` would.
+    unsafe { libc::faccessat(libc::AT_FDCWD, c.as_ptr(), libc::X_OK, libc::AT_EACCESS) == 0 }
+}
+
+#[cfg(not(unix))]
+pub fn is_runnable(p: &Path) -> bool {
+    p.is_file()
+}
+
+/// The shim listing's test: a regular file (following symlinks) with any execute bit, for
+/// anyone. It differs from [`is_runnable`] on purpose: upstream's listing is a plain glob
+/// with no `-x`, and the shim set must not depend on who rehashed last (allowlist D-33).
+#[cfg(unix)]
+pub fn has_exec_bit(p: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     p.metadata()
         .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
@@ -114,7 +139,7 @@ pub fn is_runnable(p: &Path) -> bool {
 }
 
 #[cfg(not(unix))]
-pub fn is_runnable(p: &Path) -> bool {
+pub fn has_exec_bit(p: &Path) -> bool {
     p.is_file()
 }
 
@@ -230,6 +255,37 @@ mod tests {
             Some(b.join("x.py"))
         );
         assert_eq!(find_cmd("x", &path, None, tmp.path()), None);
+    }
+
+    /// A file only group and others may run isn't runnable for its owner, as with `[ -x ]`
+    /// (allowlist D-29). Root may run it, as `-x` says too, so the check is skipped there.
+    #[cfg(unix)]
+    #[test]
+    fn a_file_the_caller_may_not_run_is_not_runnable() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let p = make_exe(tmp.path(), "locked");
+        assert!(is_runnable(&p));
+        fs::set_permissions(&p, fs::Permissions::from_mode(0o011)).unwrap();
+        if fs::read(&p).is_ok() {
+            eprintln!("running as root: skipping a_file_the_caller_may_not_run_is_not_runnable");
+            return;
+        }
+        assert!(!is_runnable(&p));
+    }
+
+    /// cmd.exe would run a `tool.exe` from the current folder before searching PATH; rpyenv
+    /// searches only the child's PATH (allowlist D-40).
+    #[test]
+    fn cmd_search_skips_the_current_folder() {
+        let tmp = tempfile::tempdir().unwrap();
+        make_exe(tmp.path(), "tool.exe");
+        let elsewhere = tmp.path().join("elsewhere");
+        fs::create_dir_all(&elsewhere).unwrap();
+        let path = OsString::from(elsewhere.display().to_string());
+        let exts = Some(OsStr::new(".EXE"));
+        assert_eq!(find_cmd("tool", &path, exts, tmp.path()), None);
+        assert_eq!(find_cmd("tool.exe", &path, exts, tmp.path()), None);
     }
 
     #[cfg(windows)]

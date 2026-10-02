@@ -1,0 +1,3 @@
+[91mFATAL: Found [95m[91m version before pyenv in PATH.[0m
+[91mPlease remove [95m[91m from PATH for pyenv to work properly.[0m
+3.9.1 (set by {root}\version)

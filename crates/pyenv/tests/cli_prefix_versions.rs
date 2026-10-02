@@ -166,3 +166,27 @@ fn win_commands_order() {
         "--version\r\ncommands\r\nexec\r\nglobal\r\nhelp\r\nlocal\r\nprefix\r\nrehash\r\nroot\r\nshims\r\nversion-file-read\r\nversion-file-write\r\nversion-file\r\nversion-name\r\nversion-origin\r\nversion\r\nversions\r\nvname\r\nwhence\r\nwhich\r\n"
     );
 }
+
+/// With `versions` a symlink, envs are still listed as `<version>/envs/<name>`; upstream
+/// prints them as absolute paths (allowlist D-27).
+#[cfg(unix)]
+#[test]
+fn versions_lists_envs_by_name_when_versions_is_a_symlink() {
+    use std::os::unix::fs::symlink;
+    let f = Fixture::new();
+    let real = f.base.join("real versions");
+    std::fs::create_dir_all(real.join("3.12.10").join("envs").join("alpha")).unwrap();
+    std::fs::remove_dir(f.root.join("versions")).unwrap();
+    symlink(&real, f.root.join("versions")).unwrap();
+    assert_eq!(
+        f.pyenv(&["versions", "--bare"]).stdout,
+        "3.12.10\n3.12.10/envs/alpha\n"
+    );
+    let r = f.pyenv_env(&["versions"], &[("PYENV_VERSION", "3.12.10/envs/alpha")]);
+    assert!(
+        r.stdout
+            .contains("\n* 3.12.10/envs/alpha (set by PYENV_VERSION environment variable)\n"),
+        "{}",
+        r.stdout
+    );
+}

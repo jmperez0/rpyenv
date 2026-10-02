@@ -308,10 +308,10 @@ instructions, as upstream does.
   `shims/.template/pyenv-shim`, a per-user copy of `pyenv-shim` (a copy when
   a hardlink isn't possible). With symlinks to the installed binary, a
   program that writes into one shim would overwrite `pyenv-shim` itself and
-  break every shim beyond what `pyenv rehash` can repair; with the copy, only
-  the copy is damaged, and rehash replaces it when its bytes differ from the
+  break every shim beyond what `pyenv rehash` can repair; with the template, only
+  the template is damaged, and rehash replaces it when its bytes differ from the
   installed binary. Every shim then fails until `pyenv rehash`, because the
-  shims share the copy and so no shim can run its own check; `pyenv rehash`
+  shims share the template and so no shim can run its own check; `pyenv rehash`
   restores them from the installed binary, which stays intact. Linux's `fs.protected_hardlinks` also forbids a hardlink
   to a file the user doesn't own, as Windows does below.
 - Windows:
@@ -548,10 +548,9 @@ warns when it finds one. pyenv-win has the same limitation.
   - LAZY mode opens the console and keeps it open on error.
   - NO-WINDOW and MIRROR modes write to the caller's stderr and, if set, to
     `RPYENV_DEBUG_LOG`.
-- **Encoding (Windows):** text rpyenv's stdout and stderr write when they go to
-  a pipe, a file or NUL is in
-  the console's output code page (with no console, the ANSI code page), as
-  cmd.exe and pyenv-win write theirs. When a character doesn't fit that code
+- **Encoding (Windows):** rpyenv's stdout and stderr, when they go to a pipe, a
+  file or NUL, are in the console's output code page (with no console, the ANSI
+  code page), as cmd.exe and pyenv-win write theirs. When a character doesn't fit that code
   page, the whole text is written as UTF-8 instead of turning the character
   into `?` (allowlist D-48); a console set to code page 65001 gets UTF-8
   always. Text written to a console is Unicode. `RPYENV_DEBUG_LOG` is always
@@ -585,6 +584,14 @@ warns when it finds one. pyenv-win has the same limitation.
      `pyenv-<cmd>` calls, on Linux
    - expected failures (batch internals, cmd `shell` semantics) are listed
      with reasons
+
+   When a milestone ships a command, its plan must: (1) add the milestone to
+   `DELIVERED` in `parity/allowlist.py`, which makes the expected lists reject
+   it as a reason; (2) add a `pyenv-<cmd>` wrapper in `parity/bats_run.sh`;
+   (3) remove the now-passing entries from `parity/expected/*.txt`; and
+   (4) regenerate the affected goldens with `parity/diff.py --update-golden`,
+   reviewing `git diff parity/golden`. Without (2) the command's bats tests
+   would keep failing under the milestone's name and the gate would stay green.
 4. **Differential testing.** CI installs real pyenv (Linux) and pyenv-win
    (Windows), runs the same commands against both tools on shared fixture
    roots, and compares stdout, stderr, and exit codes. Intended differences

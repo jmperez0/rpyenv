@@ -374,14 +374,30 @@ fn exit_code(status: ExitStatus) -> i32 {
     status.code().unwrap_or(1)
 }
 
-/// A file that can't be started: exit 127 when it is missing, else 126, as a shell
-/// would (allowlist D-43). Only builds the report; the caller prints and logs it.
+/// A file that can't be started: exit 127 when the file itself is missing, else 126, as
+/// bash does (allowlist D-43). A NotFound for a file that exists (a missing `#!`
+/// interpreter) is 126, bash's `bad interpreter`. Only builds the report; the caller
+/// prints and logs it.
 fn cannot_run(program: &Path, err: &std::io::Error) -> Report {
-    let code = if err.kind() == std::io::ErrorKind::NotFound {
+    let code = if err.kind() == std::io::ErrorKind::NotFound && !program.exists() {
         127
     } else {
         126
     };
+    #[cfg(unix)]
+    if code == 126 && err.kind() == std::io::ErrorKind::NotFound {
+        if let Some(interp) = shebang_interpreter(program) {
+            return Report {
+                lines: vec![format!(
+                    "pyenv: {}: {}: bad interpreter: No such file or directory",
+                    program.display(),
+                    interp
+                )],
+                stderr: true,
+                code,
+            };
+        }
+    }
     Report {
         lines: vec![format!(
             "pyenv: {}: {}",
@@ -391,6 +407,31 @@ fn cannot_run(program: &Path, err: &std::io::Error) -> Report {
         stderr: true,
         code,
     }
+}
+
+/// The interpreter a script's `#!` line names: the first word after `#!`, from the first 256
+/// bytes. None when the file has no `#!` or can't be read (bash's `bad interpreter` message).
+/// Words end at a space or tab only, as the kernel splits them, so a CRLF line's `\r` stays
+/// part of the name; bash shows it as `^M`, which is why such a script fails to start.
+#[cfg(unix)]
+fn shebang_interpreter(program: &Path) -> Option<String> {
+    use std::io::Read;
+    let mut head = Vec::new();
+    std::fs::File::open(program)
+        .ok()?
+        .take(256)
+        .read_to_end(&mut head)
+        .ok()?;
+    let line = head.strip_prefix(b"#!")?;
+    let line = line.split(|&b| b == b'\n').next()?;
+    let word = line
+        .split(|&b| b == b' ' || b == b'\t')
+        .find(|w| !w.is_empty())?;
+    let name = String::from_utf8_lossy(word);
+    Some(match name.strip_suffix('\r') {
+        Some(stem) => format!("{stem}^M"),
+        None => name.into_owned(),
+    })
 }
 
 /// `io_reason`, with the `%1` that some Windows messages leave for the program's name
@@ -715,6 +756,53 @@ mod tests {
             win_child_path(&ctx, &names, Some(OsStr::new("C:\\AppData"))),
             OsString::from(expected)
         );
+    }
+
+    /// The shims folder leaves the child's PATH however it is spelled: with a trailing `\`,
+    /// in other letter case, or both (allowlist D-40).
+    #[test]
+    fn win_child_path_drops_the_shims_folder_in_any_spelling() {
+        let (_t, mut ctx) = win_ctx(&[]);
+        let shims = ctx.shims_dir().display().to_string();
+        ctx.path = Some(
+            format!(
+                "C:\\Windows;{0}\\;{1};{2}\\",
+                shims.to_ascii_uppercase(),
+                shims.to_ascii_lowercase(),
+                shims.to_ascii_uppercase()
+            )
+            .into(),
+        );
+        assert_eq!(
+            win_child_path(&ctx, &[], None),
+            OsString::from("C:\\Windows;")
+        );
+    }
+
+    /// A program that is missing when it is started: `pyenv: <path>: <reason>` on stderr,
+    /// without Rust's ` (os error N)`, and exit 127 (allowlist D-43). No `pyenv` command
+    /// reaches this on its own (both look the file up first), so the plan is built here.
+    #[test]
+    fn a_program_missing_at_start_exits_127() {
+        let (tmp, ctx) = win_ctx(&[]);
+        let program = tmp.path().join("gone").join("tool.exe");
+        let plan = LaunchPlan {
+            program: program.clone(),
+            args: vec![],
+            raw_tail: None,
+            env: vec![],
+            warnings: vec![],
+            wait: true,
+        };
+        let r = run(&plan, &ctx, None).unwrap_err();
+        assert_eq!((r.stderr, r.code), (true, 127));
+        let prefix = format!("pyenv: {}: ", program.display());
+        assert!(
+            r.lines.len() == 1 && r.lines[0].starts_with(&prefix),
+            "{:?}",
+            r.lines
+        );
+        assert!(!r.lines[0].contains("os error"), "{:?}", r.lines);
     }
 
     #[test]

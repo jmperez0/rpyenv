@@ -25,6 +25,66 @@ fn exec_runs_the_file_with_the_upstream_environment() {
     );
 }
 
+/// A file that exists but can't be started gets `pyenv: <path>: <reason>` on stderr
+/// instead of bash's errors, and exit 126 as in bash: here its `#!` interpreter is missing
+/// (bash's `bad interpreter`) (allowlist D-43). A CRLF `#!` line names `/bin/sh\r`, which
+/// bash shows as `/bin/sh^M`. A file without `#!` is no trigger: `execvp` hands it to
+/// `/bin/sh`. Exit 127, for a file that is itself gone, is pinned in `launch.rs`.
+#[cfg(unix)]
+#[test]
+fn exec_start_failure_exits_126() {
+    let f = Fixture::new();
+    for (name, script, interp) in [
+        (
+            "orphan",
+            "#!/nonexistent/interpreter\n",
+            "/nonexistent/interpreter",
+        ),
+        ("crlf", "#!/bin/sh\r\necho hi\r\n", "/bin/sh^M"),
+    ] {
+        let path = f.exe(&format!("3.12.10/bin/{name}"));
+        std::fs::write(&path, script).unwrap();
+        let r = f.pyenv_env(&["exec", name], &[("PYENV_VERSION", "3.12.10")]);
+        assert_eq!(
+            (r.stderr, r.code),
+            (
+                format!(
+                    "pyenv: {}: {interp}: bad interpreter: No such file or directory\n",
+                    path.display()
+                ),
+                126
+            ),
+            "{name}"
+        );
+    }
+}
+
+/// A file only group and others may run doesn't count for its owner: upstream's `[ -x ]`
+/// checks the caller's access, so the lookup gives `command not found`, exit 127, before
+/// anything is started (allowlist D-29). Root may run any file with an x bit, as `-x`
+/// says too, so the check is skipped there.
+#[cfg(unix)]
+#[test]
+fn a_file_the_caller_may_not_run_is_not_found() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new();
+    let locked = f.exe("3.12.10/bin/locked");
+    std::fs::write(&locked, "#!/bin/sh\n").unwrap();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o011)).unwrap();
+    if std::fs::read(&locked).is_ok() {
+        eprintln!("running as root: skipping a_file_the_caller_may_not_run_is_not_found");
+        return;
+    }
+    for cmd in ["exec", "which"] {
+        let r = f.pyenv_env(&[cmd, "locked"], &[("PYENV_VERSION", "3.12.10")]);
+        assert_eq!(
+            (r.stdout.as_str(), r.stderr.as_str(), r.code),
+            ("", "pyenv: locked: command not found\n", 127),
+            "{cmd}"
+        );
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn exec_usage_and_not_found() {
@@ -141,7 +201,7 @@ fn exec_debug_log_lines_name_pyenv_exec() {
             ("RPYENV_DEBUG_LOG", log.to_str().unwrap()),
         ],
     );
-    assert_ne!(r.code, 0);
+    assert_eq!(r.code, if cfg!(windows) { 1 } else { 127 });
     let text = std::fs::read_to_string(&log).unwrap();
     let lines: Vec<&str> = text.lines().collect();
     assert!(!lines.is_empty());

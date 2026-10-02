@@ -1,0 +1,3 @@
+pytest==9.1.1
+tempenv==2.1.0
+packaging==26.3

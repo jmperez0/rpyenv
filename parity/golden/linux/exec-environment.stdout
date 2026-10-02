@@ -1,0 +1,3 @@
+PATH={root}/versions/3.12.10/bin:{root}/shims:/usr/bin:/bin
+HOOK=unset
+PREFIX=unset

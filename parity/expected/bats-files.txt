@@ -1,0 +1,27 @@
+# Upstream pyenv ab74141 test files that must appear in the bats log, one per line.
+--version.bats
+commands.bats
+completions.bats
+exec.bats
+global.bats
+help.bats
+hooks.bats
+init.bats
+latest.bats
+local.bats
+pip-rehash.bats
+prefix.bats
+pyenv.bats
+pyenv_ext.bats
+rehash.bats
+shell.bats
+shims.bats
+version-file-read.bats
+version-file-write.bats
+version-file.bats
+version-name.bats
+version-origin.bats
+version.bats
+versions.bats
+whence.bats
+which.bats

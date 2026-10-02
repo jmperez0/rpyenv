@@ -1,0 +1,107 @@
+# Expected failures of upstream pyenv's bats suite against rpyenv (plan decision 3).
+commands.bats | commands | D-49 rpyenv lists the commands it implements
+commands.bats | commands --sh | D-49 rpyenv lists the commands it implements
+commands.bats | commands in path with spaces | D-49 rpyenv lists the commands it implements
+commands.bats | commands --no-sh | D-49 rpyenv lists the commands it implements
+completions.bats | command with no completion support | M3 shell completions
+completions.bats | command with completion support | M3 shell completions
+completions.bats | forwards extra arguments | M3 shell completions
+exec.bats | completes with names of executables | M3 shell completions
+exec.bats | carries original IFS within hooks | D-51 no bash hooks
+help.bats | shows help for a specific command | M4 `help` for a plugin command (plugin dispatch)
+help.bats | replaces missing extended help with summary text | M4 `help` for a plugin command (plugin dispatch)
+help.bats | extracts only usage | M4 `help` for a plugin command (plugin dispatch)
+help.bats | multiline usage section | M4 `help` for a plugin command (plugin dispatch)
+help.bats | multiline extended help section | M4 `help` for a plugin command (plugin dispatch)
+hooks.bats | prints usage help given no argument | D-51 no bash hooks, no `pyenv hooks` command
+hooks.bats | prints list of hooks | D-51 no bash hooks, no `pyenv hooks` command
+hooks.bats | supports hook paths with spaces | D-51 no bash hooks, no `pyenv hooks` command
+hooks.bats | resolves relative paths | D-51 no bash hooks, no `pyenv hooks` command
+hooks.bats | resolves symlinks | D-51 no bash hooks, no `pyenv hooks` command
+init.bats | creates shims and versions directories | M3 shell integration (`pyenv init`)
+init.bats | auto rehash | M3 shell integration (`pyenv init`)
+init.bats | auto rehash for --path | M3 shell integration (`pyenv init`)
+init.bats | setup shell completions | M3 shell integration (`pyenv init`)
+init.bats | detect parent shell | M3 shell integration (`pyenv init`)
+init.bats | detect parent shell from script | M3 shell integration (`pyenv init`)
+init.bats | setup shell completions (fish) | M3 shell integration (`pyenv init`)
+init.bats | fish instructions | M3 shell integration (`pyenv init`)
+init.bats | setup shell completions (pwsh) | M3 shell integration (`pyenv init`)
+init.bats | pwsh instructions | M3 shell integration (`pyenv init`)
+init.bats | shell detection for installer | M3 shell integration (`pyenv init`)
+init.bats | shell detection for fish startup file | M3 shell integration (`pyenv init`)
+init.bats | completion includes install option | M3 shell integration (`pyenv init`)
+init.bats | install setup for detected shell startup files | M3 shell integration (`pyenv init`)
+init.bats | install setup for bash uses existing bash_profile | M3 shell integration (`pyenv init`)
+init.bats | install setup for zsh startup files | M3 shell integration (`pyenv init`)
+init.bats | install setup for fish startup file | M3 shell integration (`pyenv init`)
+init.bats | install setup for pwsh startup file | M3 shell integration (`pyenv init`)
+init.bats | install refuses to modify files with pyenv-related code | M3 shell integration (`pyenv init`)
+init.bats | install treats PYENV_ROOT as pyenv-related code | M3 shell integration (`pyenv init`)
+init.bats | install refuses unreadable startup file without partial writes | M3 shell integration (`pyenv init`)
+init.bats | install setup keeps fish block intact when generic lines already exist | M3 shell integration (`pyenv init`)
+init.bats | install setup fails gracefully for unsupported shell | M3 shell integration (`pyenv init`)
+init.bats | option to skip rehash | M3 shell integration (`pyenv init`)
+init.bats | adds shims to PATH | M3 shell integration (`pyenv init`)
+init.bats | adds shims to PATH (fish) | M3 shell integration (`pyenv init`)
+init.bats | adds shims to PATH (pwsh) | M3 shell integration (`pyenv init`)
+init.bats | removes existing shims from PATH | M3 shell integration (`pyenv init`)
+init.bats | adds shims to PATH with --no-push-path if they're not on PATH | M3 shell integration (`pyenv init`)
+init.bats | doesn't change PATH with --no-push-path if shims are already on PATH | M3 shell integration (`pyenv init`)
+init.bats | outputs sh-compatible syntax | M3 shell integration (`pyenv init`)
+init.bats | outputs sh-compatible case syntax | M3 shell integration (`pyenv init`)
+init.bats | outputs fish-specific syntax (fish) | M3 shell integration (`pyenv init`)
+init.bats | outputs pwsh-specific syntax (pwsh) | M3 shell integration (`pyenv init`)
+latest.bats | read from installed | M2 `pyenv latest` arrives with the installer
+latest.bats | read from known | M2 `pyenv latest` arrives with the installer
+latest.bats | installed version not found | M2 `pyenv latest` arrives with the installer
+latest.bats | known version not found | M2 `pyenv latest` arrives with the installer
+latest.bats | complete name resolves to itself | M2 `pyenv latest` arrives with the installer
+latest.bats | sort CPython | M2 `pyenv latest` arrives with the installer
+latest.bats | ignores rolling releases, branch tips, alternative srcs, prereleases, virtualenvs; 't' versions if prefix without 't' | M2 `pyenv latest` arrives with the installer
+latest.bats | resolves to a 't' version if prefix has 't' | M2 `pyenv latest` arrives with the installer
+latest.bats | falls back to argument with -b | M2 `pyenv latest` arrives with the installer
+latest.bats | falls back to argument and succeeds with -f | M2 `pyenv latest` arrives with the installer
+prefix.bats | prefix for system in / | D-52 replaces `pyenv-which` on PATH; rpyenv resolves in-process
+pyenv.bats | default PYENV_DIR | M4 uses the test plugin `pyenv echo` (plugin dispatch)
+pyenv.bats | inherited PYENV_DIR | M4 uses the test plugin `pyenv echo` (plugin dispatch)
+pyenv.bats | adds its own libexec and plugin bin dirs to PATH | M4 uses the test plugin `pyenv echo` (plugin dispatch); D-38 once plugins land
+pyenv.bats | PYENV_HOOK_PATH preserves value from environment | M4 uses the test plugin `pyenv echo` (plugin dispatch); D-51 once plugins land
+pyenv.bats | PYENV_HOOK_PATH includes pyenv built-in plugins | M4 uses the test plugin `pyenv echo` (plugin dispatch); D-51 once plugins land
+rehash.bats | empty rehash | D-35 rehash keeps its state and template in `shims`
+rehash.bats | rehash in progress | D-35 the lock is `shims/.rehash.lock`
+rehash.bats | removes stale lockfile | D-35 the lock is `shims/.rehash.lock`
+rehash.bats | leaves valid shims unchanged when repairing another shim | D-35 every shim shares the template, so a repair relinks all
+rehash.bats | repairs explicitly registered hidden shims and preserves other dotfiles | D-51 shims registered by hooks
+rehash.bats | preserves sourceable shims from the built-in rehash hook | D-34 no source shims for activation scripts
+rehash.bats | does not overwrite hook customizations when a shim is registered again | D-51 no bash hooks
+rehash.bats | repairs existing shims before rehash hooks invoke them | D-51 no bash hooks
+rehash.bats | carries original IFS within hooks | D-51 no bash hooks
+rehash.bats | sh-rehash in bash | M3 shell integration (`pyenv sh-rehash`)
+rehash.bats | sh-rehash in bash (integration) | M3 shell integration (`pyenv sh-rehash`)
+rehash.bats | sh-rehash in fish | M3 shell integration (`pyenv sh-rehash`)
+rehash.bats | sh-rehash in pwsh | M3 shell integration (`pyenv sh-rehash`)
+rehash.bats | shim sets _PYENV_SHIM_PATH when linked from elsewhere | D-52 shims don't pass `_PYENV_SHIM_PATH`
+shell.bats | shell integration enabled | M3 shell integration (`pyenv shell`)
+shell.bats | no shell version | M3 shell integration (`pyenv shell`)
+shell.bats | shell version | M3 shell integration (`pyenv shell`)
+shell.bats | shell version (fish) | M3 shell integration (`pyenv shell`)
+shell.bats | shell version (pwsh) | M3 shell integration (`pyenv shell`)
+shell.bats | shell revert | M3 shell integration (`pyenv shell`)
+shell.bats | shell revert (fish) | M3 shell integration (`pyenv shell`)
+shell.bats | shell revert (pwsh) | M3 shell integration (`pyenv shell`)
+shell.bats | shell unset | M3 shell integration (`pyenv shell`)
+shell.bats | shell unset (fish) | M3 shell integration (`pyenv shell`)
+shell.bats | shell unset (pwsh) | M3 shell integration (`pyenv shell`)
+shell.bats | shell change invalid version | M3 shell integration (`pyenv shell`)
+shell.bats | shell change version | M3 shell integration (`pyenv shell`)
+shell.bats | shell change version (fish) | M3 shell integration (`pyenv shell`)
+shell.bats | shell change version (pwsh) | M3 shell integration (`pyenv shell`)
+--version.bats | reads version from git repo | D-01 the version line is fixed, not from git
+version-name.bats | PYENV_VERSION can be overridden by hook | D-51 no bash hooks
+version-name.bats | carries original IFS within hooks | D-51 no bash hooks
+version-origin.bats | reports from hook | D-51 no bash hooks
+version-origin.bats | carries original IFS within hooks | D-51 no bash hooks
+versions.bats | sort doesn't support version sorting | D-50 versions are always in version order
+which.bats | carries original IFS within hooks | D-51 no bash hooks
+which.bats | hooks get resolved version name | D-51 no bash hooks
