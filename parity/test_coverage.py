@@ -82,7 +82,7 @@ class Split(unittest.TestCase):
     def test_each_source_is_tagged_with_its_kind(self):
         cited = coverage.citations()
         for case in diff_cases.CASES:
-            for row in case.allow:
+            for row in coverage.case_rows(case, allowlist.rows()):
                 self.assertIn((coverage.EXECUTION, f"diff case {case.name!r}"), cited[row])
         for row, wheres in coverage.rust_test_citations(os.path.join(allowlist.REPO, "crates")).items():
             for where in wheres:
@@ -93,6 +93,20 @@ class Split(unittest.TestCase):
                     self.assertEqual(kind, coverage.EXECUTION, where)
                 if where.startswith("untestable:"):
                     self.assertEqual(kind, coverage.WAIVED, where)
+
+
+class CaseRows(unittest.TestCase):
+    """A diff case covers only the rows that apply where it runs (unknown rows stay, so they
+    are reported as dangling)."""
+
+    def test_a_row_for_another_os_does_not_count(self):
+        table = {"D-01": "Linux", "D-02": "Windows", "D-03": "both"}
+        win = diff_cases.Case("w", (), os="Windows", allow=("D-01", "D-02", "D-03", "D-99"))
+        self.assertEqual(coverage.case_rows(win, table), ["D-02", "D-03", "D-99"])
+        both = diff_cases.Case("b", (), allow=("D-01", "D-02"))
+        self.assertEqual(coverage.case_rows(both, table), ["D-01", "D-02"])
+        lin = diff_cases.Case("l", (), os="Linux", allow=("D-02",))
+        self.assertEqual(coverage.case_rows(lin, table), [])
 
 
 class Main(unittest.TestCase):

@@ -67,16 +67,24 @@ def rust_test_citations(crates_dir):
     return found
 
 
-def citations():
+def case_rows(case, table):
+    """The rows in `case.allow` that the case can show: a row for both OSes, or for an OS
+    the case runs on. A row the table doesn't have is kept, so it is reported as dangling."""
+    return [row for row in case.allow
+            if row not in table or "both" in (table[row], case.os) or table[row] == case.os]
+
+
+def citations(table=None):
     """{row: [(kind, where it is cited), …]} from every source; kind is EXECUTION, CITATION
     or WAIVED."""
+    table = allowlist.rows() if table is None else table
     out = {}
 
     def add(row, kind, where):
         out.setdefault(row, []).append((kind, where))
 
     for case in diff_cases.CASES:
-        for row in case.allow:
+        for row in case_rows(case, table):
             add(row, EXECUTION, f"diff case {case.name!r}")
     for fname, fields in (("bats.txt", 2), ("pyenv-win.txt", 1)):
         path = os.path.join(HERE, "expected", fname)
@@ -114,7 +122,7 @@ def verdict(table, cited, report):
 def main(argv):
     report = "--report" in argv
     table = allowlist.rows()
-    cited = citations()
+    cited = citations(table)
     code, uncovered, dangling = verdict(table, cited, report)
     kinds = split(table, cited)
     counts = ", ".join(f"{len(rows)} {kind}" for kind, rows in kinds.items())
