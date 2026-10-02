@@ -57,8 +57,8 @@ fn run(gui: bool) -> i32 {
     if let Some(root) = own_root(flavor, &argv0, own.as_deref(), path.as_deref(), &ctx.pwd) {
         ctx.root = root;
     }
-    // Shims are hardlinks to the template, so the exit check passes the template itself
-    // and nothing is copied (spec §8).
+    // Shims are hardlinks to the template, so when the template exists the exit check passes
+    // it itself and nothing is copied (spec §8).
     let template = ctx
         .shims_dir()
         .join(rehash::TEMPLATE_DIR)
