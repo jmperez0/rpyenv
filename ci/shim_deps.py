@@ -40,7 +40,7 @@ def main() -> int:
             encoding="utf-8",
         )
         if proc.returncode != 0:
-            print(f"cargo tree failed for {shim}:\n{proc.stderr}")
+            print(f"cargo tree failed for {shim}:\n{proc.stderr}", file=sys.stderr)
             return 1
         tree = proc.stdout
         extra = unexpected(shim, tree)

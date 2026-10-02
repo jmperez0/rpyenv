@@ -15,16 +15,25 @@ import sys
 import tempfile
 
 
+def median(r):
+    """hyperfine's median, or its mean when this hyperfine's JSON has no median field."""
+    return r.get("median", r["mean"])
+
+
 def summary(results):
     by = {r["command"]: r for r in results}
     shim, direct = by["through the shim"], by["directly"]
     rows = "".join(
-        f"| {r['command']} | {r['mean'] * 1000:.1f} ms | {r['median'] * 1000:.1f} ms | ± {r['stddev'] * 1000:.1f} ms |\n" for r in results
+        f"| {r['command']} | {r['mean'] * 1000:.1f} ms | {median(r) * 1000:.1f} ms "
+        f"| ± {r['stddev'] * 1000:.1f} ms |\n"
+        for r in results
     )
-    over = shim["median"] - direct["median"]
+    over = median(shim) - median(direct)
     return (
-        "| Command | Mean | Median | Std dev |\n|---|---|---|---|\n" + rows
-        + f"\nShim overhead (from the medians): {over * 1000:.1f} ms ({over / direct['median'] * 100:.1f}%)\n"
+        "| Command | Mean | Median | Std dev |\n|---|---|---|---|\n"
+        + rows
+        + f"\nShim overhead (from the medians): {over * 1000:.1f} ms "
+        f"({over / median(direct) * 100:.1f}%)\n"
     )
 
 
@@ -44,18 +53,23 @@ def main(argv):
         os.makedirs(os.path.join(root, "versions"))
         link = os.path.join(root, "versions", "bench")
         if windows:
-            subprocess.run(["cmd", "/d", "/c", "mklink", "/J", link, prefix], check=True, capture_output=True)
+            subprocess.run(
+                ["cmd", "/d", "/c", "mklink", "/J", link, prefix], check=True, capture_output=True
+            )
         else:
             os.symlink(prefix, link)
         with open(os.path.join(root, "version"), "w", encoding="utf-8") as f:
             f.write("bench\n")
         env = dict(os.environ, PYENV_ROOT=root)
-        subprocess.run([os.path.join(os.path.abspath(a.rpyenv), "pyenv" + exe), "rehash"], env=env, check=True)
-        shim = os.path.join(root, "shims", os.path.basename(python))  # python3 on a distro with no `python`
+        pyenv = os.path.join(os.path.abspath(a.rpyenv), "pyenv" + exe)
+        subprocess.run([pyenv, "rehash"], env=env, check=True)
+        # python3 on a distro with no `python`
+        shim = os.path.join(root, "shims", os.path.basename(python))
         out = os.path.join(base, "bench.json")
         subprocess.run(
             ["hyperfine", "-N", "--warmup", "5", "--runs", str(a.runs), "--export-json", out,
-             "-n", "through the shim", f'"{shim}" -c pass', "-n", "directly", f'"{python}" -c pass'],
+             "-n", "through the shim", f'"{shim}" -c pass',
+             "-n", "directly", f'"{python}" -c pass'],
             env=env, check=True,
         )
         with open(out, encoding="utf-8") as f:

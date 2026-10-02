@@ -16,6 +16,14 @@ class Summary(unittest.TestCase):
         self.assertIn("| directly | 25.0 ms | 20.0 ms | ± 0.8 ms |", text)
         self.assertIn("Shim overhead (from the medians): 9.0 ms (45.0%)", text)
 
+    def test_a_hyperfine_without_a_median_falls_back_to_the_mean(self):
+        text = bench.summary([
+            {"command": "through the shim", "mean": 0.0300, "stddev": 0.0010},
+            {"command": "directly", "mean": 0.0250, "stddev": 0.0008},
+        ])
+        self.assertIn("| through the shim | 30.0 ms | 30.0 ms | ± 1.0 ms |", text)
+        self.assertIn("Shim overhead (from the medians): 5.0 ms (20.0%)", text)
+
 
 if __name__ == "__main__":
     unittest.main()
