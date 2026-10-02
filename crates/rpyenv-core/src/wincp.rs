@@ -5,7 +5,9 @@
 //! /f` needs that path written in that code page, with a clear failure when the code page
 //! can't represent it (rather than cmd silently substituting the wrong bytes).
 
-use windows_sys::Win32::Globalization::{MultiByteToWideChar, WideCharToMultiByte, CP_UTF8};
+use windows_sys::Win32::Globalization::{
+    GetOEMCP, MultiByteToWideChar, WideCharToMultiByte, CP_UTF8,
+};
 use windows_sys::Win32::System::Console::GetConsoleOutputCP;
 
 /// Encodes `text` in the console's active output code page (`GetConsoleOutputCP`; with no
@@ -40,6 +42,12 @@ pub fn encode_for_console(text: &str) -> Result<Vec<u8>, u32> {
 pub fn output_cp() -> u32 {
     // SAFETY: `GetConsoleOutputCP` takes no arguments; it has no documented failure.
     unsafe { GetConsoleOutputCP() }
+}
+
+/// The OEM code page: what a console created for a child starts with.
+pub fn oem_cp() -> u32 {
+    // SAFETY: `GetOEMCP` takes no arguments and has no failure.
+    unsafe { GetOEMCP() }
 }
 
 /// `text` for a pipe or a file. It is in code page `cp` when every character survives the

@@ -130,11 +130,17 @@ impl Fixture {
 }
 
 /// rpyenv's redirected output as text. On Windows it is in the console's output code page
-/// (spec §11); this test process shares that console with the `pyenv` it ran.
+/// (spec §11); this test process shares that console with the `pyenv` it ran. With no
+/// console (`output_cp()` is 0), the `pyenv` child gets a new console with the OEM code
+/// page, so that is what the bytes are in.
 pub fn decode(bytes: &[u8]) -> String {
     #[cfg(windows)]
     {
-        rpyenv_core::wincp::decode(bytes, rpyenv_core::wincp::output_cp())
+        let cp = match rpyenv_core::wincp::output_cp() {
+            0 => rpyenv_core::wincp::oem_cp(),
+            cp => cp,
+        };
+        rpyenv_core::wincp::decode(bytes, cp)
     }
     #[cfg(not(windows))]
     {
