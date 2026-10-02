@@ -11,6 +11,7 @@ its parent).
 """
 import argparse
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -41,19 +42,69 @@ def verdict(same, rows_here):
     return "allowed" if rows_here else "differs"
 
 
-FIELDS = {"code": 0, "stdout": 1, "stderr": 2, "files": 3}
+GOLDEN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "golden", OS_NAME.lower())
+NEXT_FILE = b"\n--- next file ---\n"
 
 
-def bound_failures(may_differ, contains, upstream, rpyenv):
-    """What is wrong with an allowed difference; an empty list means it is well bounded.
-    `upstream` and `rpyenv` are (code, stdout, stderr, files) results, `contains` is bytes."""
-    out = []
-    for name, i in FIELDS.items():
-        if name not in may_differ and upstream[i] != rpyenv[i]:
-            out.append(f"{name} differs but is not in may_differ")
-    if contains and not any(contains in rpyenv[FIELDS[n]] for n in may_differ if n != "code"):
-        out.append(f"rpyenv's {'/'.join(may_differ)} lacks {contains!r}")
-    return out
+def slug(name):
+    """The golden file name of a case: lowercased, each run of non-alphanumerics a `-`."""
+    return re.sub(r"[^a-z0-9]+", "-", name.lower())
+
+
+def to_placeholders(data, root, work):
+    """Replaces the fixture's paths by {root} and {work}, the longer path first."""
+    for path, name in sorted(((root, b"{root}"), (work, b"{work}")), key=lambda t: -len(t[0])):
+        data = data.replace(path.encode("utf-8"), name)
+    return data
+
+
+def from_placeholders(data, root, work):
+    return data.replace(b"{root}", root.encode("utf-8")).replace(b"{work}", work.encode("utf-8"))
+
+
+def normalise(result, root, work):
+    """A (code, stdout, stderr, files) result with the fixture paths as placeholders."""
+    return (result[0],) + tuple(to_placeholders(x, root, work) for x in result[1:])
+
+
+def judge(same, rows_here, rpyenv_result, golden, root, work):
+    """The verdict and the problems behind a `differs`. A difference that a row allows must
+    also leave rpyenv's own output exactly equal to its golden (plan decision 4)."""
+    v = verdict(same, rows_here)
+    if v != "allowed":
+        return v, []
+    if golden is None:
+        return "differs", ["no golden file for rpyenv's output; review it, then run with --update-golden"]
+    got = normalise(rpyenv_result, root, work)
+    problems = [f"rpyenv's {n} differs from its golden: golden {x!r}, got {y!r}"
+                for n, x, y in zip(("exit code", "stdout", "stderr", "compared files"), golden, got) if x != y]
+    return ("differs", problems) if problems else ("allowed", [])
+
+
+def golden_files(case):
+    base = os.path.join(GOLDEN, slug(case.name))
+    names = ["code", "stdout", "stderr"] + (["files"] if case.compare else [])
+    return {n: f"{base}.{n}" for n in names}
+
+
+def read_golden(case):
+    paths = golden_files(case)
+    if not all(os.path.isfile(p) for p in paths.values()):
+        return None
+    data = {}
+    for n, p in paths.items():
+        with open(p, "rb") as f:
+            data[n] = f.read()
+    return (int(data["code"].decode("ascii")), data["stdout"], data["stderr"], data.get("files", b""))
+
+
+def write_golden(case, result, root, work):
+    os.makedirs(GOLDEN, exist_ok=True)
+    code, out, err, files = normalise(result, root, work)
+    parts = {"code": str(code).encode("ascii"), "stdout": out, "stderr": err, "files": files}
+    for n, p in golden_files(case).items():
+        with open(p, "wb") as f:
+            f.write(parts[n])
 
 
 def remove_tree(path):
@@ -146,7 +197,8 @@ def run(tool, rpyenv, upstream, places, case):
             env[k] = expand(v)
     p = subprocess.run(cmd + [expand(a) for a in case.args], cwd=work, env=env,
                        capture_output=True, stdin=subprocess.DEVNULL, timeout=120)
-    files = b"\x00".join(b"<missing>" if x is None else x for x in map(snapshot, (resolve(places, r) for r in case.compare)))
+    files = NEXT_FILE.join(b"<missing>" if x is None else x
+                           for x in map(snapshot, (resolve(places, r) for r in case.compare)))
     return (p.returncode, p.stdout, p.stderr, files)
 
 
@@ -165,7 +217,7 @@ def check_inputs(rpyenv, upstream):
     exe = os.path.join(rpyenv, "pyenv.exe" if WINDOWS else "pyenv")
     if not os.path.isfile(exe):
         return f"--rpyenv: {exe} not found"
-    needed = ["bin/pyenv.bat", ".versions_cache.xml"] if WINDOWS else ["bin/pyenv"]
+    needed = ["bin/pyenv.bat", ".versions_cache.xml", "../.version"] if WINDOWS else ["bin/pyenv"]
     for rel in needed:
         if not os.path.isfile(os.path.join(upstream, *rel.split("/"))):
             return f"--upstream: {os.path.join(upstream, *rel.split('/'))} not found"
@@ -177,6 +229,8 @@ def main(argv):
     p.add_argument("--rpyenv", required=True)
     p.add_argument("--upstream", required=True)
     p.add_argument("--only")
+    p.add_argument("--update-golden", action="store_true",
+                   help="write rpyenv's output as the golden files of the allowed cases")
     a = p.parse_args(argv)
     rpyenv, upstream = os.path.abspath(a.rpyenv), os.path.abspath(a.upstream)
     problem = check_inputs(rpyenv, upstream)
@@ -192,29 +246,21 @@ def main(argv):
         if unknown:
             failures.append(f"{case.name}: unknown allowlist rows {unknown}")
             continue
-        if applicable(case, table) and not case.may_differ:
-            failures.append(f"{case.name}: has allowlist rows but an empty may_differ")
-            continue
         results = {}
         for tool in ("upstream", "rpyenv"):
             places = build(upstream, case)
             results[tool] = run(tool, rpyenv, upstream, places, case)
         rows_here = applicable(case, table)
         same = results["upstream"] == results["rpyenv"]
-        v = verdict(same, rows_here)
-        broken = []
-        if v == "allowed":
-            contains = (expand(case.rpyenv_contains).replace("{root}", places["root"])
-                        .replace("{work}", places["work"]).replace("{sep}", os.sep)).encode("utf-8")
-            broken = bound_failures(case.may_differ, contains, results["upstream"], results["rpyenv"])
-            if broken:
-                v = "differs"
+        if a.update_golden and verdict(same, rows_here) == "allowed":
+            write_golden(case, results["rpyenv"], places["root"], places["work"])
+        v, broken = judge(same, rows_here, results["rpyenv"], read_golden(case), places["root"], places["work"])
         counts[v] = counts.get(v, 0) + 1
         print(f"{v:8} {case.name}" + (f"  ({', '.join(rows_here)})" if rows_here else ""))
         if v in ("stale", "differs"):
             detail = describe(results["upstream"], results["rpyenv"])
             if broken:
-                detail = "\n".join("    out of bounds: " + b for b in broken) + "\n" + detail
+                detail = "\n".join("    " + b for b in broken) + "\n" + detail
             failures.append(f"{case.name}: {v}" + (f"\n{detail}" if detail else ""))
             if detail:
                 print(detail)
