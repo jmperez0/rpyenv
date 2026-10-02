@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import allowlist  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+PLAN = re.compile(r"^([^\t]+)\t1\.\.(\d+)$")
 LINE = re.compile(r"^([^\t]+)\t(ok|not ok) \d+ (.*?)(?: # skip.*)?$")
 
 
@@ -22,6 +23,39 @@ def parse_tap(text):
         m = LINE.match(line)
         if m:
             out[(m.group(1), m.group(3))] = m.group(2) == "ok"
+    return out
+
+
+def read_files(path):
+    """The expected file names: one per line, `#` comments and blank lines skipped."""
+    with open(path, encoding="utf-8") as f:
+        return [l.strip() for l in f if l.strip() and not l.startswith("#")]
+
+
+def structure_problems(text, files):
+    """A file that vanished from the log, one nobody listed, a file with no plan, or a plan
+    that doesn't match the results counted (a crashed or truncated run) are all problems."""
+    plans, counts = {}, {}
+    for line in text.splitlines():
+        m = PLAN.match(line)
+        if m:
+            plans[m.group(1)] = int(m.group(2))
+        m = LINE.match(line)
+        if m:
+            counts[m.group(1)] = counts.get(m.group(1), 0) + 1
+    seen = set(plans) | set(counts)
+    out = []
+    missing = sorted(set(files) - seen)
+    extra = sorted(seen - set(files))
+    if missing:
+        out.append("files missing from the log: " + ", ".join(missing))
+    if extra:
+        out.append("files in the log that are not listed in bats-files.txt: " + ", ".join(extra))
+    for f in sorted(seen):
+        if f not in plans:
+            out.append(f"{f}: no `1..N` plan line")
+        elif plans[f] != counts.get(f, 0):
+            out.append(f"{f}: plan says {plans[f]} tests, the log has {counts.get(f, 0)}")
     return out
 
 
@@ -45,9 +79,11 @@ def problems(results, expected, table):
 
 def main(argv):
     with open(argv[0], encoding="utf-8") as f:
-        results = parse_tap(f.read())
+        text = f.read()
+    results = parse_tap(text)
     expected = allowlist.read_expected(os.path.join(HERE, "expected", "bats.txt"), 2)
-    found = problems(results, expected, allowlist.rows())
+    found = structure_problems(text, read_files(os.path.join(HERE, "expected", "bats-files.txt")))
+    found += problems(results, expected, allowlist.rows())
     failed = sum(1 for ok in results.values() if not ok)
     line = f"bats: {len(results)} tests, {failed} failing, {len(expected)} expected to fail, {len(found)} problems"
     print(line)

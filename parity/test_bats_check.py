@@ -53,5 +53,38 @@ class StaleEntries(unittest.TestCase):
         self.assertIn("Windows row", p)
 
 
+class Structure(unittest.TestCase):
+    """The log itself must be complete: every listed file, each with a full plan."""
+
+    ok = "a.bats\t1..2\na.bats\tok 1 x\na.bats\tnot ok 2 y\n"
+
+    def test_a_complete_log_passes(self):
+        self.assertEqual(bats_check.structure_problems(self.ok, ["a.bats"]), [])
+
+    def test_a_missing_file_fails(self):
+        (p,) = bats_check.structure_problems(self.ok, ["a.bats", "b.bats"])
+        self.assertIn("missing", p)
+        self.assertIn("b.bats", p)
+
+    def test_an_extra_file_fails(self):
+        (p,) = bats_check.structure_problems(self.ok, [])
+        self.assertIn("not listed", p)
+        self.assertIn("a.bats", p)
+
+    def test_a_missing_plan_fails(self):
+        (p,) = bats_check.structure_problems("a.bats\tok 1 x\n", ["a.bats"])
+        self.assertIn("no `1..N` plan", p)
+
+    def test_a_short_count_fails(self):
+        (p,) = bats_check.structure_problems("a.bats\t1..3\na.bats\tok 1 x\n", ["a.bats"])
+        self.assertIn("plan says 3", p)
+
+    def test_a_load_error_is_an_unlisted_failure(self):
+        log = "a.bats\t1..1\na.bats\tnot ok 1 bats-gather-tests\n"
+        self.assertEqual(bats_check.structure_problems(log, ["a.bats"]), [])
+        (p,) = bats_check.problems(bats_check.parse_tap(log), {}, TABLE)
+        self.assertIn("not listed", p)
+
+
 if __name__ == "__main__":
     unittest.main()

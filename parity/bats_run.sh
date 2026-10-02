@@ -5,7 +5,10 @@
 # Each test file runs as the unprivileged user `tester`, against root-owned copies of rpyenv's
 # binaries that no test can change. <tap-out> gets one `<file>\t<TAP line>` line per TAP line.
 set -euo pipefail
-bin=$1 up=$2 bats=$3 out=$4
+for a in "$1" "$2" "$3"; do
+  [ -e "$a" ] || { echo "bats_run.sh: no such file or directory: $a" >&2; exit 2; }
+done
+bin=$(realpath "$1") up=$(realpath "$2") bats=$(realpath "$3") out=$(realpath -m "$4")
 work=$(mktemp -d /tmp/rpyenv-bats.XXXXXX)
 chmod 755 "$work"
 install -d -m 755 "$work/bin"
@@ -17,6 +20,8 @@ mkdir -p "$work/run/libexec"
 cp -r "$up/test" "$work/run/test"
 cp -r "$up/pyenv.d" "$work/run/pyenv.d"
 ln -s "$work/bin/pyenv" "$work/run/libexec/pyenv"
+# When a milestone delivers a command (latest, init, shell, completions, sh-*), add it to this
+# list, or its upstream tests keep failing through the missing wrapper.
 for c in root prefix version version-name version-origin version-file version-file-read \
          version-file-write versions which whence exec rehash shims commands help global local; do
   printf '#!/bin/sh\nexec "%s" %s "$@"\n' "$work/bin/pyenv" "$c" > "$work/run/libexec/pyenv-$c"
@@ -24,7 +29,7 @@ done
 printf '#!/bin/sh\nexec "%s" --version "$@"\n' "$work/bin/pyenv" > "$work/run/libexec/pyenv---version"
 chmod 755 "$work/run/libexec/"pyenv-*
 id tester >/dev/null 2>&1 || useradd --create-home tester
-chown -R tester "$work/run"
+chown -R tester "$work/run/test" "$work/run/pyenv.d"
 : > "$out"
 cd "$work/run/test"
 for f in $(ls -- *.bats); do

@@ -65,9 +65,9 @@ latest.bats | falls back to argument and succeeds with -f | M2 `pyenv latest` ar
 prefix.bats | prefix for system in / | D-52 replaces `pyenv-which` on PATH; rpyenv resolves in-process
 pyenv.bats | default PYENV_DIR | M4 uses the test plugin `pyenv echo` (plugin dispatch)
 pyenv.bats | inherited PYENV_DIR | M4 uses the test plugin `pyenv echo` (plugin dispatch)
-pyenv.bats | adds its own libexec and plugin bin dirs to PATH | D-38 the child's PATH has no libexec or plugin dirs
-pyenv.bats | PYENV_HOOK_PATH preserves value from environment | D-51 no bash hooks
-pyenv.bats | PYENV_HOOK_PATH includes pyenv built-in plugins | D-51 no bash hooks
+pyenv.bats | adds its own libexec and plugin bin dirs to PATH | M4 uses the test plugin `pyenv echo` (plugin dispatch); D-38 once plugins land
+pyenv.bats | PYENV_HOOK_PATH preserves value from environment | M4 uses the test plugin `pyenv echo` (plugin dispatch); D-51 once plugins land
+pyenv.bats | PYENV_HOOK_PATH includes pyenv built-in plugins | M4 uses the test plugin `pyenv echo` (plugin dispatch); D-51 once plugins land
 rehash.bats | empty rehash | D-35 rehash keeps its state and template in `shims`
 rehash.bats | rehash in progress | D-35 the lock is `shims/.rehash.lock`
 rehash.bats | removes stale lockfile | D-35 the lock is `shims/.rehash.lock`
