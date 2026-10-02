@@ -25,6 +25,43 @@ fn exec_runs_the_file_with_the_upstream_environment() {
     );
 }
 
+/// A file that can't be started gets `pyenv: <path>: <reason>` on stderr instead of bash's
+/// errors: exit 126 when it can't be run (here only group and others may run it, so
+/// `execve` refuses its owner) and 127 when it is missing (here its `#!` interpreter)
+/// (allowlist D-43). A file without `#!` is no trigger: `execvp` hands it to `/bin/sh`.
+#[cfg(unix)]
+#[test]
+fn exec_start_failures_exit_126_or_127() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new();
+    let locked = f.exe("3.12.10/bin/locked");
+    std::fs::write(&locked, "#!/bin/sh\n").unwrap();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o011)).unwrap();
+    if std::fs::read(&locked).is_ok() {
+        // Root reads and runs it anyway, so the 126 half can't be reached.
+        eprintln!("running as root: skipping the 126 half");
+    } else {
+        let r = f.pyenv_env(&["exec", "locked"], &[("PYENV_VERSION", "3.12.10")]);
+        assert_eq!(
+            (r.stderr, r.code),
+            (
+                format!("pyenv: {}: Permission denied\n", locked.display()),
+                126
+            )
+        );
+    }
+    let orphan = f.exe("3.12.10/bin/orphan");
+    std::fs::write(&orphan, "#!/nonexistent/interpreter\n").unwrap();
+    let r = f.pyenv_env(&["exec", "orphan"], &[("PYENV_VERSION", "3.12.10")]);
+    assert_eq!(
+        (r.stderr, r.code),
+        (
+            format!("pyenv: {}: No such file or directory\n", orphan.display()),
+            127
+        )
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn exec_usage_and_not_found() {

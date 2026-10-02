@@ -232,6 +232,20 @@ mod tests {
         assert_eq!(find_cmd("x", &path, None, tmp.path()), None);
     }
 
+    /// cmd.exe would run a `tool.exe` from the current folder before searching PATH; rpyenv
+    /// searches only the child's PATH (allowlist D-40).
+    #[test]
+    fn cmd_search_skips_the_current_folder() {
+        let tmp = tempfile::tempdir().unwrap();
+        make_exe(tmp.path(), "tool.exe");
+        let elsewhere = tmp.path().join("elsewhere");
+        fs::create_dir_all(&elsewhere).unwrap();
+        let path = OsString::from(elsewhere.display().to_string());
+        let exts = Some(OsStr::new(".EXE"));
+        assert_eq!(find_cmd("tool", &path, exts, tmp.path()), None);
+        assert_eq!(find_cmd("tool.exe", &path, exts, tmp.path()), None);
+    }
+
     #[cfg(windows)]
     #[test]
     fn cmd_search_runs_a_name_with_a_folder_from_the_current_folder() {

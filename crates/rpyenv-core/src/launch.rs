@@ -717,6 +717,53 @@ mod tests {
         );
     }
 
+    /// The shims folder leaves the child's PATH however it is spelled: with a trailing `\`,
+    /// in other letter case, or both (allowlist D-40).
+    #[test]
+    fn win_child_path_drops_the_shims_folder_in_any_spelling() {
+        let (_t, mut ctx) = win_ctx(&[]);
+        let shims = ctx.shims_dir().display().to_string();
+        ctx.path = Some(
+            format!(
+                "C:\\Windows;{0}\\;{1};{2}\\",
+                shims.to_ascii_uppercase(),
+                shims.to_ascii_lowercase(),
+                shims.to_ascii_uppercase()
+            )
+            .into(),
+        );
+        assert_eq!(
+            win_child_path(&ctx, &[], None),
+            OsString::from("C:\\Windows;")
+        );
+    }
+
+    /// A program that is missing when it is started: `pyenv: <path>: <reason>` on stderr,
+    /// without Rust's ` (os error N)`, and exit 127 (allowlist D-43). No `pyenv` command
+    /// reaches this on its own (both look the file up first), so the plan is built here.
+    #[test]
+    fn a_program_missing_at_start_exits_127() {
+        let (tmp, ctx) = win_ctx(&[]);
+        let program = tmp.path().join("gone").join("tool.exe");
+        let plan = LaunchPlan {
+            program: program.clone(),
+            args: vec![],
+            raw_tail: None,
+            env: vec![],
+            warnings: vec![],
+            wait: true,
+        };
+        let r = run(&plan, &ctx, None).unwrap_err();
+        assert_eq!((r.stderr, r.code), (true, 127));
+        let prefix = format!("pyenv: {}: ", program.display());
+        assert!(
+            r.lines.len() == 1 && r.lines[0].starts_with(&prefix),
+            "{:?}",
+            r.lines
+        );
+        assert!(!r.lines[0].contains("os error"), "{:?}", r.lines);
+    }
+
     #[test]
     fn win_exec_plan() {
         let (_t, mut ctx) = win_ctx(&["3.9.1"]);
