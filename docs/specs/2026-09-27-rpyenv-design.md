@@ -385,10 +385,11 @@ instructions, as upstream does.
 - After an rpyenv upgrade, rehash notices that the installed shim binaries no
   longer match the copies in `shims/.template/` (`shims\.template\` on
   Windows) by their bytes. It refreshes the copies and recreates the
-  hardlinks. A shim's own exit check never refreshes the template; `pyenv
-  rehash` does, and so does any rehash a CLI command runs (for example
-  `pyenv exec` when the versions changed). Until then, shims keep running the
-  previous copy.
+  hardlinks. A shim's own exit check never refreshes an existing template; on
+  Linux it creates a missing one from the running shim (rpyenv 0.1 roots).
+  `pyenv rehash` refreshes it, and so does any rehash a CLI command runs (for
+  example `pyenv exec` when the versions changed). Until then, shims keep
+  running the previous copy.
 
 ## 9. Installer
 

@@ -317,6 +317,26 @@ fn win_gui_programs_get_the_gui_shim() {
     assert_eq!(out.status.code(), Some(7));
 }
 
+/// A Windows root always has a template. If one goes missing, a shim's exit check must not
+/// seed it from the running shim: a GUI shim would turn every console shim into a GUI shim.
+#[test]
+fn win_a_missing_template_is_not_seeded_by_the_running_shim() {
+    let f = Fixture::new();
+    f.install("3.9.1/python.exe");
+    let version = f.root.join("versions").join("3.9.1");
+    std::fs::copy(built("argv-echow"), version.join("pythonw.exe")).unwrap();
+    f.rehash();
+    std::fs::remove_file(f.root.join("shims/.template/pyenv-shim.exe")).unwrap();
+    let scripts = version.join("Scripts");
+    std::fs::create_dir_all(&scripts).unwrap();
+    std::fs::copy(built("argv-echo"), scripts.join("new.exe")).unwrap();
+    let out = f.run_shim("pythonw", &[], &[("PYENV_VERSION", v("3.9.1"))]);
+    assert_eq!(out.status.code(), Some(0));
+    let read = |p: std::path::PathBuf| std::fs::read(p).unwrap();
+    assert_eq!(read(f.shim("python")), read(built("pyenv-shim")));
+    assert_eq!(read(f.shim("pythonw")), read(built("pyenv-shimw")));
+}
+
 /// With an output to write to, the GUI shim reports there, not in a message box (which
 /// would block this test).
 #[test]

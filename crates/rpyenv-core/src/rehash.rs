@@ -397,10 +397,10 @@ fn same_file_data(a: &fs::Metadata, b: &fs::Metadata) -> bool {
 /// Whether a shim, with metadata `m` read without following symlinks, already is the
 /// template whose metadata is `t`. On Unix that's the same inode; the inode check documents
 /// intent, since a hardlink also shares the template's size and modification time, so
-/// `same_file_data` alone would accept it. Everywhere, a file with
-/// the template's size and modification time also counts: a hardlink shares both on
-/// Windows, and a copy made by `copy_template` gets both. A symlink is never current, so
-/// rpyenv 0.1's symlink shims are replaced (Review focus 1).
+/// `same_file_data` alone would accept it. Everywhere, a file with the template's size and
+/// modification time also counts: a hardlink shares both on Windows, and a copy made by
+/// `copy_template` gets both. A symlink is never current, so rpyenv 0.1's symlink shims
+/// are replaced (Review focus 1).
 fn is_link_to(m: &fs::Metadata, t: &fs::Metadata) -> bool {
     #[cfg(unix)]
     {

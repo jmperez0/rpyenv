@@ -63,9 +63,11 @@ fn run(gui: bool) -> i32 {
         .shims_dir()
         .join(rehash::TEMPLATE_DIR)
         .join(rehash::template_name(flavor));
-    // A root from rpyenv 0.1 has no template yet; the running shim's own binary (for a 0.1
-    // symlink shim, the installed `pyenv-shim`) seeds it.
-    let rehash_with = if template.is_file() {
+    // A Linux root from rpyenv 0.1 has no template yet; the running shim's own binary (for a
+    // 0.1 symlink shim, the installed `pyenv-shim`) seeds it. A Windows root always had one,
+    // and seeding it from a GUI shim would turn console shims into GUI shims, so a missing
+    // Windows template keeps the check inert.
+    let rehash_with = if template.is_file() || flavor == Flavor::PyenvWin {
         Some(template)
     } else {
         own.clone()
