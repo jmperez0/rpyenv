@@ -19,12 +19,12 @@ def summary(results):
     by = {r["command"]: r for r in results}
     shim, direct = by["through the shim"], by["directly"]
     rows = "".join(
-        f"| {r['command']} | {r['mean'] * 1000:.1f} ms | ± {r['stddev'] * 1000:.1f} ms |\n" for r in results
+        f"| {r['command']} | {r['mean'] * 1000:.1f} ms | {r['median'] * 1000:.1f} ms | ± {r['stddev'] * 1000:.1f} ms |\n" for r in results
     )
-    over = shim["mean"] - direct["mean"]
+    over = shim["median"] - direct["median"]
     return (
-        "| Command | Mean | Std dev |\n|---|---|---|\n" + rows
-        + f"\nShim overhead: {over * 1000:.1f} ms ({over / direct['mean'] * 100:.1f}%)\n"
+        "| Command | Mean | Median | Std dev |\n|---|---|---|---|\n" + rows
+        + f"\nShim overhead (from the medians): {over * 1000:.1f} ms ({over / direct['median'] * 100:.1f}%)\n"
     )
 
 
