@@ -1,0 +1,73 @@
+name: Parity
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  PYENV_SHA: ab74141ab4bcd34aa9b11f363dd8ad4f6fc01cd2
+  PYENV_WIN_SHA: 856ed5a8c107879d53374f782a4b40cc794f19e0
+  BATS_VERSION: "1.11.1"
+
+jobs:
+  coverage:
+    name: allowlist coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - run: python3 -m unittest discover -s parity -p "test_*.py" -v
+      - run: python3 parity/coverage.py --report
+
+  linux:
+    name: upstream pyenv (differential + bats)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, 2026-10-02
+        with:
+          toolchain: "1.96"
+      - run: cargo build --workspace
+      - name: Fetch upstream pyenv and bats
+        run: |
+          mkdir -p upstream
+          curl -fsSL "https://github.com/pyenv/pyenv/archive/${PYENV_SHA}.tar.gz" | tar -xz -C upstream
+          mv "upstream/pyenv-${PYENV_SHA}" upstream/pyenv
+          curl -fsSL "https://github.com/bats-core/bats-core/archive/refs/tags/v${BATS_VERSION}.tar.gz" | tar -xz -C upstream
+          mv "upstream/bats-core-${BATS_VERSION}" upstream/bats
+      - name: Differential tests (spec §12.4)
+        run: python3 parity/diff.py --rpyenv target/debug --upstream upstream/pyenv
+      - name: Upstream bats suite in debian:trixie-slim (spec §12.3)
+        run: |
+          docker run --rm -v "$PWD:/w" -w /w debian:trixie-slim bash -c \
+            'apt-get update -qq && apt-get install -y -qq --no-install-recommends gawk git >/dev/null && bash parity/bats_run.sh /w/target/debug /w/upstream/pyenv /w/upstream/bats /w/bats-tap.txt'
+          python3 parity/bats_check.py bats-tap.txt
+
+  windows:
+    name: upstream pyenv-win (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025, windows-2022]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, 2026-10-02
+        with:
+          toolchain: "1.96"
+      - run: cargo build --workspace
+      - name: Fetch pyenv-win
+        shell: bash
+        run: |
+          git clone --quiet https://github.com/pyenv-win/pyenv-win.git upstream/pyenv-win
+          git -C upstream/pyenv-win checkout --quiet "$PYENV_WIN_SHA"
+      - name: VBScript is available (pyenv-win runs on cscript)
+        shell: cmd
+        run: |
+          echo WScript.Echo "vbscript ok" > "%RUNNER_TEMP%\probe.vbs"
+          cscript //nologo "%RUNNER_TEMP%\probe.vbs" || (echo ::error::VBScript is not available on this runner, so pyenv-win cannot run & exit /b 1)
+      - name: Differential tests (spec §12.4)
+        run: python parity/diff.py --rpyenv target/debug --upstream upstream/pyenv-win/pyenv-win
+      - run: python -m pip install -q -r parity/requirements-pyenv-win.txt
+      - name: pyenv-win's pytest suite (spec §12.3)
+        run: python parity/pyenv_win_run.py --pyenv-win upstream/pyenv-win --rpyenv target/debug
