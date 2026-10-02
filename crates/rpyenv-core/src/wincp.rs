@@ -201,6 +201,9 @@ mod tests {
         // A character code page 850 lacks: the whole text in UTF-8, not just that character.
         assert_eq!(encode_for_output("a漢b", 850), "a漢b".as_bytes());
         assert_eq!(encode_for_output("José 漢", 850), "José 漢".as_bytes());
+        // `ā` best-fits to `a` in code page 850; the round trip catches it and the whole
+        // text falls back to UTF-8 instead.
+        assert_eq!(encode_for_output("ā", 850), "ā".as_bytes());
         assert_eq!(encode_for_output("José", 1252), b"Jos\xe9");
         assert_eq!(encode_for_output("José 漢", CP_UTF8), "José 漢".as_bytes());
         assert_eq!(encode_for_output("", 850), b"");
