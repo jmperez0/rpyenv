@@ -185,8 +185,9 @@ pub fn spawn_and_wait(cmd: &mut Command, program: &Path) -> io::Result<ExitStatu
     ignore_console_events();
     let job = Job::new();
     let mut child = cmd.spawn()?;
-    if let Some(job) = &job {
-        job.assign(&child);
+    // Without the job, killing the shim leaves the child running (D-45); say so in the log.
+    if !job.as_ref().is_some_and(|j| j.assign(&child)) {
+        debuglog::append("job=none");
     }
     let status = child.wait();
     drop(job);

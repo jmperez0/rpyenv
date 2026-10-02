@@ -383,10 +383,24 @@ fn cannot_run(program: &Path, err: &std::io::Error) -> Report {
         126
     };
     Report {
-        lines: vec![format!("pyenv: {}: {}", program.display(), io_reason(err))],
+        lines: vec![format!(
+            "pyenv: {}: {}",
+            program.display(),
+            start_failure_reason(program, err)
+        )],
         stderr: true,
         code,
     }
+}
+
+/// `io_reason`, with the `%1` that some Windows messages leave for the program's name
+/// filled in (`FormatMessage` is called without inserts).
+fn start_failure_reason(program: &Path, err: &std::io::Error) -> String {
+    let name = program
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    io_reason(err).replace("%1", &name)
 }
 
 /// An I/O error's text without Rust's ` (os error N)` suffix, as a shell prints it (D-43).
@@ -733,6 +747,17 @@ mod tests {
         assert!(!reason.is_empty());
         assert!(!reason.contains("os error"), "{reason}");
         assert_eq!(io_reason(&std::io::Error::other("plain")), "plain");
+    }
+
+    /// Review focus 5: Windows leaves `%1` in some messages for the program's name
+    /// (`ERROR_BAD_EXE_FORMAT`: "%1 is not a valid Win32 application.").
+    #[cfg(windows)]
+    #[test]
+    fn start_failure_names_the_program() {
+        let err = std::io::Error::from_raw_os_error(193);
+        let reason = start_failure_reason(std::path::Path::new(r"C:\v\bad.exe"), &err);
+        assert!(!reason.contains("%1"), "{reason}");
+        assert!(reason.contains("bad.exe"), "{reason}");
     }
 
     #[test]

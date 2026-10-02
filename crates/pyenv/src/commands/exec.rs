@@ -12,6 +12,7 @@ const USAGE: &str = "Usage: pyenv exec <command> [arg1 arg2...]";
 /// `pyenv exec <command> [args...]`. On Linux this process becomes the command, except
 /// for pip commands; otherwise the command's exit code comes back in the `Output`.
 pub fn exec(ctx: &Ctx, args: &[OsString]) -> Output {
+    rpyenv_core::debuglog::set_source("pyenv exec");
     let command = args
         .first()
         .map(|a| a.to_string_lossy().into_owned())
@@ -21,7 +22,12 @@ pub fn exec(ctx: &Ctx, args: &[OsString]) -> Output {
     };
     let env = ExecEnv::from_process(&command, crate::shim_exe());
     match launch::plan(ctx, Mode::Exec, &command, args[1..].to_vec(), &env) {
-        Err(report) => report.into(),
+        Err(report) => {
+            for line in &report.lines {
+                rpyenv_core::debuglog::append(line);
+            }
+            report.into()
+        }
         Ok(plan) => {
             #[cfg(windows)]
             let plan = launch::LaunchPlan {
@@ -30,6 +36,7 @@ pub fn exec(ctx: &Ctx, args: &[OsString]) -> Output {
             };
             let mut before = Output::new();
             for w in &plan.warnings {
+                rpyenv_core::debuglog::append(w);
                 before.err(w);
             }
             before.emit(ctx.flavor);
