@@ -143,7 +143,7 @@ pub fn which_pyenv(
 
 /// Upstream's `system` search: `PATH` with every `~` replaced by `$HOME`, minus
 /// `<root>/shims` and `skip.dirs`, then the first runnable `command`. A hit that resolves
-/// to rpyenv's shim binary is passed over (allowlist D-30).
+/// to rpyenv's shim binary, or into the `shims` folder, is passed over (allowlist D-30).
 fn system_command(ctx: &Ctx, command: &str, skip: &Skip) -> Option<PathBuf> {
     let path = ctx.path.as_ref()?;
     let shims = ctx.shims_dir();
@@ -157,6 +157,7 @@ fn system_command(ctx: &Ctx, command: &str, skip: &Skip) -> Option<PathBuf> {
         .exe
         .as_ref()
         .and_then(|e| std::fs::canonicalize(e).ok());
+    let shims_canon = std::fs::canonicalize(&shims).ok();
     pathsearch::find_all(
         command,
         Some(&path),
@@ -165,7 +166,10 @@ fn system_command(ctx: &Ctx, command: &str, skip: &Skip) -> Option<PathBuf> {
         ctx.pathext.as_deref(),
     )
     .into_iter()
-    .find(|p| own.is_none() || std::fs::canonicalize(p).ok() != own)
+    .find(|p| match std::fs::canonicalize(p) {
+        Ok(c) => Some(&c) != own.as_ref() && c.parent() != shims_canon.as_deref(),
+        Err(_) => true,
+    })
 }
 
 #[cfg(unix)]
@@ -593,6 +597,31 @@ mod tests {
         };
         let found = which_pyenv(&ctx, "tool", false, &skip).map(|f| f.path);
         assert_eq!(found, Ok(base.join("home").join("sys").join("tool")));
+    }
+
+    /// A symlink elsewhere on PATH to a shim is passed over even when the caller doesn't
+    /// know the shim binary (`pyenv exec`, whose shim binary isn't the shim's template).
+    #[cfg(unix)]
+    #[test]
+    fn system_search_skips_a_link_to_any_shim() {
+        use std::os::unix::fs::symlink;
+        let r = Root::new(&[]);
+        let base = r.tmp.path();
+        let shims = r.root().join("shims");
+        exe(&shims.join("tool"));
+        fs::create_dir_all(base.join("links")).unwrap();
+        symlink(shims.join("tool"), base.join("links/tool")).unwrap();
+        let real = base.join("sys/tool");
+        exe(&real);
+        let mut ctx = r.ctx(Some("system"));
+        let path = format!(
+            "{}:{}",
+            base.join("links").display(),
+            base.join("sys").display()
+        );
+        ctx.path = Some(path.into());
+        let found = which_pyenv(&ctx, "tool", false, &Skip::default()).map(|f| f.path);
+        assert_eq!(found, Ok(real));
     }
 
     #[test]

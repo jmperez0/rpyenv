@@ -265,6 +265,29 @@ fn works_in_a_deleted_directory() {
     );
 }
 
+/// Review focus 2, with the real binaries: a write into one shim breaks only the per-user
+/// template, never the installed `pyenv-shim`, and `pyenv rehash` makes the shims run again.
+#[cfg(unix)]
+#[test]
+fn linux_writing_into_a_shim_leaves_the_installed_binary_alone() {
+    let f = Fixture::new();
+    f.install("3.12.10/bin/python");
+    f.rehash();
+    let installed = std::fs::read(built("pyenv-shim")).unwrap();
+    std::fs::write(
+        f.shim("python"),
+        b"2
+",
+    )
+    .unwrap();
+    assert_eq!(std::fs::read(built("pyenv-shim")).unwrap(), installed);
+    let r = f.pyenv(&["rehash"], &[]);
+    assert!(r.status.success(), "{}", String::from_utf8_lossy(&r.stderr));
+    let out = f.run_shim("python", &["x".into()], &[("PYENV_VERSION", v("3.12.10"))]);
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(arg_lines(&out), [line("arg", "x")]);
+}
+
 /// Review focus 1: a symlink to a shim elsewhere on PATH must not make `system` recurse.
 #[cfg(unix)]
 #[test]

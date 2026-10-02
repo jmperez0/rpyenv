@@ -11,11 +11,15 @@ fn rehash_links_each_executable_and_shims_lists_them() {
     let r = f.pyenv(&["rehash"]);
     assert_eq!((r.stdout.as_str(), r.stderr.as_str(), r.code), ("", "", 0));
     let shims = f.root.join("shims");
-    let target = fs::read_link(shims.join("python")).unwrap();
-    assert_eq!(
-        fs::canonicalize(target).unwrap(),
-        fs::canonicalize(shim_exe()).unwrap()
+    use std::os::unix::fs::MetadataExt;
+    let template = shims.join(".template").join("pyenv-shim");
+    assert_eq!(fs::read(&template).unwrap(), fs::read(shim_exe()).unwrap());
+    let (s, t) = (
+        fs::symlink_metadata(shims.join("python")).unwrap(),
+        fs::metadata(&template).unwrap(),
     );
+    assert!(s.is_file(), "python should be a hardlink, not a symlink");
+    assert_eq!((s.dev(), s.ino()), (t.dev(), t.ino()));
     assert_eq!(
         f.pyenv(&["shims"]).stdout,
         format!(

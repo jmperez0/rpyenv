@@ -81,13 +81,13 @@ reading each shim's dependency tree.
 |---|---|---|
 | `PYENV_ROOT` | `~/.pyenv` | `%USERPROFILE%\.pyenv\pyenv-win` |
 | CLI | `bin/pyenv` | `bin\pyenv.exe` |
-| Shims | `shims/` (symlinks) | `shims\` (hardlinks; a `.cmd` forwarder only for names in `RPYENV_BATCH_FORWARD`) |
+| Shims | `shims/` (hardlinks to the template) | `shims\` (hardlinks; a `.cmd` forwarder only for names in `RPYENV_BATCH_FORWARD`) |
 | Versions | `versions/<name>/bin` | `versions\<name>\` and `versions\<name>\Scripts` |
 | Global version | `version` | `version` |
 | Download cache | `cache/` | `install_cache\` (pyenv-win's name) |
 | Default packages | `default-packages` | same (the pyenv-default-packages plugin's file) |
 | Rehash state | `shims/.rehash-state` and `shims/.rehash.lock` | same |
-| Shim template | n/a | `shims\.template\` (per-user copies of the shim binaries; `PATH` never searches subfolders) |
+| Shim template | `shims/.template/` (a per-user copy of `pyenv-shim`) | `shims\.template\` (per-user copies of the shim binaries; `PATH` never searches subfolders) |
 
 On Windows, `PYENV_ROOT` is read from `PYENV_ROOT`, then pyenv-win's `PYENV`
 and `PYENV_HOME`, then the default.
@@ -304,8 +304,14 @@ instructions, as upstream does.
   - On Linux this matters for conda: its `bin/activate` is executable and
     owned by the `conda` package, so without this rule it would get a normal
     shim that does nothing.
-- Linux: every other executable in `versions/*/bin`, as a symlink to
-  `pyenv-shim`.
+- Linux: every other executable in `versions/*/bin`, as a hardlink to
+  `shims/.template/pyenv-shim`, a per-user copy of `pyenv-shim` (a copy when
+  a hardlink isn't possible). With symlinks to the installed binary, a
+  program that writes into one shim would overwrite `pyenv-shim` itself and
+  break every shim beyond what `pyenv rehash` can repair; with the copy, only
+  the copy is damaged, and rehash replaces it when its bytes differ from the
+  installed binary. Linux's `fs.protected_hardlinks` also forbids a hardlink
+  to a file the user doesn't own, as Windows does below.
 - Windows:
   - `.exe` → a hardlink to the copy of `pyenv-shim.exe` or `pyenv-shimw.exe`
     kept in `shims\.template\`, whichever matches the target's PE `Subsystem`.
