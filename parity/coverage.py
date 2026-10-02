@@ -4,6 +4,10 @@ suite's expected-failure file (parity/expected/), in the comment block directly 
 `#[test]` function (`allowlist D-NN`), or in parity/untestable.txt with the reason no test can
 pin it. A citation of a row that doesn't exist is an error too.
 
+Covered rows are reported by source: "by execution" (a differential case or an expected
+failure, which fails if the row stops being true), "by test citation" (a comment the check
+can't verify) and "waived" (untestable.txt). A row with an execution source counts as executed.
+
   python parity/coverage.py [--report]      (--report lists gaps but exits 0)
 """
 import os
@@ -17,6 +21,7 @@ import diff_cases  # noqa: E402
 HERE = os.path.dirname(os.path.abspath(__file__))
 ID = re.compile(r"\ballowlist\s+(D-\d{2})\b")
 FN = re.compile(r"(pub(\([^)]*\))?\s+)?(async\s+)?fn\s+(\w+)")
+EXECUTION, CITATION, WAIVED = "by execution", "by test citation", "waived"
 
 
 def shown(path):
@@ -63,25 +68,39 @@ def rust_test_citations(crates_dir):
 
 
 def citations():
-    """{row: [where it is cited, …]} from every source."""
+    """{row: [(kind, where it is cited), …]} from every source; kind is EXECUTION, CITATION
+    or WAIVED."""
     out = {}
 
-    def add(row, where):
-        out.setdefault(row, []).append(where)
+    def add(row, kind, where):
+        out.setdefault(row, []).append((kind, where))
 
     for case in diff_cases.CASES:
         for row in case.allow:
-            add(row, f"diff case {case.name!r}")
+            add(row, EXECUTION, f"diff case {case.name!r}")
     for fname, fields in (("bats.txt", 2), ("pyenv-win.txt", 1)):
         path = os.path.join(HERE, "expected", fname)
         for key, reason in allowlist.read_expected(path, fields).items():
             if allowlist.tag(reason).startswith("D-"):
-                add(allowlist.tag(reason), f"expected/{fname}: {key}")
+                add(allowlist.tag(reason), EXECUTION, f"expected/{fname}: {key}")
     for row, reason in allowlist.read_expected(os.path.join(HERE, "untestable.txt"), 1).items():
-        add(row, f"untestable: {reason}")
+        add(row, WAIVED, f"untestable: {reason}")
     for row, wheres in rust_test_citations(os.path.join(allowlist.REPO, "crates")).items():
         for where in wheres:
-            add(row, f"test {where}")
+            add(row, CITATION, f"test {where}")
+    return out
+
+
+def split(table, cited):
+    """{kind: [rows]} for the covered rows of `table`, in table order. Each row counts under
+    its strongest source: execution, then a test citation, then a waiver."""
+    out = {EXECUTION: [], CITATION: [], WAIVED: []}
+    for row in table:
+        kinds = {kind for kind, _ in cited.get(row, ())}
+        for kind in out:
+            if kind in kinds:
+                out[kind].append(row)
+                break
     return out
 
 
@@ -97,16 +116,23 @@ def main(argv):
     table = allowlist.rows()
     cited = citations()
     code, uncovered, dangling = verdict(table, cited, report)
-    print(f"allowlist rows: {len(table)}; covered: {len(table) - len(uncovered)}")
+    kinds = split(table, cited)
+    counts = ", ".join(f"{len(rows)} {kind}" for kind, rows in kinds.items())
+    print(f"allowlist rows: {len(table)}; covered: {len(table) - len(uncovered)} ({counts})")
+    for kind in (CITATION, WAIVED):
+        if kinds[kind]:
+            print(f"{kind}: {' '.join(kinds[kind])}")
     for row in uncovered:
         print(f"uncovered: {row}")
     for row in dangling:
-        print(f"cited but not in the allowlist: {row} ({'; '.join(cited[row])})")
+        print(f"cited but not in the allowlist: {row} ({'; '.join(w for _, w in cited[row])})")
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
         with open(summary, "a", encoding="utf-8") as f:
             f.write(f"### Allowlist coverage\n\n{len(table) - len(uncovered)} of {len(table)} rows "
-                    f"covered. Uncovered: {', '.join(uncovered) or 'none'}.\n\n")
+                    f"covered: {counts}. By test citation (a comment the check can't verify): "
+                    f"{', '.join(kinds[CITATION]) or 'none'}. Waived: {', '.join(kinds[WAIVED]) or 'none'}. "
+                    f"Uncovered: {', '.join(uncovered) or 'none'}.\n\n")
     return code
 
 

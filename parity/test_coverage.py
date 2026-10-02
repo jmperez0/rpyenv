@@ -5,7 +5,9 @@ import tempfile
 import textwrap
 import unittest
 
+import allowlist
 import coverage
+import diff_cases
 
 
 def crate(files):
@@ -60,10 +62,62 @@ class Matching(unittest.TestCase):
         self.assertEqual(list(coverage.rust_test_citations(d)), ["D-07"])
 
 
+class Split(unittest.TestCase):
+    """Covered rows by source: execution can fail if wrong, a test citation can't (yet)."""
+
+    def test_execution_wins_then_a_citation_then_a_waiver(self):
+        ex, ci, wa = coverage.EXECUTION, coverage.CITATION, coverage.WAIVED
+        table = {f"D-0{n}": "both" for n in range(1, 7)}
+        cited = {
+            "D-01": [(ci, "test a"), (ex, "diff case 'x'")],
+            "D-02": [(ci, "test b")],
+            "D-03": [(wa, "untestable: why")],
+            "D-04": [(wa, "untestable: why"), (ci, "test c")],
+            "D-05": [(ex, "expected/bats.txt: k"), (wa, "untestable: why")],
+            "D-99": [(ex, "diff case 'y'")],
+        }
+        self.assertEqual(coverage.split(table, cited),
+                         {ex: ["D-01", "D-05"], ci: ["D-02", "D-04"], wa: ["D-03"]})
+
+    def test_each_source_is_tagged_with_its_kind(self):
+        cited = coverage.citations()
+        for case in diff_cases.CASES:
+            for row in case.allow:
+                self.assertIn((coverage.EXECUTION, f"diff case {case.name!r}"), cited[row])
+        for row, wheres in coverage.rust_test_citations(os.path.join(allowlist.REPO, "crates")).items():
+            for where in wheres:
+                self.assertIn((coverage.CITATION, f"test {where}"), cited[row])
+        for row, entries in cited.items():
+            for kind, where in entries:
+                if where.startswith("expected/"):
+                    self.assertEqual(kind, coverage.EXECUTION, where)
+                if where.startswith("untestable:"):
+                    self.assertEqual(kind, coverage.WAIVED, where)
+
+
 class Main(unittest.TestCase):
     def test_report_mode_never_fails(self):
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(coverage.main(["--report"]), 0)
+
+    def test_the_headline_and_the_summary_give_the_split(self):
+        summary = os.path.join(tempfile.mkdtemp(), "summary.md")
+        old = os.environ.get("GITHUB_STEP_SUMMARY")
+        os.environ["GITHUB_STEP_SUMMARY"] = summary
+        try:
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                coverage.main(["--report"])
+        finally:
+            if old is None:
+                del os.environ["GITHUB_STEP_SUMMARY"]
+            else:
+                os.environ["GITHUB_STEP_SUMMARY"] = old
+        split = r"\d+ by execution, \d+ by test citation, \d+ waived"
+        self.assertRegex(out.getvalue().splitlines()[0],
+                         rf"^allowlist rows: \d+; covered: \d+ \({split}\)$")
+        with open(summary, encoding="utf-8") as f:
+            self.assertRegex(f.read(), rf"\d+ of \d+ rows covered: {split}\.")
 
     def test_enforced_mode_fails_on_a_gap_or_a_dangling_citation(self):
         table = {"D-01": "both", "D-02": "both"}

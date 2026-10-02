@@ -21,7 +21,7 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - run: python3 -m unittest discover -s parity -p "test_*.py" -v
-      - run: python3 parity/coverage.py --report
+      - run: python3 parity/coverage.py
 
   linux:
     name: upstream pyenv (differential + bats)
