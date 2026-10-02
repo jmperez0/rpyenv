@@ -16,9 +16,21 @@ use std::time::{Duration, Instant, SystemTime};
 pub const LOCK_NAME: &str = ".rehash.lock";
 /// What the versions looked like at the last rehash.
 pub const STATE_NAME: &str = ".rehash-state";
-/// Windows: the per-user copy of the shim binary that every shim is a hardlink to.
+/// Where the per-user copy of the shim binary lives; every shim is a hardlink to it
+/// (spec §8). `PATH` never searches subfolders, so it is never a command itself.
 pub const TEMPLATE_DIR: &str = ".template";
+/// The console shim template's name on Windows.
 pub const TEMPLATE_EXE: &str = "pyenv-shim.exe";
+/// The shim template's name on Linux.
+pub const TEMPLATE_BIN: &str = "pyenv-shim";
+
+/// The console shim template's file name for `flavor`.
+pub fn template_name(flavor: Flavor) -> &'static str {
+    match flavor {
+        Flavor::Pyenv => TEMPLATE_BIN,
+        Flavor::PyenvWin => TEMPLATE_EXE,
+    }
+}
 /// Windows: the GUI shim's template name, and its installed name next to `pyenv-shim.exe`.
 pub const TEMPLATE_GUI_EXE: &str = "pyenv-shimw.exe";
 /// Where `pyenv rehash` records the `pyenv.exe` that forwarders call (plan decision 6).
@@ -209,11 +221,7 @@ pub fn rehash_locked(
     // Taken before scanning: a change during the scan makes the next check rehash again.
     let state = snapshot(ctx);
     let wanted = shimset::wanted(ctx, &batch_forward(ctx, caller));
-    let stats = match ctx.flavor {
-        Flavor::Pyenv => apply_links(&shims, shim_exe, &wanted),
-        Flavor::PyenvWin => apply_hardlinks(&shims, shim_exe, &wanted),
-    }
-    .map_err(RehashError::Io)?;
+    let stats = apply_hardlinks(&shims, shim_exe, &wanted, ctx.flavor).map_err(RehashError::Io)?;
     write_state(&shims, &state).map_err(RehashError::Io)?;
     Ok(stats)
 }
@@ -224,52 +232,19 @@ fn write_state(shims: &Path, state: &str) -> io::Result<()> {
     fs::rename(&tmp, shims.join(STATE_NAME))
 }
 
-/// Linux: each shim is a symlink to the shim binary. An existing file that isn't that
-/// link, such as upstream's bash shim, is replaced; directories are left alone.
-fn apply_links(shims: &Path, target: &Path, wanted: &[Wanted]) -> io::Result<RehashStats> {
-    let mut linked = 0;
-    for w in wanted {
-        let p = shims.join(&w.name);
-        match fs::symlink_metadata(&p) {
-            Ok(m)
-                if m.file_type().is_symlink()
-                    && fs::read_link(&p).ok().as_deref() == Some(target) =>
-            {
-                continue
-            }
-            Ok(m) if m.is_dir() => continue,
-            Ok(_) => fs::remove_file(&p)?,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e),
-        }
-        symlink(target, &p)?;
-        linked += 1;
-    }
-    Ok(RehashStats {
-        linked,
-        removed: remove_stale(shims, wanted, false)?,
-    })
-}
-
-#[cfg(unix)]
-fn symlink(target: &Path, link: &Path) -> io::Result<()> {
-    std::os::unix::fs::symlink(target, link)
-}
-
-/// The Linux flavor off Unix only runs in tests.
-#[cfg(not(unix))]
-fn symlink(target: &Path, link: &Path) -> io::Result<()> {
-    fs::copy(target, link).map(|_| ())
-}
-
-/// Windows: each shim is a hardlink to `shims\.template\pyenv-shim.exe` or
-/// `shims\.template\pyenv-shimw.exe`, matching its kind, or a copy when a hardlink isn't
-/// possible. A `.cmd` forwarder is a text file instead (spec §5.3), and falls back to the
+/// Each shim is a hardlink to the template in `shims/.template/` (Windows: `pyenv-shim.exe`
+/// or `pyenv-shimw.exe`, matching its kind; Linux: `pyenv-shim`), or a copy when a hardlink
+/// isn't possible. A `.cmd` forwarder is a text file instead (spec §5.3), and falls back to the
 /// console shim when `pyenv.exe` isn't known, or (`shimset::pyenv_reference`) when its path
 /// can't be written into the forwarder safely. A failed shim doesn't stop the others; the
 /// first error is returned, so the state isn't stored and the next check tries again.
-fn apply_hardlinks(shims: &Path, source: &Path, wanted: &[Wanted]) -> io::Result<RehashStats> {
-    let console = refresh_template(shims, source, TEMPLATE_EXE)?;
+fn apply_hardlinks(
+    shims: &Path,
+    source: &Path,
+    wanted: &[Wanted],
+    flavor: Flavor,
+) -> io::Result<RehashStats> {
+    let console = refresh_template(shims, source, template_name(flavor))?;
     // The GUI shim is installed next to the console one, and its template next to the
     // console template. Without it, GUI programs get the console shim.
     let gui_source = source.with_file_name(TEMPLATE_GUI_EXE);
@@ -338,20 +313,20 @@ fn apply_hardlinks(shims: &Path, source: &Path, wanted: &[Wanted]) -> io::Result
             ShimKind::Console | ShimKind::Forward => (&console, &console_meta),
         };
         let p = shims.join(&w.name);
-        match fs::metadata(&p) {
-            Ok(m) if same_file_data(&m, tmeta) => continue,
+        match fs::symlink_metadata(&p) {
+            Ok(m) if is_link_to(&m, tmeta) => continue,
             Ok(m) if m.is_dir() => continue,
             Ok(_) => remove_or_rename(&p),
             Err(_) => {}
         }
-        match fs::hard_link(template, &p).or_else(|_| fs::copy(template, &p).map(|_| ())) {
+        match fs::hard_link(template, &p).or_else(|_| copy_template(template, &p, tmeta)) {
             Ok(()) => linked += 1,
             Err(e) => {
                 first_err.get_or_insert(e);
             }
         }
     }
-    let removed = remove_stale(shims, &effective, true)?;
+    let removed = remove_stale(shims, &effective, flavor == Flavor::PyenvWin)?;
     first_err.map_or(Ok(RehashStats { linked, removed }), Err)
 }
 
@@ -419,6 +394,31 @@ fn same_file_data(a: &fs::Metadata, b: &fs::Metadata) -> bool {
     a.is_file() && a.len() == b.len() && a.modified().ok() == b.modified().ok()
 }
 
+/// Whether a shim, with metadata `m` read without following symlinks, already is the
+/// template whose metadata is `t`. On Unix that's the same inode; the inode check documents
+/// intent, since a hardlink also shares the template's size and modification time, so
+/// `same_file_data` alone would accept it. Everywhere, a file with the template's size and
+/// modification time also counts: a hardlink shares both on Windows, and a copy made by
+/// `copy_template` gets both. A symlink is never current, so rpyenv 0.1's symlink shims
+/// are replaced (Review focus 1).
+fn is_link_to(m: &fs::Metadata, t: &fs::Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if m.is_file() && m.dev() == t.dev() && m.ino() == t.ino() {
+            return true;
+        }
+    }
+    same_file_data(m, t)
+}
+
+/// The fallback when a hardlink isn't possible: a copy of the template that gets the
+/// template's modification time, so the next rehash sees it as current.
+fn copy_template(template: &Path, p: &Path, t: &fs::Metadata) -> io::Result<()> {
+    fs::copy(template, p)?;
+    set_mtime(p, t.modified()?)
+}
+
 /// Sets `p`'s modification time. On Windows the file is opened for its attributes only,
 /// which works while a shim linked to it is running.
 fn set_mtime(p: &Path, t: SystemTime) -> io::Result<()> {
@@ -433,7 +433,7 @@ fn set_mtime(p: &Path, t: SystemTime) -> io::Result<()> {
     options.open(p)?.set_modified(t)
 }
 
-/// `shims\.template\<name>`, copied again when `source` has different bytes (spec §8).
+/// `shims/.template/<name>`, copied again when `source` has different bytes (spec §8).
 /// Old copies renamed aside by an earlier refresh, and leftover `.tmp` files, are deleted
 /// first.
 fn refresh_template(shims: &Path, source: &Path, name: &str) -> io::Result<PathBuf> {
@@ -581,28 +581,91 @@ mod tests {
         assert!(lock(&shims, Wait::No).is_ok());
     }
 
+    /// Review focus 1: an rpyenv 0.1 symlink shim and an upstream bash shim are both
+    /// replaced by hardlinks to the template, and the template is a copy of the installed
+    /// shim binary.
     #[cfg(unix)]
     #[test]
-    fn linux_rehash_links_replaces_and_removes() {
+    fn linux_rehash_hardlinks_replaces_and_removes() {
+        use std::os::unix::fs::MetadataExt;
         let (_t, ctx, shim) = setup(Flavor::Pyenv);
         let v = ctx.versions_dir();
         exe(&v.join("3.12.1/bin/python"));
         exe(&v.join("3.12.1/bin/pip"));
         let shims = ctx.shims_dir();
         fs::create_dir_all(shims.join("mdir")).unwrap();
-        // An upstream bash shim is replaced by a link.
         fs::write(shims.join("python"), "#!/usr/bin/env bash\n").unwrap();
+        std::os::unix::fs::symlink(&shim, shims.join("pip")).unwrap();
         fs::write(shims.join("gone"), "").unwrap();
         fs::write(shims.join(".keep"), "").unwrap();
         rehash(&ctx, &shim, Wait::No).unwrap();
+        let template = shims.join(TEMPLATE_DIR).join(TEMPLATE_BIN);
+        assert_eq!(fs::read(&template).unwrap(), fs::read(&shim).unwrap());
+        let t = fs::metadata(&template).unwrap();
         for n in ["python", "pip"] {
-            assert_eq!(fs::read_link(shims.join(n)).unwrap(), shim);
+            let m = fs::symlink_metadata(shims.join(n)).unwrap();
+            assert!(m.is_file(), "{n} should be a hardlink, not a symlink");
+            assert_eq!((m.dev(), m.ino()), (t.dev(), t.ino()), "{n}");
         }
+        assert_eq!(fs::read(&shim).unwrap(), b"shim binary");
         assert!(!shims.join("gone").exists());
         assert!(shims.join(".keep").exists());
         assert!(shims.join("mdir").is_dir());
         assert!(!shims.join(LOCK_NAME).exists());
         assert!(!needed(&ctx));
+    }
+
+    /// Review focus 2: writing into one shim writes into the template every shim shares,
+    /// never into the installed binary; `pyenv rehash` then restores all of them.
+    #[cfg(unix)]
+    #[test]
+    fn linux_rehash_repairs_a_shim_written_through() {
+        let (_t, ctx, shim) = setup(Flavor::Pyenv);
+        let v = ctx.versions_dir();
+        exe(&v.join("3.12.1/bin/aaa"));
+        exe(&v.join("3.12.1/bin/python"));
+        rehash(&ctx, &shim, Wait::No).unwrap();
+        let shims = ctx.shims_dir();
+        fs::write(shims.join("python"), b"2\n").unwrap();
+        assert_eq!(fs::read(&shim).unwrap(), b"shim binary");
+        let stats = rehash(&ctx, &shim, Wait::No).unwrap();
+        assert_eq!(stats.linked, 2);
+        for n in ["aaa", "python"] {
+            assert_eq!(fs::read(shims.join(n)).unwrap(), b"shim binary", "{n}");
+        }
+    }
+
+    /// The same contract for the Windows flavor, which runs on both hosts.
+    #[test]
+    fn win_flavor_rehash_repairs_a_shim_written_through() {
+        let (_t, ctx, shim) = setup(Flavor::PyenvWin);
+        let v = ctx.versions_dir();
+        exe(&v.join("3.12.1/aaa.exe"));
+        exe(&v.join("3.12.1/python.exe"));
+        rehash(&ctx, &shim, Wait::No).unwrap();
+        let shims = ctx.shims_dir();
+        fs::write(shims.join("python.exe"), b"2\n").unwrap();
+        assert_eq!(fs::read(&shim).unwrap(), b"shim binary");
+        let stats = rehash(&ctx, &shim, Wait::No).unwrap();
+        assert_eq!(stats.linked, 2);
+        for n in ["aaa.exe", "python.exe"] {
+            assert_eq!(fs::read(shims.join(n)).unwrap(), b"shim binary", "{n}");
+        }
+    }
+
+    /// When a hardlink isn't possible the shim is a copy; the copy takes the template's
+    /// modification time, so a second rehash keeps it instead of copying again.
+    #[test]
+    fn a_copied_shim_is_current_on_the_next_rehash() {
+        let (_t, ctx, _shim) = setup(Flavor::current());
+        let shims = ctx.shims_dir();
+        let template = shims.join(TEMPLATE_DIR).join(template_name(ctx.flavor));
+        fs::create_dir_all(template.parent().unwrap()).unwrap();
+        fs::write(&template, b"shim binary").unwrap();
+        let t = fs::metadata(&template).unwrap();
+        let p = shims.join("copied");
+        copy_template(&template, &p, &t).unwrap();
+        assert!(is_link_to(&fs::symlink_metadata(&p).unwrap(), &t));
     }
 
     #[cfg(unix)]
@@ -616,7 +679,11 @@ mod tests {
         exe(&v.join("3.12.1/bin/black"));
         assert!(needed(&ctx));
         check(&ctx, &shim);
-        assert_eq!(fs::read_link(ctx.shims_dir().join("black")).unwrap(), shim);
+        let template = ctx.shims_dir().join(TEMPLATE_DIR).join(TEMPLATE_BIN);
+        assert!(is_link_to(
+            &fs::symlink_metadata(ctx.shims_dir().join("black")).unwrap(),
+            &fs::metadata(&template).unwrap()
+        ));
         assert!(!needed(&ctx));
     }
 
@@ -829,7 +896,7 @@ mod tests {
         exe(&v.join("3.9.1/Scripts/setvar.bat"));
         let wanted = shimset::shims_win(&v, &["setvar".to_string()]);
         let shims = ctx.shims_dir();
-        let stats = apply_hardlinks(&shims, &shim, &wanted).unwrap();
+        let stats = apply_hardlinks(&shims, &shim, &wanted, Flavor::PyenvWin).unwrap();
         assert_eq!(stats.linked, 2);
         let pyenv_ref = shimset::pyenv_reference(&pyenv, &shims).unwrap();
         assert_eq!(
@@ -840,7 +907,7 @@ mod tests {
         // A shim's exit check passes the template; the recorded path keeps the forwarder.
         let template = shims.join(TEMPLATE_DIR).join(TEMPLATE_EXE);
         assert_eq!(
-            apply_hardlinks(&shims, &template, &wanted).unwrap(),
+            apply_hardlinks(&shims, &template, &wanted, Flavor::PyenvWin).unwrap(),
             RehashStats::default()
         );
     }
@@ -925,7 +992,7 @@ mod tests {
         exe(&v.join("3.9.1/Scripts/setvar.bat"));
         let wanted = shimset::shims_win(&v, &["setvar".to_string()]);
         let shims = ctx.shims_dir();
-        let stats = apply_hardlinks(&shims, &shim, &wanted).unwrap();
+        let stats = apply_hardlinks(&shims, &shim, &wanted, Flavor::PyenvWin).unwrap();
         assert_eq!(stats.linked, 2);
         // A real console shim, not a `.cmd` forwarder pointing nowhere, and not deleted by
         // this same rehash's `remove_stale` pass.
@@ -943,7 +1010,7 @@ mod tests {
         exe(&v.join("3.9.1/Scripts/setvar.bat"));
         let wanted = shimset::shims_win(&v, &["setvar".to_string()]);
         let shims = ctx.shims_dir();
-        apply_hardlinks(&shims, &shim, &wanted).unwrap();
+        apply_hardlinks(&shims, &shim, &wanted, Flavor::PyenvWin).unwrap();
         assert!(shims.join("setvar.cmd").is_file());
         // `pyenv.exe` disappears (or a differently-placed `shim` source is used, as when
         // rehash is called with a binary that isn't installed next to `pyenv.exe`).
@@ -951,7 +1018,7 @@ mod tests {
         let other_shim = tmp.path().join("elsewhere").join("pyenv-shim");
         fs::create_dir_all(other_shim.parent().unwrap()).unwrap();
         fs::write(&other_shim, b"shim binary").unwrap();
-        apply_hardlinks(&shims, &other_shim, &wanted).unwrap();
+        apply_hardlinks(&shims, &other_shim, &wanted, Flavor::PyenvWin).unwrap();
         assert_eq!(fs::read(shims.join("setvar.exe")).unwrap(), b"shim binary");
         assert!(!shims.join("setvar.cmd").exists());
     }
@@ -971,7 +1038,7 @@ mod tests {
         let forward: Vec<String> = names.iter().map(|n| n.to_ascii_lowercase()).collect();
         let wanted = shimset::shims_win(&v, &forward);
         let shims = ctx.shims_dir();
-        apply_hardlinks(&shims, &shim, &wanted).unwrap();
+        apply_hardlinks(&shims, &shim, &wanted, Flavor::PyenvWin).unwrap();
         for n in ["set var", "a&b"] {
             assert_eq!(
                 fs::read(shims.join(format!("{n}.exe"))).unwrap(),
@@ -994,7 +1061,7 @@ mod tests {
         exe(&v.join("3.9.1/Scripts/setvar.bat"));
         let wanted = shimset::shims_win(&v, &["café".to_string(), "setvar".to_string()]);
         let shims = ctx.shims_dir();
-        apply_hardlinks(&shims, &shim, &wanted).unwrap();
+        apply_hardlinks(&shims, &shim, &wanted, Flavor::PyenvWin).unwrap();
         // The ASCII name still gets a real forwarder...
         assert!(shims.join("setvar.cmd").is_file());
         // ...but the non-ASCII one, even though `pyenv.exe` is known and ASCII, falls

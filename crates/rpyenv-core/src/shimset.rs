@@ -232,7 +232,7 @@ fn relative_path(from_dir: &str, to: &str) -> Option<String> {
 ///
 /// The second-to-last line sets `RPYENV_FORWARD_CP` around its `for /f`, after first
 /// clearing `RPYENV_FORWARD_TARGET`: with `RPYENV_FORWARD_CP` set, `pyenv which` writes
-/// the path in the console's code page instead of UTF-8, since that's how `for /f` will
+/// the path strictly in the console's code page (no UTF-8 fallback), since that's how `for /f` will
 /// decode the bytes it reads from the pipe; clearing `RPYENV_FORWARD_TARGET` first means a
 /// value some earlier, unrelated command left behind can't survive a `for /f` that
 /// captures nothing (an unmappable path) and get treated as this run's result — the final

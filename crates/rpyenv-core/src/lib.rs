@@ -16,6 +16,7 @@ pub mod rehash;
 pub mod select;
 pub mod shim;
 pub mod shimset;
+pub mod textout;
 pub mod verfile;
 pub mod vsort;
 pub mod wincmd;

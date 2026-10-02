@@ -15,8 +15,8 @@ use windows_sys::Win32::Storage::FileSystem::{
     GetFileType, FILE_TYPE_DISK, FILE_TYPE_PIPE, FILE_TYPE_UNKNOWN,
 };
 use windows_sys::Win32::System::Console::{
-    GetConsoleProcessList, GetStdHandle, SetConsoleCtrlHandler, STD_ERROR_HANDLE, STD_HANDLE,
-    STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+    GetConsoleMode, GetConsoleProcessList, GetStdHandle, SetConsoleCtrlHandler, STD_ERROR_HANDLE,
+    STD_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
 };
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
@@ -89,6 +89,23 @@ pub struct Probe {
 
 fn usable(h: HANDLE) -> bool {
     !h.is_null() && h != INVALID_HANDLE_VALUE
+}
+
+/// Whether this process's stdout (or, with `stderr`, stderr) is a console. std writes text
+/// to a console as Unicode; anything else (a pipe, a file, NUL) gets bytes.
+pub fn std_is_console(stderr: bool) -> bool {
+    let which = if stderr {
+        STD_ERROR_HANDLE
+    } else {
+        STD_OUTPUT_HANDLE
+    };
+    let mut mode = 0u32;
+    // SAFETY: reads this process's own standard handle; `GetConsoleMode` writes one `u32`
+    // into `mode` and fails harmlessly on a handle that isn't a console.
+    unsafe {
+        let h = GetStdHandle(which);
+        usable(h) && GetConsoleMode(h, &mut mode) != 0
+    }
 }
 
 /// This process's own standard handle's file type, or `None` when the handle itself isn't
@@ -168,8 +185,9 @@ pub fn spawn_and_wait(cmd: &mut Command, program: &Path) -> io::Result<ExitStatu
     ignore_console_events();
     let job = Job::new();
     let mut child = cmd.spawn()?;
-    if let Some(job) = &job {
-        job.assign(&child);
+    // Without the job, killing the shim leaves the child running (D-45); say so in the log.
+    if !job.as_ref().is_some_and(|j| j.assign(&child)) {
+        debuglog::append("job=none");
     }
     let status = child.wait();
     drop(job);

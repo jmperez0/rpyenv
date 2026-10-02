@@ -14,12 +14,17 @@ jobs:
         os: [windows-2025, windows-2022, ubuntu-latest, ubuntu-24.04-arm]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, 2026-10-02
         with:
           toolchain: "1.96"
           components: rustfmt, clippy
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo build --workspace
+      - name: Shim dependency guard (spec §3)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          python3 ci/shim_deps.py --self-test
+          python3 ci/shim_deps.py
       - run: cargo test --workspace

@@ -57,15 +57,20 @@ fn run(gui: bool) -> i32 {
     if let Some(root) = own_root(flavor, &argv0, own.as_deref(), path.as_deref(), &ctx.pwd) {
         ctx.root = root;
     }
-    // Linux shims link to this binary; Windows shims are hardlinks to the template, so
-    // the exit check passes the template itself and nothing is copied.
-    let rehash_with = match flavor {
-        Flavor::Pyenv => own.clone(),
-        Flavor::PyenvWin => Some(
-            ctx.shims_dir()
-                .join(rehash::TEMPLATE_DIR)
-                .join(rehash::TEMPLATE_EXE),
-        ),
+    // Shims are hardlinks to the template, so when the template exists the exit check passes
+    // it itself and nothing is copied (spec §8).
+    let template = ctx
+        .shims_dir()
+        .join(rehash::TEMPLATE_DIR)
+        .join(rehash::template_name(flavor));
+    // A Linux root from rpyenv 0.1 has no template yet; the running shim's own binary (for a
+    // 0.1 symlink shim, the installed `pyenv-shim`) seeds it. A Windows root always had one,
+    // and seeding it from a GUI shim would turn console shims into GUI shims, so a missing
+    // Windows template keeps the check inert.
+    let rehash_with = if template.is_file() || flavor == Flavor::PyenvWin {
+        Some(template)
+    } else {
+        own.clone()
     };
     let env = ExecEnv::from_process(&program, own);
     match launch::plan(&ctx, Mode::Shim, &program, args, &env) {
@@ -118,8 +123,9 @@ fn say(gui: bool, flavor: Flavor, lines: &[String], to_stderr: bool) {
 }
 
 /// The command a shim stands for: `argv[0]`'s last component on Linux, where every shim
-/// is a symlink to one binary; the file's own name without `.exe` on Windows, where each
-/// shim is a hardlink named after its command. None for the shim binary's own name.
+/// is a hardlink named after its command (a symlink to a shim elsewhere keeps the name it
+/// was run by); the file's own name without `.exe` on Windows, where each shim is a
+/// hardlink named after its command. None for the shim binary's own name.
 pub fn command_name(flavor: Flavor, argv0: &OsStr, own: Option<&Path>) -> Option<String> {
     let name = match flavor {
         Flavor::Pyenv => Path::new(argv0).file_name()?.to_string_lossy().into_owned(),

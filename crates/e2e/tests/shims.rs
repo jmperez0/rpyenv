@@ -265,6 +265,50 @@ fn works_in_a_deleted_directory() {
     );
 }
 
+/// Review focus 2, with the real binaries: a write into one shim breaks only the per-user
+/// template, never the installed `pyenv-shim`, and `pyenv rehash` makes the shims run again.
+#[cfg(unix)]
+#[test]
+fn linux_writing_into_a_shim_leaves_the_installed_binary_alone() {
+    let f = Fixture::new();
+    f.install("3.12.10/bin/python");
+    f.rehash();
+    let installed = std::fs::read(built("pyenv-shim")).unwrap();
+    std::fs::write(f.shim("python"), b"2\n").unwrap();
+    assert_eq!(std::fs::read(built("pyenv-shim")).unwrap(), installed);
+    let r = f.pyenv(&["rehash"], &[]);
+    assert!(r.status.success(), "{}", String::from_utf8_lossy(&r.stderr));
+    let out = f.run_shim("python", &["x".into()], &[("PYENV_VERSION", v("3.12.10"))]);
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(arg_lines(&out), [line("arg", "x")]);
+}
+
+/// Review focus 1, through the automatic rehash: a root left from rpyenv 0.1 (symlink shims,
+/// no template yet) is converted by a shim's exit check, seeded from the running shim's binary.
+#[cfg(unix)]
+#[test]
+fn linux_exit_check_converts_a_0_1_root_of_symlink_shims() {
+    use std::os::unix::fs::MetadataExt;
+    let f = Fixture::new();
+    f.install("3.12.10/bin/python");
+    f.install("3.12.10/bin/pip");
+    let installed = std::fs::read(built("pyenv-shim")).unwrap();
+    let shims = f.root.join("shims");
+    std::fs::create_dir_all(&shims).unwrap();
+    for n in ["pip", "python"] {
+        std::os::unix::fs::symlink(built("pyenv-shim"), shims.join(n)).unwrap();
+    }
+    let out = f.run_shim("pip", &["x".into()], &[("PYENV_VERSION", v("3.12.10"))]);
+    assert_eq!(out.status.code(), Some(0));
+    let t = std::fs::metadata(shims.join(".template/pyenv-shim")).unwrap();
+    for n in ["pip", "python"] {
+        let m = std::fs::symlink_metadata(shims.join(n)).unwrap();
+        assert!(m.is_file(), "{n} should be a hardlink, not a symlink");
+        assert_eq!((m.dev(), m.ino()), (t.dev(), t.ino()), "{n}");
+    }
+    assert_eq!(std::fs::read(built("pyenv-shim")).unwrap(), installed);
+}
+
 /// Review focus 1: a symlink to a shim elsewhere on PATH must not make `system` recurse.
 #[cfg(unix)]
 #[test]

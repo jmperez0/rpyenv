@@ -43,8 +43,9 @@ fn found_or_report(
     }
 }
 
-/// `pyenv which`'s Windows output: the normal UTF-8 line, unless `RPYENV_FORWARD_CP` asks
-/// for the path in the console's code page instead (a `.cmd` forwarder's `for /f`, spec
+/// `pyenv which`'s Windows output: the normal line (redirected output is in the console's
+/// code page, with a UTF-8 fallback), unless `RPYENV_FORWARD_CP` asks for the strict form
+/// instead: the path in the console's code page or a failure (a `.cmd` forwarder's `for /f`, spec
 /// §5.3) — `found_or_report_cp` on Windows, `found_or_report` everywhere else (the
 /// environment variable never applies off Windows).
 #[cfg(windows)]
@@ -61,8 +62,8 @@ fn which_win_output(ctx: &Ctx, command: &str, result: Result<Found, NotFound>) -
 }
 
 /// Like `found_or_report`, but a resolved path is written encoded in the console's output
-/// code page instead of UTF-8, since a `.cmd` forwarder's `for /f` decodes the piped
-/// stdout that way. A path that code page can't represent fails the same way an
+/// code page, strictly: no UTF-8 fallback, since a `.cmd` forwarder's `for /f` decodes the
+/// piped stdout that way and would garble it. A path that code page can't represent fails the same way an
 /// unresolved command does: a `pyenv:` message on stderr and exit 127.
 #[cfg(windows)]
 fn found_or_report_cp(ctx: &Ctx, command: &str, result: Result<Found, NotFound>) -> Output {

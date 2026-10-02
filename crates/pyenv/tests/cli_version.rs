@@ -151,6 +151,50 @@ fn version_file_read_and_write() {
 
 #[cfg(windows)]
 #[test]
+fn win_version_file_read_and_write() {
+    let f = Fixture::new();
+    f.version("3.12.1").version("3.11.9");
+    f.file(&f.work.join("vf"), "3.12.1\r\n3.11.9\r\n");
+    assert_eq!(
+        f.pyenv(&["version-file-read", "vf"]).stdout,
+        "3.12.1:3.11.9\r\n"
+    );
+    f.file(&f.work.join("empty"), "");
+    let r = f.pyenv(&["version-file-read", "empty"]);
+    assert_eq!((r.stdout.as_str(), r.stderr.as_str(), r.code), ("", "", 1));
+    let r = f.pyenv(&["version-file-read", "missing"]);
+    assert_eq!((r.stdout.as_str(), r.stderr.as_str(), r.code), ("", "", 1));
+    assert_eq!(
+        f.pyenv(&["version-file-write", "out", "3.12.1", "3.11.9"])
+            .code,
+        0
+    );
+    assert_eq!(
+        std::fs::read(f.work.join("out")).unwrap(),
+        b"3.12.1\r\n3.11.9\r\n"
+    );
+    let r = f.pyenv(&["version-file-write", "out", "9.9"]);
+    assert_eq!(
+        (r.stdout.as_str(), r.stderr.as_str(), r.code),
+        ("", "pyenv: version `9.9' not installed\r\n", 1)
+    );
+    assert_eq!(
+        std::fs::read(f.work.join("out")).unwrap(),
+        b"3.12.1\r\n3.11.9\r\n"
+    );
+    let r = f.pyenv(&["version-file-write", "out"]);
+    assert_eq!(
+        (r.stdout.as_str(), r.stderr.as_str(), r.code),
+        (
+            "",
+            "Usage: pyenv version-file-write [-f|--force] <file> <version> [...]\r\n",
+            1
+        )
+    );
+}
+
+#[cfg(windows)]
+#[test]
 fn win_nothing_selected() {
     let r = Fixture::new().pyenv(&["version"]);
     assert_eq!(r.code, 1);
@@ -276,4 +320,33 @@ fn win_path_check_ignores_forward_slashes_in_pyenv_root() {
     assert!(!r.stdout.contains("FATAL"), "stdout: {}", r.stdout);
     let root_out = f.pyenv_env(&["root"], &[("PYENV_ROOT", root_fwd.as_str())]);
     assert_eq!(root_out.stdout, format!("{}\r\n", f.root.display()));
+}
+
+/// Review focus 3. The fixture's root holds `ñ`. With the console's code page pinned in a
+/// console of the test's own, redirected output must be in that code page, as cmd.exe and
+/// pyenv-win write it: `ñ` is 0xA4 in code page 850 and 0xC3 0xB1 in UTF-8 (65001).
+#[cfg(windows)]
+#[test]
+fn win_redirected_output_uses_the_console_code_page() {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let f = Fixture::new();
+    let system = std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32");
+    let pyenv = env!("CARGO_BIN_EXE_pyenv");
+    let run = |cp: u32| {
+        f.command(&system.join("cmd.exe"), &f.work, &[])
+            .raw_arg(format!(
+                r#"/d /s /c ""{}" {cp} >nul & "{pyenv}" root""#,
+                system.join("chcp.com").display()
+            ))
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .unwrap()
+            .stdout
+    };
+    let has = |hay: &[u8], needle: &[u8]| hay.windows(needle.len()).any(|w| w == needle);
+    let oem = run(850);
+    assert!(has(&oem, b"py env \xa4\\root\r\n"), "{oem:?}");
+    let utf8 = run(65001);
+    assert!(has(&utf8, "py env ñ\\root\r\n".as_bytes()), "{utf8:?}");
 }
