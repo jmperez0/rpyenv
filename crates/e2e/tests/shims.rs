@@ -323,13 +323,25 @@ fn system_command_never_finds_the_shim() {
     let real = f.syspath.join("tool");
     std::fs::copy(built("argv-echo"), &real).unwrap();
     let path = std::env::join_paths([links, f.root.join("shims"), f.syspath.clone()]).unwrap();
-    let out = f
+    let mut child = f
         .shim_command(
             "tool",
             &[("PYENV_VERSION", v("system")), ("PATH", path.as_os_str())],
         )
-        .output()
+        .stdout(Stdio::piped())
+        .spawn()
         .unwrap();
+    // A shim that finds itself runs itself forever: stop it rather than hang the suite.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while child.try_wait().unwrap().is_none() {
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("the shim was still running after 20 s: it found itself through the symlink");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let out = child.wait_with_output().unwrap();
     assert_eq!(
         stdout(&out).lines().next(),
         Some(line("argv0", &real).as_str())
