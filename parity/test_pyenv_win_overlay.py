@@ -31,3 +31,32 @@ class Keys(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InstalledEnv(unittest.TestCase):
+    """The suite's `run` fixture finds pyenv on PATH only through PYENV/PYENV_ROOT/PYENV_HOME,
+    as upstream's CI sets them; a fresh runner has none (first CI run: 42 failures)."""
+
+    def test_names_the_install_and_puts_it_first_on_path(self):
+        import sys
+        sys.path.insert(0, HERE)
+        from pyenv_win_run import installed_env
+        home = os.path.join("D:" + os.sep, "w", "pyenv-win")
+        host = os.path.join("C:" + os.sep, "Users", "me", ".pyenv", "pyenv-win")
+        base = {
+            "PYENV": host + os.sep,
+            "PATH": os.pathsep.join([os.path.join(host, "bin"), "X", os.path.join(host, "shims"), "Y"]),
+        }
+        env = installed_env(base, home)
+        self.assertEqual({env[k] for k in ("PYENV", "PYENV_ROOT", "PYENV_HOME")}, {home})
+        self.assertEqual(
+            env["PATH"].split(os.pathsep),
+            [os.path.join(home, "bin"), os.path.join(home, "shims"), "X", "Y"],
+        )
+
+    def test_a_host_without_an_install_keeps_its_path(self):
+        import sys
+        sys.path.insert(0, HERE)
+        from pyenv_win_run import installed_env
+        env = installed_env({"PATH": "X"}, "H")
+        self.assertEqual(env["PATH"].split(os.pathsep), [os.path.join("H", "bin"), os.path.join("H", "shims"), "X"])

@@ -12,6 +12,22 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 MARK = "# --- rpyenv overlay"
+KEYS = ("PYENV", "PYENV_ROOT", "PYENV_HOME")
+
+
+def installed_env(base, home):
+    """`base` as upstream's CI sets it up (.github/scripts/build.sh): PYENV, PYENV_ROOT and
+    PYENV_HOME name an install at `home`, whose bin and shims lead PATH. The suite's `run`
+    fixture rewrites those names to each test's root; without them its commands run with no
+    pyenv on PATH. A host's own install is dropped from PATH, so it can't stand in."""
+    old = {os.path.normcase(os.path.normpath(base[k])) for k in KEYS if base.get(k)}
+    keep = [
+        p for p in base.get("PATH", "").split(os.pathsep)
+        if p and os.path.normcase(os.path.dirname(os.path.normpath(p))) not in old
+    ]
+    env = dict(base, **{k: home for k in KEYS})
+    env["PATH"] = os.pathsep.join([os.path.join(home, "bin"), os.path.join(home, "shims"), *keep])
+    return env
 
 
 def main(argv):
@@ -28,7 +44,8 @@ def main(argv):
             overlay = f.read()
         with open(conftest, "a", encoding="utf-8") as f:
             f.write("\n" + overlay)
-    env = dict(os.environ, RPYENV_BIN=os.path.abspath(a.rpyenv), RPYENV_PARITY=HERE)
+    home = os.path.join(os.path.abspath(a.pyenv_win), "pyenv-win")
+    env = dict(installed_env(os.environ, home), RPYENV_BIN=os.path.abspath(a.rpyenv), RPYENV_PARITY=HERE)
     cmd = [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", "-q", "-rfEX", "--rootdir", tests, tests, *rest]
     return subprocess.run(cmd, env=env).returncode
 
