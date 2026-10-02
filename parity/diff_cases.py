@@ -157,4 +157,9 @@ CASES = (
     # printed.
     Case("version naming a character outside the code page", ("version",), os="Windows",
          env=(("PYENV_VERSION", "3.9.1-\u6f22"),), allow=("D-48",)),
+    # D-53: version files are read in the ANSI code page, so a UTF-8 `\u00e9` arrives as `\u00c3\u00a9`. `\u00e9`
+    # is in the console's code page (850 here, 437 on GitHub's runners: 0x82 in both), so
+    # D-48 isn't involved.
+    Case("version-name with a non-ASCII name in the local file", ("version-name",), os="Windows",
+         files=(("work/.python-version", "3.9.1-\u00e9\n"),), allow=("D-53",)),
 )
