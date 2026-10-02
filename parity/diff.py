@@ -41,6 +41,21 @@ def verdict(same, rows_here):
     return "allowed" if rows_here else "differs"
 
 
+FIELDS = {"code": 0, "stdout": 1, "stderr": 2, "files": 3}
+
+
+def bound_failures(may_differ, contains, upstream, rpyenv):
+    """What is wrong with an allowed difference; an empty list means it is well bounded.
+    `upstream` and `rpyenv` are (code, stdout, stderr, files) results, `contains` is bytes."""
+    out = []
+    for name, i in FIELDS.items():
+        if name not in may_differ and upstream[i] != rpyenv[i]:
+            out.append(f"{name} differs but is not in may_differ")
+    if contains and not any(contains in rpyenv[FIELDS[n]] for n in may_differ if n != "code"):
+        out.append(f"rpyenv's {'/'.join(may_differ)} lacks {contains!r}")
+    return out
+
+
 def remove_tree(path):
     """Removes `path`, clearing read-only flags that block a delete on Windows."""
     def again(func, p, _):
@@ -131,7 +146,8 @@ def run(tool, rpyenv, upstream, places, case):
             env[k] = expand(v)
     p = subprocess.run(cmd + [expand(a) for a in case.args], cwd=work, env=env,
                        capture_output=True, stdin=subprocess.DEVNULL, timeout=120)
-    return (p.returncode, p.stdout, p.stderr, tuple(snapshot(resolve(places, r)) for r in case.compare))
+    files = b"\x00".join(b"<missing>" if x is None else x for x in map(snapshot, (resolve(places, r) for r in case.compare)))
+    return (p.returncode, p.stdout, p.stderr, files)
 
 
 def describe(a, b):
@@ -139,10 +155,21 @@ def describe(a, b):
     for label, x, y in (("exit code", a[0], b[0]), ("stdout", a[1], b[1]), ("stderr", a[2], b[2])):
         if x != y:
             out.append(f"    {label}: upstream {x!r}\n    {label}: rpyenv   {y!r}")
-    for i, (x, y) in enumerate(zip(a[3], b[3])):
-        if x != y:
-            out.append(f"    compared file {i}: upstream {x!r}\n    compared file {i}: rpyenv   {y!r}")
+    if a[3] != b[3]:
+        out.append(f"    compared files: upstream {a[3]!r}\n    compared files: rpyenv   {b[3]!r}")
     return "\n".join(out)
+
+
+def check_inputs(rpyenv, upstream):
+    """A one-line message for a bad --rpyenv or --upstream, or None."""
+    exe = os.path.join(rpyenv, "pyenv.exe" if WINDOWS else "pyenv")
+    if not os.path.isfile(exe):
+        return f"--rpyenv: {exe} not found"
+    needed = ["bin/pyenv.bat", ".versions_cache.xml"] if WINDOWS else ["bin/pyenv"]
+    for rel in needed:
+        if not os.path.isfile(os.path.join(upstream, *rel.split("/"))):
+            return f"--upstream: {os.path.join(upstream, *rel.split('/'))} not found"
+    return None
 
 
 def main(argv):
@@ -152,6 +179,10 @@ def main(argv):
     p.add_argument("--only")
     a = p.parse_args(argv)
     rpyenv, upstream = os.path.abspath(a.rpyenv), os.path.abspath(a.upstream)
+    problem = check_inputs(rpyenv, upstream)
+    if problem:
+        print(problem, file=sys.stderr)
+        return 1
     table = allowlist.rows()
     counts, failures = {}, []
     for case in diff_cases.CASES:
@@ -161,20 +192,35 @@ def main(argv):
         if unknown:
             failures.append(f"{case.name}: unknown allowlist rows {unknown}")
             continue
+        if applicable(case, table) and not case.may_differ:
+            failures.append(f"{case.name}: has allowlist rows but an empty may_differ")
+            continue
         results = {}
         for tool in ("upstream", "rpyenv"):
             places = build(upstream, case)
             results[tool] = run(tool, rpyenv, upstream, places, case)
         rows_here = applicable(case, table)
-        v = verdict(results["upstream"] == results["rpyenv"], rows_here)
+        same = results["upstream"] == results["rpyenv"]
+        v = verdict(same, rows_here)
+        broken = []
+        if v == "allowed":
+            contains = (expand(case.rpyenv_contains).replace("{root}", places["root"])
+                        .replace("{work}", places["work"]).replace("{sep}", os.sep)).encode("utf-8")
+            broken = bound_failures(case.may_differ, contains, results["upstream"], results["rpyenv"])
+            if broken:
+                v = "differs"
         counts[v] = counts.get(v, 0) + 1
         print(f"{v:8} {case.name}" + (f"  ({', '.join(rows_here)})" if rows_here else ""))
         if v in ("stale", "differs"):
             detail = describe(results["upstream"], results["rpyenv"])
+            if broken:
+                detail = "\n".join("    out of bounds: " + b for b in broken) + "\n" + detail
             failures.append(f"{case.name}: {v}" + (f"\n{detail}" if detail else ""))
             if detail:
                 print(detail)
     remove_tree(BASE)
+    if not counts and not failures:
+        failures.append("no case ran" + (f" (no case named {a.only!r} for {OS_NAME})" if a.only else ""))
     print(f"{OS_NAME}: " + ", ".join(f"{n} {k}" for k, n in sorted(counts.items())))
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
