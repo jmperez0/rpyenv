@@ -1,0 +1,78 @@
+import os
+import tempfile
+import unittest
+
+import allowlist
+
+SAMPLE = """# Intentional differences
+
+| ID | OS | Command | Upstream | rpyenv | Reason |
+|---|---|---|---|---|---|
+| D-01 | both | `--version` | a | b | c |
+| D-12 | Windows | `root` | a | b | c |
+| D-35 | Linux | `rehash` | a | b | c |
+"""
+
+
+def write(text):
+    f = tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".md", delete=False)
+    f.write(text)
+    f.close()
+    return f.name
+
+
+class Rows(unittest.TestCase):
+    def test_reads_ids_and_os(self):
+        self.assertEqual(
+            allowlist.rows(write(SAMPLE)),
+            {"D-01": "both", "D-12": "Windows", "D-35": "Linux"},
+        )
+
+    def test_a_duplicate_row_is_an_error(self):
+        with self.assertRaises(ValueError):
+            allowlist.rows(write(SAMPLE + "| D-12 | Linux | x | a | b | c |\n"))
+
+    def test_the_real_allowlist_parses(self):
+        table = allowlist.rows()
+        self.assertIn("D-01", table)
+        self.assertTrue(all(v in ("both", "Linux", "Windows") for v in table.values()))
+
+
+class Reasons(unittest.TestCase):
+    """Review focus 3."""
+
+    table = {"D-01": "both", "D-12": "Windows", "D-35": "Linux"}
+
+    def test_a_row_for_this_os_or_both_is_accepted(self):
+        self.assertIsNone(allowlist.check_reason("D-35 the lock", "Linux", self.table))
+        self.assertIsNone(allowlist.check_reason("D-01 fixed line", "Windows", self.table))
+
+    def test_a_milestone_is_accepted(self):
+        self.assertIsNone(allowlist.check_reason("M3 shell integration", "Linux", self.table))
+
+    def test_a_row_for_the_other_os_is_rejected(self):
+        self.assertIn("Linux row", allowlist.check_reason("D-35 x", "Windows", self.table))
+
+    def test_an_unknown_row_or_word_is_rejected(self):
+        self.assertIsNotNone(allowlist.check_reason("D-99 x", "Linux", self.table))
+        self.assertIsNotNone(allowlist.check_reason("because", "Linux", self.table))
+        self.assertIsNotNone(allowlist.check_reason("", "Linux", self.table))
+
+
+class Expected(unittest.TestCase):
+    def test_reads_keys_and_reasons_and_skips_comments(self):
+        path = write("# c\n\na.bats | t 1 | D-01 x\nb.bats | t 2 | M3 y\n")
+        self.assertEqual(
+            allowlist.read_expected(path, 2),
+            {"a.bats | t 1": "D-01 x", "b.bats | t 2": "M3 y"},
+        )
+
+    def test_a_wrong_field_count_or_a_duplicate_is_an_error(self):
+        with self.assertRaises(ValueError):
+            allowlist.read_expected(write("a.bats | D-01 x\n"), 2)
+        with self.assertRaises(ValueError):
+            allowlist.read_expected(write("k | D-01 x\nk | D-01 y\n"), 1)
+
+
+if __name__ == "__main__":
+    unittest.main()

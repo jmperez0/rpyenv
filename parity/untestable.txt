@@ -1,0 +1,1 @@
+# Allowlist rows no automated test can pin, each with the reason: `D-NN | <reason>`.

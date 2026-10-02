@@ -1,0 +1,1 @@
+# Expected failures of upstream pyenv's bats suite against rpyenv (plan decision 3).
