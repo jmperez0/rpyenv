@@ -81,3 +81,25 @@ fn a_corrupt_zip_is_an_error() {
     std::fs::write(&z, b"PK\x03\x04garbage").unwrap();
     assert!(extract_zip(&z, &d.path().join("t")).is_err());
 }
+
+#[test]
+fn a_symlink_entry_is_refused_and_nothing_lands_outside() {
+    let d = tempfile::tempdir().unwrap();
+    let z = d.path().join("p.zip");
+    let mut w = zip::ZipWriter::new(std::fs::File::create(&z).unwrap());
+    w.start_file("ok.txt", zip::write::SimpleFileOptions::default())
+        .unwrap();
+    w.write_all(b"1").unwrap();
+    w.add_symlink(
+        "link",
+        "../outside",
+        zip::write::SimpleFileOptions::default(),
+    )
+    .unwrap();
+    w.finish().unwrap();
+    let t = d.path().join("a").join("t");
+    let e = extract_zip(&z, &t).unwrap_err();
+    assert!(e.contains("unsafe path"), "{e}");
+    assert!(!t.join("link").exists());
+    assert!(!d.path().join("outside").exists());
+}

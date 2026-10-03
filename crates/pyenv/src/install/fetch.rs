@@ -47,6 +47,8 @@ pub struct Fetcher {
     pub retry_delay: Duration,
     /// An attempt with no new bytes for this long is abandoned and retried.
     pub stall_timeout: Duration,
+    /// Whole-request deadline for `get_text`.
+    pub text_timeout: Duration,
 }
 
 /// Why `get_text` failed: the HTTP status, when there was one, and a reason.
@@ -103,6 +105,7 @@ impl Fetcher {
             cache,
             retry_delay: Duration::from_secs(1),
             stall_timeout: Duration::from_secs(60),
+            text_timeout: Duration::from_secs(60),
         }
     }
 
@@ -115,11 +118,13 @@ impl Fetcher {
             cache: None,
             retry_delay: Duration::from_secs(1),
             stall_timeout: Duration::from_secs(60),
+            text_timeout: Duration::from_secs(60),
         }
     }
 
     /// A small text resource (a folder listing, an index page): up to 3 attempts for transient
-    /// failures, at most 16 MiB, decoded as UTF-8.
+    /// failures (including a body that stalls or breaks), each bounded by `text_timeout` as a
+    /// whole, at most 16 MiB, decoded as UTF-8.
     pub fn get_text(&self, url: &str) -> Result<String, TextError> {
         let mut last = TextError {
             status: None,
@@ -135,37 +140,40 @@ impl Fetcher {
                     message: "interrupted".into(),
                 });
             }
-            match self.agent.get(url).call() {
-                Ok(mut r) => {
-                    return r
-                        .body_mut()
-                        .with_config()
-                        .limit(16 << 20)
-                        .read_to_string()
-                        .map_err(|e| TextError {
-                            status: None,
-                            message: e.to_string(),
-                        });
-                }
-                Err(ureq::Error::StatusCode(code)) if code < 500 => {
+            let called = self
+                .agent
+                .get(url)
+                .config()
+                .timeout_global(Some(self.text_timeout))
+                .build()
+                .call();
+            let err = match called {
+                Ok(mut r) => match r.body_mut().with_config().limit(16 << 20).read_to_string() {
+                    Ok(text) => return Ok(text),
+                    Err(e) => e,
+                },
+                Err(e) => e,
+            };
+            match err {
+                ureq::Error::StatusCode(code) if code < 500 => {
                     return Err(TextError {
                         status: Some(code),
                         message: format!("HTTP {code}"),
                     })
                 }
-                Err(ureq::Error::StatusCode(code)) => {
+                ureq::Error::StatusCode(code) => {
                     last = TextError {
                         status: Some(code),
                         message: format!("HTTP {code}"),
                     }
                 }
-                Err(e) if is_transient(&e) => {
+                e if is_transient(&e) => {
                     last = TextError {
                         status: None,
                         message: e.to_string(),
                     }
                 }
-                Err(e) => {
+                e => {
                     return Err(TextError {
                         status: None,
                         message: e.to_string(),
@@ -385,7 +393,10 @@ impl Fetcher {
 
 /// The local path of a `file:` URL: `file:///p`, `file://localhost/p`, and on Windows
 /// `file:///C:/p` (the leading `/` before the drive dropped), percent-decoded. Other hosts and
-/// invalid escapes give `None`.
+/// invalid escapes give `None`. Escaped separators (`%2F`, `%5C`) and NUL (`%00`) are refused,
+/// and so is a decoded path starting `//` or `\` (UNC) or containing NUL. On Linux, `file:` URLs
+/// are now percent-decoded and other hosts refused (intended); the drive-letter strip is
+/// Windows-only.
 pub fn file_url_path(url: &str) -> Option<PathBuf> {
     let rest = url.strip_prefix("file://")?;
     let rest = rest.strip_prefix("localhost").unwrap_or(rest);
@@ -398,7 +409,11 @@ pub fn file_url_path(url: &str) -> Option<PathBuf> {
     while i < b.len() {
         if b[i] == b'%' {
             let hex = std::str::from_utf8(b.get(i + 1..i + 3)?).ok()?;
-            bytes.push(u8::from_str_radix(hex, 16).ok()?);
+            let v = u8::from_str_radix(hex, 16).ok()?;
+            if matches!(v, b'/' | b'\\' | 0) {
+                return None;
+            }
+            bytes.push(v);
             i += 3;
         } else {
             bytes.push(b[i]);
@@ -406,11 +421,17 @@ pub fn file_url_path(url: &str) -> Option<PathBuf> {
         }
     }
     let s = String::from_utf8(bytes).ok()?;
-    let d = s.as_bytes();
-    let s = if d.len() >= 3 && d[0] == b'/' && d[1].is_ascii_alphabetic() && d[2] == b':' {
-        s[1..].to_string()
-    } else {
-        s
+    if s.starts_with("//") || s.starts_with("\\\\") || s.contains('\0') {
+        return None;
+    }
+    #[cfg(windows)]
+    let s = {
+        let d = s.as_bytes();
+        if d.len() >= 3 && d[0] == b'/' && d[1].is_ascii_alphabetic() && d[2] == b':' {
+            s[1..].to_string()
+        } else {
+            s
+        }
     };
     Some(PathBuf::from(s))
 }
@@ -522,12 +543,79 @@ mod tests {
             file_url_path("file://localhost/x"),
             Some(PathBuf::from("/x"))
         );
+        #[cfg(windows)]
         assert_eq!(
             file_url_path("file:///C:/py%C3%B1/x.zip"),
             Some(PathBuf::from("C:/pyñ/x.zip"))
         );
+        #[cfg(not(windows))]
+        assert_eq!(
+            file_url_path("file:///C:/py%C3%B1/x.zip"),
+            Some(PathBuf::from("/C:/pyñ/x.zip"))
+        );
         assert_eq!(file_url_path("file://host/x"), None);
         assert_eq!(file_url_path("file:///bad%zz"), None);
+    }
+
+    #[test]
+    fn file_urls_cannot_name_unc_paths_or_smuggle_separators() {
+        for bad in [
+            "file:////h/s",
+            "file:///%5C%5Ch%5Cs",
+            "file:///a%2F..%2Fb",
+            "file:///a%2f..%2fb",
+            "file:///a%5cb",
+            "file:///a%00b",
+        ] {
+            assert_eq!(file_url_path(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn direct_has_no_mirror() {
+        assert_eq!(
+            Fetcher::direct().mirror_url("https://ftpmirror.gnu.org/x", "ab"),
+            None
+        );
+    }
+
+    #[test]
+    fn a_caller_checked_request_neither_reads_nor_writes_the_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("cache");
+        std::fs::create_dir(&cache).unwrap();
+        std::fs::write(cache.join("out.bin"), b"stale").unwrap();
+        std::fs::write(cache.join("other.bin"), b"x").unwrap();
+        let src = dir.path().join("src.bin");
+        std::fs::write(&src, b"fresh").unwrap();
+        let f = Fetcher::from_env(
+            &|k| (k == "PYTHON_BUILD_SKIP_MIRROR").then(|| "1".to_string()),
+            Some(cache.clone()),
+        );
+        let dest = dir.path().join("dest");
+        std::fs::create_dir(&dest).unwrap();
+        let url = format!(
+            "file:///{}",
+            src.display()
+                .to_string()
+                .replace('\\', "/")
+                .trim_start_matches('/')
+        );
+        let req = FetchRequest {
+            file_name: "out.bin".into(),
+            url,
+            check: Check::Caller,
+            dest_dir: dest,
+        };
+        let got = f.fetch(&req, &mut Vec::new(), &mut |_| {}).unwrap();
+        assert_eq!(std::fs::read(got).unwrap(), b"fresh");
+        assert_eq!(std::fs::read(cache.join("out.bin")).unwrap(), b"stale");
+        let mut names: Vec<_> = std::fs::read_dir(&cache)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["other.bin", "out.bin"]);
     }
 
     #[test]
