@@ -37,7 +37,7 @@
   - Don't reproduce defects.
   - Every intentional difference gets an allowlist row in `docs/parity/allowlist.md` (next free row: D-55).
 - **Atomic (spec §9.3):** "a failure or Ctrl+C never leaves a partial `versions/<ver>`."
-- **Verified (spec §9.3):** "every download is checked against a published SHA-256 (from python.org's index, upstream `python-build`, or rpyenv's own catalog) before it is used."
+- **Verified (spec §9.3):** "every download is checked, before it is used, against what its publisher publishes: a SHA-256 (python.org's index, upstream `python-build`) or the publisher's OpenPGP signature (python.org's MSIs). rpyenv never publishes or computes the reference value itself, and MD5 is never accepted." On Linux this means python-build's SHA-256.
 - **Variables (spec §9.2):** respect upstream's `PYTHON_CONFIGURE_OPTS`, `PYTHON_CFLAGS`, `MAKE_OPTS`, `PYTHON_MAKE_OPTS` and `PYTHON_BUILD_MIRROR_URL`.
 - **On failure (spec §9.2):** "keep the build directory and log, and print the last lines and the path, as upstream does."
 - **Pre-flight (spec §9.2, §15.2):**
