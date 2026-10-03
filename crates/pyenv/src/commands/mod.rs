@@ -8,6 +8,8 @@ pub mod local_global;
 pub mod misc;
 pub mod prefix;
 pub mod rehash;
+#[cfg(unix)]
+pub mod uninstall;
 pub mod version;
 pub mod versions;
 pub mod which;
@@ -49,6 +51,8 @@ const LINUX_ONLY: &[(&str, Command)] = &[
     #[cfg(unix)]
     ("install", install::install),
     ("latest", latest::latest),
+    #[cfg(unix)]
+    ("uninstall", uninstall::uninstall),
 ];
 
 fn table(flavor: Flavor) -> impl Iterator<Item = &'static (&'static str, Command)> {

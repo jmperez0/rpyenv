@@ -12,9 +12,14 @@ pub mod fetch;
 pub mod log;
 #[cfg(unix)]
 pub mod preflight;
+#[cfg(unix)]
+mod reply;
 pub mod txn;
 #[cfg(unix)]
 pub mod verify;
+
+#[cfg(unix)]
+pub use reply::{prompt, Reply};
 
 use std::sync::atomic::{AtomicBool, Ordering};
 

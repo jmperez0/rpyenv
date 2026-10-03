@@ -5,12 +5,14 @@ use crate::install::builder::{self, patch_files, Job, Options};
 use crate::install::defs::{self, Found, Origin};
 use crate::install::fetch::Fetcher;
 use crate::install::txn::{is_complete, Txn};
-use crate::install::{default_packages, interrupted, preflight, watch_interrupt, InstallError};
+use crate::install::{
+    default_packages, interrupted, preflight, prompt, watch_interrupt, InstallError, Reply,
+};
 use crate::output::Output;
 use rpyenv_core::ctx::Ctx;
 use rpyenv_core::verfile;
 use std::ffi::OsString;
-use std::io::{BufRead, IsTerminal, Read};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 pub const HELP: &str = "Usage: pyenv install [-f] [-kvp] <version>[:<alias>]...\n       pyenv install [-f] [-kvp] <definition-file>[:<alias>]\n       pyenv install -l|--list [--bare]\n       pyenv install --version\n\n  -l/--list          List all available versions\n  -f/--force         Install even if the version appears to be installed already\n  -s/--skip-existing Skip if the version appears to be installed already\n\n  python-build options:\n\n  -k/--keep          Keep source tree in $PYENV_BUILD_ROOT after installation\n                     (defaults to $PYENV_ROOT/sources)\n  -p/--patch         Apply a patch from stdin before building\n  -v/--verbose       Verbose mode: print compilation status to stdout\n  --version          Show version of python-build\n  -g/--debug         Build a debug version\n\n  Append `:<alias>' to a version to install it under a custom name, so that\n  several builds of the same version can coexist:\n\n      pyenv install 3.12.0:my-3.12\n\n  This installs into $PYENV_ROOT/versions/my-3.12.\n\nFor detailed information on installing Python versions with\npython-build, including a list of environment variables for adjusting\ncompilation, see: https://github.com/pyenv/pyenv#readme\n\n";
@@ -69,41 +71,6 @@ fn parse<'a>(args: &[&'a str]) -> Result<(Flags, Vec<&'a str>), Early> {
         }
     }
     Ok((f, pos))
-}
-
-/// `read -p`: the prompt shows only on a terminal; None on EOF.
-enum Reply {
-    Line(String),
-    Eof,
-    Interrupted,
-}
-
-/// `read -p`: the prompt shows only on a terminal. The line is read on a helper thread so
-/// that a Ctrl+C while waiting ends the run at once, as it does upstream, instead of being
-/// noticed only after Enter or EOF.
-fn prompt(text: &str) -> Reply {
-    if std::io::stdin().is_terminal() {
-        rpyenv_core::textout::write(true, text);
-    }
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut line = String::new();
-        let got = match std::io::stdin().lock().read_line(&mut line) {
-            Ok(0) | Err(_) => None,
-            Ok(_) => Some(line.trim_end_matches(['\n', '\r']).to_string()),
-        };
-        let _ = tx.send(got);
-    });
-    loop {
-        if interrupted() {
-            return Reply::Interrupted;
-        }
-        match rx.recv_timeout(std::time::Duration::from_millis(100)) {
-            Ok(Some(line)) => return Reply::Line(line),
-            Ok(None) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return Reply::Eof,
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-        }
-    }
 }
 
 /// A name that can't be a directory directly under `versions/`.

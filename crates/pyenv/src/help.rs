@@ -55,6 +55,9 @@ const PYENV: &[Topic] = &[
         "Usage: pyenv root\n\nDisplay the root directory where versions and shims are kept\n\n"),
     topic("shims", Some("List existing pyenv shims"), Some("Usage: pyenv shims [--short]"),
         "Usage: pyenv shims [--short]\n\nList existing pyenv shims\n\n"),
+    #[cfg(unix)]
+    topic("uninstall", Some("Uninstall Python versions"), Some(commands::uninstall::USAGE),
+        commands::uninstall::HELP),
     topic("version", Some("Show the current Python version(s) and its origin"), Some("Usage: pyenv version [--bare]"),
         "Usage: pyenv version [--bare]\n\n    --bare    show just the version name. An alias to `pyenv version-name'\n\n"),
     topic("version-file", Some("Detect the file that sets the current pyenv version"), Some("Usage: pyenv version-file [<dir>]"),
