@@ -21,6 +21,9 @@ flate2 = "1.1.10"
 bzip2 = "0.6.1"
 lzma-rust2 = "0.21.0"
 tar = "0.4.46"
+# Windows installer (M2b): OpenPGP signatures on python.org MSIs (spec §9.1). Pure Rust;
+# default features off (measured: 143 crates, no C).
+pgp = { version = "0.21.0", default-features = false }
 
 [build-dependencies]
 flate2 = "1.1.10"

@@ -10,6 +10,7 @@ pub mod default_packages;
 pub mod defs;
 pub mod fetch;
 pub mod log;
+pub mod openpgp;
 #[cfg(unix)]
 pub mod preflight;
 #[cfg(unix)]
