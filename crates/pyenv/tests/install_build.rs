@@ -125,6 +125,7 @@ fn user_flags_combine_as_python_build_does() {
         ("PYTHON_CPPFLAGS", "-pycpp"),
         ("LDFLAGS", "-gld"),
         ("PYTHON_LDFLAGS", "-pyld"),
+        ("MAKEOPTS", "-j7"),
         ("MAKE_OPTS", "-j3"),
     ];
     let b = build("standard", &vars, opts(), false, false);
@@ -146,13 +147,44 @@ fn user_flags_combine_as_python_build_does() {
     // make (and every later child) sees the exported prefix flags; `CFLAGS` and the
     // `PYTHON_` variants are configure's only (python-build:1575-1578,2847-2848).
     let m = std::fs::read_to_string(b.root.join("versions/3.12.99/lib/rpyenv-make.txt")).unwrap();
-    // D-70: `MAKE_OPTS` reaches make as given (upstream re-exports it as `MAKEOPTS`).
+    // D-70 (measured against upstream python-build, 2026-10-03): with both `MAKEOPTS=-j7` and
+    // `MAKE_OPTS=-j3` exported, make runs with `-j7` on both sides, but upstream's
+    // `MAKE_OPTS="$MAKEOPTS"` assignment makes its children see `MAKE_OPTS=-j7`; rpyenv
+    // passes `MAKE_OPTS=-j3` as given.
+    let kept: String = m
+        .lines()
+        .filter(|l| !l.starts_with("MAKE"))
+        .map(|l| format!("{l}\n"))
+        .collect();
     assert_eq!(
-        m,
+        kept,
         format!(
-            "CFLAGS=-gcflag\nCPPFLAGS=-I{p}/include -gcpp\nLDFLAGS=-L{p}/lib -Wl,-rpath,{p}/lib -gld\nLIBS=-L{p}/lib -Wl,-rpath,{p}/lib\nMAKE_OPTS=-j3\n"
+            "CFLAGS=-gcflag\nCPPFLAGS=-I{p}/include -gcpp\nLDFLAGS=-L{p}/lib -Wl,-rpath,{p}/lib -gld\nLIBS=-L{p}/lib -Wl,-rpath,{p}/lib\n"
         )
     );
+    assert!(
+        m.contains("MAKE_OPTS=-j3\n") && m.contains("MAKEOPTS=-j7\n"),
+        "{m}"
+    );
+    let jobs =
+        std::fs::read_to_string(b.root.join("versions/3.12.99/lib/rpyenv-make-jobs.txt")).unwrap();
+    assert_eq!(jobs.trim(), "-j7");
+}
+
+// A user's own `--with-ensurepip` option replaces rpyenv's `--with-ensurepip=no`.
+// allowlist D-67
+#[test]
+fn a_users_with_ensurepip_option_replaces_the_default() {
+    let b = build(
+        "standard",
+        &[("PYTHON_CONFIGURE_OPTS", "--with-ensurepip=install")],
+        opts(),
+        false,
+        false,
+    );
+    let c = config(&b);
+    assert!(c.contains(" --with-ensurepip=install"), "{c}");
+    assert!(!c.contains("--with-ensurepip=no"), "{c}");
 }
 
 #[test]

@@ -12,7 +12,7 @@ for a in "$@"; do case "$a" in --prefix=*) prefix="${a#--prefix=}";; esac; done
   printf 'CFLAGS=%s\nCPPFLAGS=%s\nLDFLAGS=%s\nLIBS=%s\n' "$CFLAGS" "$CPPFLAGS" "$LDFLAGS" "$LIBS"
   printf 'CFLAGS_SET=%s\n' "${CFLAGS+yes}"; } > rpyenv-config.txt
 if [ -n "$FAKE_CONFIGURE_FAIL" ]; then echo 'configure: error: no acceptable C compiler found in $PATH'; exit 1; fi
-printf 'all:\n\t@sleep $${FAKE_MAKE_SLEEP:-0}\n\t@env | grep -E "^(CFLAGS|CPPFLAGS|LDFLAGS|LIBS|MAKE_OPTS|MAKEOPTS)=" | sort > rpyenv-make.txt\ninstall:\n\tmkdir -p "$(DESTDIR)%s/bin" "$(DESTDIR)%s/lib"\n\tcp python3.12 "$(DESTDIR)%s/bin/python3.12"\n\tchmod 755 "$(DESTDIR)%s/bin/python3.12"\n\tcp rpyenv-config.txt "$(DESTDIR)%s/lib/rpyenv-config.txt"\n\tcp rpyenv-make.txt "$(DESTDIR)%s/lib/rpyenv-make.txt"\n' "$prefix" "$prefix" "$prefix" "$prefix" "$prefix" "$prefix" > Makefile
+printf 'all:\n\t@sleep $${FAKE_MAKE_SLEEP:-0}\n\t@env | grep -E "^(CFLAGS|CPPFLAGS|LDFLAGS|LIBS|MAKE_OPTS|MAKEOPTS)=" | sort > rpyenv-make.txt\n\t@echo "$(filter -j%%,$(MAKEFLAGS))" > rpyenv-make-jobs.txt\ninstall:\n\tmkdir -p "$(DESTDIR)%s/bin" "$(DESTDIR)%s/lib"\n\tcp python3.12 "$(DESTDIR)%s/bin/python3.12"\n\tchmod 755 "$(DESTDIR)%s/bin/python3.12"\n\tcp rpyenv-config.txt "$(DESTDIR)%s/lib/rpyenv-config.txt"\n\tcp rpyenv-make.txt "$(DESTDIR)%s/lib/rpyenv-make.txt"\n\tcp rpyenv-make-jobs.txt "$(DESTDIR)%s/lib/rpyenv-make-jobs.txt"\n' "$prefix" "$prefix" "$prefix" "$prefix" "$prefix" "$prefix" "$prefix" > Makefile
 "#;
 
 const PYTHON: &str = r#"#!/bin/sh

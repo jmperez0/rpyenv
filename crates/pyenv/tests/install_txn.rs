@@ -319,6 +319,37 @@ fn a_late_extraction_failure_leaves_no_scratch_directory() {
     assert_eq!(names, vec!["pkg".to_string()]);
 }
 
+// A lone top-level symlink to a directory is not the tree: it is checked with
+// `symlink_metadata`, so `pkg` stays a real directory that holds the link.
+// allowlist D-72
+#[cfg(unix)]
+#[test]
+fn a_lone_top_level_symlink_is_not_taken_for_the_tree() {
+    let d = tempfile::tempdir().unwrap();
+    let build = d.path().join("build");
+    std::fs::create_dir(&build).unwrap();
+    let mut b = tar::Builder::new(flate2::write::GzEncoder::new(
+        Vec::new(),
+        flate2::Compression::fast(),
+    ));
+    let mut h = tar::Header::new_gnu();
+    h.set_entry_type(tar::EntryType::Symlink);
+    h.set_size(0);
+    b.append_link(&mut h, "top", ".").unwrap();
+    let a = write(
+        d.path(),
+        "a.tar.gz",
+        &b.into_inner().unwrap().finish().unwrap(),
+    );
+    let out = extract(&a, Kind::Gz, &build, "pkg").unwrap();
+    let m = std::fs::symlink_metadata(&out).unwrap();
+    assert!(m.is_dir() && !m.file_type().is_symlink(), "{out:?}");
+    assert!(std::fs::symlink_metadata(out.join("top"))
+        .unwrap()
+        .file_type()
+        .is_symlink());
+}
+
 #[test]
 fn a_single_top_level_file_goes_inside_the_package_directory() {
     let d = tempfile::tempdir().unwrap();
