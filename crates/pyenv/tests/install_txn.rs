@@ -173,6 +173,109 @@ fn dropping_without_commit_restores_the_previous_version() {
     );
 }
 
+/// Replacing a version keeps pyenv-virtualenv's `envs/` and the user's site-packages
+/// entries, as upstream's build over the old tree does (review I1).
+// allowlist D-58
+#[test]
+fn commit_carries_over_envs_and_site_packages_entries() {
+    let root = tempfile::tempdir().unwrap();
+    let versions = root.path().join("versions");
+    let old = versions.join("3.12.0");
+    std::fs::create_dir_all(old.join("bin")).unwrap();
+    std::fs::create_dir_all(old.join("envs/myenv")).unwrap();
+    std::fs::write(old.join("envs/myenv/pyvenv.cfg"), "home = x\n").unwrap();
+    let old_sp = old.join("lib/python3.12/site-packages");
+    std::fs::create_dir_all(&old_sp).unwrap();
+    std::fs::write(old_sp.join("userpkg.py"), "user").unwrap();
+    std::fs::write(old_sp.join("pip.py"), "old pip").unwrap();
+    let mut t = Txn::begin(&versions, "3.12.0").unwrap();
+    let staged = t.stage_dir().join("p");
+    let new_sp = staged.join("lib/python3.12/site-packages");
+    std::fs::create_dir_all(staged.join("bin")).unwrap();
+    std::fs::create_dir_all(&new_sp).unwrap();
+    std::fs::write(new_sp.join("pip.py"), "new pip").unwrap();
+    t.place(&staged).unwrap();
+    t.commit().unwrap();
+    let target = versions.join("3.12.0");
+    assert_eq!(
+        std::fs::read_to_string(target.join("envs/myenv/pyvenv.cfg")).unwrap(),
+        "home = x\n"
+    );
+    let sp = target.join("lib/python3.12/site-packages");
+    assert_eq!(
+        std::fs::read_to_string(sp.join("userpkg.py")).unwrap(),
+        "user"
+    );
+    assert_eq!(
+        std::fs::read_to_string(sp.join("pip.py")).unwrap(),
+        "new pip",
+        "an entry in both keeps the new tree's copy"
+    );
+    assert!(!versions.join(".old-3.12.0").exists());
+    assert!(is_complete(&target));
+}
+
+/// The Windows layout (`Lib/site-packages`, for M2b) is carried over too, and a
+/// site-packages directory the new tree lacks is created.
+#[test]
+fn commit_carries_over_the_windows_site_packages_layout() {
+    let root = tempfile::tempdir().unwrap();
+    let versions = root.path().join("versions");
+    let old = versions.join("3.12.0");
+    std::fs::create_dir_all(old.join("bin")).unwrap();
+    std::fs::create_dir_all(old.join("Lib/site-packages/userpkg")).unwrap();
+    let mut t = Txn::begin(&versions, "3.12.0").unwrap();
+    let staged = t.stage_dir().join("p");
+    std::fs::create_dir_all(staged.join("bin")).unwrap();
+    t.place(&staged).unwrap();
+    t.commit().unwrap();
+    assert!(versions.join("3.12.0/Lib/site-packages/userpkg").is_dir());
+    assert!(!versions.join(".old-3.12.0").exists());
+}
+
+/// A carry-over that fails loses nothing: the previous tree stays at `.old-<name>` and the
+/// commit still completes.
+#[test]
+fn a_failed_carry_over_keeps_the_previous_installation() {
+    let root = tempfile::tempdir().unwrap();
+    let versions = root.path().join("versions");
+    let old = versions.join("3.12.0");
+    std::fs::create_dir_all(old.join("bin")).unwrap();
+    std::fs::create_dir_all(old.join("lib/python3.12/site-packages")).unwrap();
+    std::fs::write(old.join("lib/python3.12/site-packages/userpkg.py"), "user").unwrap();
+    let mut t = Txn::begin(&versions, "3.12.0").unwrap();
+    let staged = t.stage_dir().join("p");
+    std::fs::create_dir_all(staged.join("bin")).unwrap();
+    // A file where the new tree's site-packages directory would be: nothing can move in.
+    std::fs::create_dir_all(staged.join("lib/python3.12")).unwrap();
+    std::fs::write(staged.join("lib/python3.12/site-packages"), "in the way").unwrap();
+    t.place(&staged).unwrap();
+    t.commit().unwrap();
+    assert!(is_complete(&versions.join("3.12.0")));
+    assert_eq!(
+        std::fs::read_to_string(
+            versions.join(".old-3.12.0/lib/python3.12/site-packages/userpkg.py")
+        )
+        .unwrap(),
+        "user"
+    );
+}
+
+/// A process killed during the carry-over (after the marker was removed) leaves a complete
+/// target and `.old`: the next `begin` finishes the carry-over before dropping `.old`.
+#[test]
+fn begin_finishes_an_interrupted_carry_over() {
+    let root = tempfile::tempdir().unwrap();
+    let versions = root.path().join("versions");
+    std::fs::create_dir_all(versions.join(".old-3.12.0/envs/e")).unwrap();
+    std::fs::write(versions.join(".old-3.12.0/envs/e/pyvenv.cfg"), "c").unwrap();
+    std::fs::create_dir_all(versions.join("3.12.0/bin")).unwrap();
+    let t = Txn::begin(&versions, "3.12.0").unwrap();
+    assert!(versions.join("3.12.0/envs/e/pyvenv.cfg").is_file());
+    assert!(!versions.join(".old-3.12.0").exists());
+    drop(t);
+}
+
 #[test]
 fn dropping_a_fresh_install_removes_it() {
     let root = tempfile::tempdir().unwrap();

@@ -60,7 +60,11 @@ impl Txn {
             if target.symlink_metadata().is_err() {
                 let _ = std::fs::rename(&old, &target);
             } else if is_complete(&target) {
-                let _ = std::fs::remove_dir_all(&old);
+                // Killed during or before the carry-over: finish it, and keep `.old` if
+                // it fails (`place` then refuses to overwrite it).
+                if carry_over(&old, &target).is_ok() {
+                    let _ = std::fs::remove_dir_all(&old);
+                }
             } else {
                 // Killed after the final rename: the target is the new, unfinished tree
                 // and `.old` is the only good copy.
@@ -117,15 +121,74 @@ impl Txn {
         Ok(())
     }
 
+    /// Completes the install. The previous version's `envs/` and site-packages entries are
+    /// carried over first; if that fails, the previous tree is kept at `.old-<name>`.
     pub fn commit(mut self) -> std::io::Result<()> {
         std::fs::remove_file(self.target().join(MARKER))?;
         if let Some(old) = self.old.take() {
-            let _ = std::fs::remove_dir_all(&old);
+            match carry_over(&old, &self.target()) {
+                Ok(()) => {
+                    let _ = std::fs::remove_dir_all(&old);
+                }
+                Err(e) => rpyenv_core::textout::write(
+                    true,
+                    &format!(
+                        "pyenv: kept the previous installation at {}: {e}\n",
+                        old.display()
+                    ),
+                ),
+            }
         }
         let _ = std::fs::remove_dir_all(&self.stage);
         self.done = true;
         Ok(())
     }
+}
+
+/// Moves what upstream's build over the old tree would have kept from `old` into the new
+/// tree `new`: `envs/` (pyenv-virtualenv) when `new` has none, and each site-packages entry
+/// (`lib/python*/site-packages`, and `Lib/site-packages` for Windows) that `new` lacks.
+/// Entries in both keep `new`'s copy. Everything moves by rename, so a failure part way
+/// loses nothing: what has not moved is still in `old`.
+fn carry_over(old: &Path, new: &Path) -> std::io::Result<()> {
+    let envs = old.join("envs");
+    if envs.symlink_metadata().is_ok() && new.join("envs").symlink_metadata().is_err() {
+        std::fs::rename(&envs, new.join("envs"))?;
+    }
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(old.join("lib")) {
+        for e in rd.filter_map(Result::ok) {
+            let name = e.file_name();
+            if name.to_string_lossy().starts_with("python") {
+                dirs.push(Path::new("lib").join(name).join("site-packages"));
+            }
+        }
+    }
+    dirs.push(Path::new("Lib").join("site-packages"));
+    for rel in dirs {
+        let from = old.join(&rel);
+        let is_dir = from
+            .symlink_metadata()
+            .map(|m| m.file_type().is_dir())
+            .unwrap_or(false);
+        if !is_dir {
+            continue;
+        }
+        let to = new.join(&rel);
+        let mut entries = std::fs::read_dir(&from)?.peekable();
+        if entries.peek().is_none() {
+            continue;
+        }
+        std::fs::create_dir_all(&to)?;
+        for e in entries {
+            let e = e?;
+            let dest = to.join(e.file_name());
+            if dest.symlink_metadata().is_err() {
+                std::fs::rename(e.path(), dest)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 impl Drop for Txn {

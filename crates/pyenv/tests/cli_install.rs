@@ -133,6 +133,33 @@ fn skip_existing_is_silent_and_force_rebuilds() {
     );
 }
 
+/// `-f` over an installed version keeps its virtualenvs (`envs/`) and the packages pip put
+/// in its site-packages (review I1).
+// allowlist D-58
+#[test]
+fn force_keeps_the_versions_envs_and_site_packages() {
+    let f = Fixture::new();
+    let s = plugin_def(&f);
+    let r = run(&f, &["install", "3.12.99"], &[]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    let p = f.root.join("versions/3.12.99");
+    f.file(&p.join("lib/python3.12/site-packages/userpkg.py"), "user\n");
+    f.file(&p.join("envs/myenv/pyvenv.cfg"), "home = x\n");
+    let r = run(&f, &["install", "-f", "3.12.99"], &[]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert_eq!(s.hits("/Python-3.12.99.tar.gz"), 2, "rebuilt");
+    assert_eq!(
+        std::fs::read_to_string(p.join("lib/python3.12/site-packages/userpkg.py")).unwrap(),
+        "user\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(p.join("envs/myenv/pyvenv.cfg")).unwrap(),
+        "home = x\n"
+    );
+    assert!(p.join("bin/python3.12").is_file());
+    assert!(staging_left(&f).is_empty(), "{:?}", staging_left(&f));
+}
+
 // allowlist D-59
 #[test]
 fn an_unknown_version_prints_upstreams_hint_and_exits_2() {
