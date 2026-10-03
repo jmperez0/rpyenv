@@ -247,6 +247,12 @@ fn usage_errors_and_version() {
     assert_eq!(r.code, 1, "options are handled in order");
     let r = run(&f, &["install", "--help", "-x"], &[]);
     assert_eq!(r.code, 0);
+    // python-build's -4/-6 are not `pyenv install` options upstream either (review M4).
+    for opt in ["-4", "-6"] {
+        let r = run(&f, &["install", opt, "3.12.99"], &[]);
+        assert_eq!(r.code, 1, "{opt}");
+        assert!(r.stderr.starts_with("Usage: pyenv install "), "{opt}");
+    }
     // The version is UPSTREAM's third field (`pyenv <commit> <version>`), so a python-build
     // sync updates it (review I3).
     let upstream = std::fs::read_to_string(
