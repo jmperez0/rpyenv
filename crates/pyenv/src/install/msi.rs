@@ -736,4 +736,149 @@ mod tests {
         let e = cab_for_each_sequential(b"PK\x03\x04".to_vec(), &mut |_, _| Ok(())).unwrap_err();
         assert_eq!(e, "not a cabinet");
     }
+
+    // ---- Hostile packages: one test per `check_segment` call site -------------------------
+
+    /// A minimal package with a TARGETDIR root, one child directory `D` (DefaultDir
+    /// `dir_default`), one component and one file. The `msi` crate's writer doesn't validate
+    /// like Windows Installer does, which is what a hostile package would look like to us.
+    fn hostile_msi(
+        dir_default: &str,
+        file_name: &str,
+        attrs: i32,
+        cabinet: Option<&str>,
+        word_count: i32,
+    ) -> Vec<u8> {
+        use ::msi::{Column, Insert, PackageType, Value};
+        let mut p =
+            ::msi::Package::create(PackageType::Installer, Cursor::new(Vec::new())).unwrap();
+        p.summary_info_mut().set_word_count(word_count);
+        let id = |n: &str| Column::build(n).primary_key().id_string(72);
+        p.create_table(
+            "Directory",
+            vec![
+                id("Directory"),
+                Column::build("Directory_Parent").nullable().id_string(72),
+                Column::build("DefaultDir").string(255),
+            ],
+        )
+        .unwrap();
+        p.create_table(
+            "Component",
+            vec![id("Component"), Column::build("Directory_").id_string(72)],
+        )
+        .unwrap();
+        p.create_table(
+            "File",
+            vec![
+                id("File"),
+                Column::build("Component_").id_string(72),
+                Column::build("FileName").string(255),
+                Column::build("FileSize").int32(),
+                Column::build("Attributes").nullable().int16(),
+                Column::build("Sequence").int16(),
+            ],
+        )
+        .unwrap();
+        p.create_table(
+            "Media",
+            vec![
+                Column::build("DiskId").primary_key().int16(),
+                Column::build("LastSequence").int16(),
+                Column::build("Cabinet").nullable().string(255),
+            ],
+        )
+        .unwrap();
+        let s = |v: &str| Value::Str(v.to_string());
+        p.insert_rows(Insert::into("Directory").row(vec![
+            s("TARGETDIR"),
+            Value::Null,
+            s("SourceDir"),
+        ]))
+        .unwrap();
+        p.insert_rows(Insert::into("Directory").row(vec![s("D"), s("TARGETDIR"), s(dir_default)]))
+            .unwrap();
+        p.insert_rows(Insert::into("Component").row(vec![s("C"), s("D")]))
+            .unwrap();
+        p.insert_rows(Insert::into("File").row(vec![
+            s("F"),
+            s("C"),
+            s(file_name),
+            Value::Int(3),
+            Value::Int(attrs),
+            Value::Int(1),
+        ]))
+        .unwrap();
+        p.insert_rows(Insert::into("Media").row(vec![
+            Value::Int(1),
+            Value::Int(1),
+            cabinet.map_or(Value::Null, s),
+        ]))
+        .unwrap();
+        p.flush().unwrap();
+        p.into_inner().unwrap().into_inner()
+    }
+
+    /// Extracts `bytes` next to a canary and asserts the error names `needle` and that nothing
+    /// was written outside `target` (nor anything inside it).
+    fn assert_refused(bytes: Vec<u8>, needle: &str) {
+        let d = tempfile::tempdir().unwrap();
+        let canary = d.path().join("canary.txt");
+        fs::write(&canary, b"untouched").unwrap();
+        let msi_path = d.path().join("h.msi");
+        fs::write(&msi_path, bytes).unwrap();
+        let target = d.path().join("target");
+        let e = extract_msi(&msi_path, &target).unwrap_err();
+        assert!(e.contains(needle), "{e}");
+        assert_eq!(fs::read(&canary).unwrap(), b"untouched");
+        let mut names: Vec<String> = fs::read_dir(d.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["canary.txt", "h.msi", "target"]);
+        assert_eq!(
+            fs::read_dir(&target).unwrap().count(),
+            0,
+            "target must stay empty"
+        );
+    }
+
+    #[test]
+    fn a_directory_that_climbs_out_is_refused() {
+        assert_refused(
+            hostile_msi("..", "f.txt", 0x4000, Some("#c"), 2),
+            "unsafe directory name segment \"..\"",
+        );
+        assert_refused(
+            hostile_msi("T:CON", "f.txt", 0x4000, Some("#c"), 2),
+            "unsafe directory name segment \"CON\"",
+        );
+    }
+
+    #[test]
+    fn a_file_name_with_a_separator_is_refused() {
+        // Word Count bit 0 set, so the safe short part is not the leaf: only the leaf check sees it.
+        assert_refused(
+            hostile_msi("ok", "OK|a\\b", 0x4000, Some("#c"), 3),
+            "unsafe file name segment \"a\\\\b\"",
+        );
+    }
+
+    #[test]
+    fn an_unsafe_short_source_name_is_refused() {
+        // Word Count bit 0: the source name is the short part; the long leaf is fine.
+        assert_refused(
+            hostile_msi("ok", "SH:ORT|good.txt", 0x2000, None, 3),
+            "unsafe file name segment \"SH:ORT\"",
+        );
+    }
+
+    #[test]
+    fn an_external_cabinet_name_that_climbs_out_is_refused() {
+        assert_refused(
+            hostile_msi("ok", "f.txt", 0x4000, Some("..\\x"), 2),
+            "unsafe cabinet name segment \"..\\\\x\"",
+        );
+    }
 }
