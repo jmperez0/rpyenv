@@ -394,13 +394,13 @@ impl Fetcher {
 /// The local path of a `file:` URL: `file:///p`, `file://localhost/p`, and on Windows
 /// `file:///C:/p` (the leading `/` before the drive dropped), percent-decoded. Other hosts and
 /// invalid escapes give `None`. Escaped separators (`%2F`, `%5C`) and NUL (`%00`) are refused,
-/// and so is a decoded path starting `//` or `\` (UNC) or containing NUL. On Linux, `file:` URLs
+/// and so is a raw `\` anywhere in the path, a decoded path starting `//` (UNC) or containing NUL. On Linux, `file:` URLs
 /// are now percent-decoded and other hosts refused (intended); the drive-letter strip is
 /// Windows-only.
 pub fn file_url_path(url: &str) -> Option<PathBuf> {
     let rest = url.strip_prefix("file://")?;
     let rest = rest.strip_prefix("localhost").unwrap_or(rest);
-    if !rest.starts_with('/') {
+    if !rest.starts_with('/') || rest.contains('\\') {
         return None;
     }
     let mut bytes = Vec::with_capacity(rest.len());
@@ -421,7 +421,7 @@ pub fn file_url_path(url: &str) -> Option<PathBuf> {
         }
     }
     let s = String::from_utf8(bytes).ok()?;
-    if s.starts_with("//") || s.starts_with("\\\\") || s.contains('\0') {
+    if s.starts_with("//") || s.contains('\0') {
         return None;
     }
     #[cfg(windows)]
@@ -565,6 +565,9 @@ mod tests {
             "file:///a%2F..%2Fb",
             "file:///a%2f..%2fb",
             "file:///a%5cb",
+            r"file:///\h\s",
+            r"file:///\\?\C:\x",
+            r"file:///C:\x",
             "file:///a%00b",
         ] {
             assert_eq!(file_url_path(bad), None, "{bad}");
