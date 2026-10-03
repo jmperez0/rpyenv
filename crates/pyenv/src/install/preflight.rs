@@ -259,12 +259,49 @@ pub fn report(missing: &[Dep], os_release: Option<&str>, root: bool) -> Report {
     Report { refuse, lines }
 }
 
-/// Probes the real system: `$CC` (else `cc`), `$MAKE` (else `make`), and each header through
-/// `<cc> -E` with `CPPFLAGS` and `PYTHON_CPPFLAGS`.
+/// The compiler to use: `$CC` when set; otherwise `cc`, else `gcc` (as configure does).
+fn resolve_compiler(configured: Option<String>, works: &dyn Fn(&str) -> bool) -> String {
+    match configured.filter(|v| !v.is_empty()) {
+        Some(cc) => cc,
+        None if works("cc") => "cc".into(),
+        None if works("gcc") => "gcc".into(),
+        None => "cc".into(),
+    }
+}
+
+/// True when one of `headers` compiles plainly or, for each extra flag set in turn, with it.
+/// `try_header(header, extra_flags)` does the compiling.
+fn headers_present(
+    headers: &[&str],
+    fallbacks: &dyn Fn() -> Vec<Vec<String>>,
+    try_header: &dyn Fn(&str, &[String]) -> bool,
+) -> bool {
+    if headers.iter().any(|h| try_header(h, &[])) {
+        return true;
+    }
+    fallbacks()
+        .iter()
+        .any(|extra| headers.iter().any(|h| try_header(h, extra)))
+}
+
+/// Where Tk's header may live when it is not on the default path: what `pkg-config --cflags tk`
+/// says (as CPython's configure uses), else Debian's Tcl/Tk include directories.
+fn tk_fallbacks(pkg_config: Option<String>) -> Vec<Vec<String>> {
+    match pkg_config {
+        Some(out) if !out.trim().is_empty() => {
+            vec![out.split_whitespace().map(str::to_string).collect()]
+        }
+        _ => ["/usr/include/tcl8.6", "/usr/include/tcl8.5"]
+            .iter()
+            .map(|d| vec![format!("-I{d}")])
+            .collect(),
+    }
+}
+
+/// Probes the real system: `$CC` (else `cc`, else `gcc`), `$MAKE` (else `make`), and each
+/// header through `<cc> -E` with `CPPFLAGS` and `PYTHON_CPPFLAGS`. Tk's header is also tried
+/// with the flags `pkg-config --cflags tk` gives.
 pub fn check(env: &dyn Fn(&str) -> Option<String>, needs_patch: bool) -> Vec<Dep> {
-    let cc = env("CC")
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| "cc".into());
     let make = env("MAKE")
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| "make".into());
@@ -275,31 +312,42 @@ pub fn check(env: &dyn Fn(&str) -> Option<String>, needs_patch: bool) -> Vec<Dep
         .collect();
     let path = env("PATH");
     // `$CC` may carry words (`ccache gcc`): the first is the program, the rest lead the args.
-    let runs = |program: &str, args: &[&str], input: Option<&str>| -> bool {
+    let spawn = |program: &str,
+                 args: &[&str],
+                 input: Option<&str>,
+                 capture: bool|
+     -> Option<(bool, Vec<u8>)> {
         let mut words = program.split_whitespace();
-        let Some(first) = words.next() else {
-            return false;
-        };
+        let first = words.next()?;
         let mut c = Command::new(first);
         c.args(words);
         if let Some(p) = &path {
             c.env("PATH", p);
         }
-        c.args(args).stdout(Stdio::null()).stderr(Stdio::null());
+        c.args(args)
+            .stdout(if capture {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
+            .stderr(Stdio::null());
         c.stdin(if input.is_some() {
             Stdio::piped()
         } else {
             Stdio::null()
         });
-        let Ok(mut child) = c.spawn() else {
-            return false;
-        };
+        let mut child = c.spawn().ok()?;
         if let (Some(text), Some(mut stdin)) = (input, child.stdin.take()) {
             use std::io::Write;
             let _ = stdin.write_all(text.as_bytes());
         }
-        child.wait().map(|s| s.success()).unwrap_or(false)
+        let out = child.wait_with_output().ok()?;
+        Some((out.status.success(), out.stdout))
     };
+    let runs = |program: &str, args: &[&str], input: Option<&str>| -> bool {
+        spawn(program, args, input, false).is_some_and(|(ok, _)| ok)
+    };
+    let cc = resolve_compiler(env("CC"), &|c| runs(c, &["--version"], None));
     let present = |p: &Probe| match p {
         Probe::Program(name) => {
             let name = if *name == "cc" {
@@ -311,11 +359,34 @@ pub fn check(env: &dyn Fn(&str) -> Option<String>, needs_patch: bool) -> Vec<Dep
             };
             runs(name, &["--version"], None)
         }
-        Probe::Headers(hs) => hs.iter().any(|h| {
-            let mut args: Vec<&str> = flags.iter().map(String::as_str).collect();
-            args.extend(["-E", "-x", "c", "-o", "/dev/null", "-"]);
-            runs(&cc, &args, Some(&format!("#include <{h}>\n")))
-        }),
+        Probe::Headers(hs) => {
+            let tk = hs.contains(&"tk.h");
+            headers_present(
+                hs,
+                &|| {
+                    if !tk {
+                        return Vec::new();
+                    }
+                    let pc = spawn("pkg-config", &["--cflags", "tk"], None, true)
+                        .filter(|(ok, _)| *ok)
+                        .map(|(_, out)| String::from_utf8_lossy(&out).into_owned());
+                    tk_fallbacks(pc)
+                },
+                &|h, extra| {
+                    let mut args: Vec<&str> = flags.iter().map(String::as_str).collect();
+                    args.extend(extra.iter().map(String::as_str));
+                    args.extend(["-E", "-x", "c", "-o", "/dev/null", "-"]);
+                    runs(
+                        &cc,
+                        &args,
+                        Some(&format!(
+                            "#include <{h}>
+"
+                        )),
+                    )
+                },
+            )
+        }
     };
     let display = env("DISPLAY").is_some_and(|d| !d.is_empty());
     evaluate(&present, needs_patch, display)
@@ -417,6 +488,39 @@ mod tests {
         };
         let deps = check(&env, false);
         assert!(!deps.iter().any(|d| d.name == "C compiler"), "{deps:?}");
+    }
+
+    #[test]
+    fn tk_found_only_through_a_fallback_include_dir_is_not_reported() {
+        let tcl = vec!["-I/usr/include/tcl8.6".to_string()];
+        let try_header = |h: &str, extra: &[String]| h == "tk.h" && extra == tcl.as_slice();
+        let fallbacks = || tk_fallbacks(None);
+        assert!(headers_present(&["tk.h"], &fallbacks, &try_header));
+        // pkg-config's answer is used when there is one, and not the guesses.
+        let pc = || {
+            tk_fallbacks(Some(
+                "-I/usr/include/tcl8.6
+"
+                .into(),
+            ))
+        };
+        assert!(headers_present(&["tk.h"], &pc, &try_header));
+        let wrong = || tk_fallbacks(Some("-I/elsewhere".into()));
+        assert!(!headers_present(&["tk.h"], &wrong, &try_header));
+        // Nowhere at all: still missing.
+        assert!(!headers_present(&["tk.h"], &fallbacks, &|_, _| false));
+    }
+
+    #[test]
+    fn an_unset_cc_falls_back_to_gcc_only_when_cc_fails() {
+        assert_eq!(resolve_compiler(None, &|c| c == "gcc"), "gcc");
+        assert_eq!(resolve_compiler(None, &|_| true), "cc");
+        assert_eq!(resolve_compiler(None, &|_| false), "cc");
+        assert_eq!(resolve_compiler(Some("clang".into()), &|_| false), "clang");
+        assert_eq!(
+            resolve_compiler(Some(String::new()), &|c| c == "gcc"),
+            "gcc"
+        );
     }
 
     #[test]
