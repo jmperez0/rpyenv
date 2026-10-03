@@ -3,6 +3,7 @@
 
 pub mod archive;
 pub mod checksum;
+pub mod defs;
 pub mod fetch;
 pub mod txn;
 
