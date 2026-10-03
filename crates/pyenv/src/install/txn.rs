@@ -61,6 +61,11 @@ impl Txn {
                 let _ = std::fs::rename(&old, &target);
             } else if is_complete(&target) {
                 let _ = std::fs::remove_dir_all(&old);
+            } else {
+                // Killed after the final rename: the target is the new, unfinished tree
+                // and `.old` is the only good copy.
+                let _ = std::fs::remove_dir_all(&target);
+                let _ = std::fs::rename(&old, &target);
             }
         }
         let stage = versions.join(format!(".tmp-{name}"));
@@ -98,7 +103,12 @@ impl Txn {
         std::fs::write(staged_prefix.join(MARKER), "")?;
         if target.symlink_metadata().is_ok() {
             let old = self.versions.join(format!(".old-{}", self.name));
-            let _ = std::fs::remove_dir_all(&old);
+            if old.symlink_metadata().is_ok() {
+                return Err(std::io::Error::other(format!(
+                    "{} exists; refusing to overwrite it",
+                    old.display()
+                )));
+            }
             std::fs::rename(&target, &old)?;
             self.old = Some(old);
         }

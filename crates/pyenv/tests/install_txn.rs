@@ -268,15 +268,33 @@ fn begin_drops_a_leftover_old_copy_when_the_target_is_complete() {
 }
 
 #[test]
-fn begin_keeps_the_old_copy_when_the_target_is_incomplete() {
+fn begin_restores_the_old_copy_over_an_incomplete_target() {
     let root = tempfile::tempdir().unwrap();
     let versions = root.path().join("versions");
     std::fs::create_dir_all(versions.join(".old-3.12.0/bin")).unwrap();
+    std::fs::write(versions.join(".old-3.12.0/bin/old"), "old").unwrap();
     std::fs::create_dir_all(versions.join("3.12.0/bin")).unwrap();
     std::fs::write(versions.join("3.12.0").join(MARKER), "").unwrap();
     let t = Txn::begin(&versions, "3.12.0").unwrap();
-    assert!(versions.join(".old-3.12.0/bin").is_dir());
+    assert!(versions.join("3.12.0/bin/old").is_file());
+    assert!(!versions.join("3.12.0").join(MARKER).exists());
+    assert!(!versions.join(".old-3.12.0").exists());
     drop(t);
+}
+
+#[test]
+fn place_refuses_to_overwrite_an_existing_old_copy() {
+    let root = tempfile::tempdir().unwrap();
+    let versions = root.path().join("versions");
+    std::fs::create_dir_all(versions.join("3.12.0/bin")).unwrap();
+    let mut t = Txn::begin(&versions, "3.12.0").unwrap();
+    std::fs::create_dir_all(versions.join(".old-3.12.0/bin")).unwrap();
+    std::fs::write(versions.join(".old-3.12.0/bin/keep"), "k").unwrap();
+    let staged = t.stage_dir().join("p");
+    std::fs::create_dir_all(&staged).unwrap();
+    assert!(t.place(&staged).is_err());
+    assert!(versions.join(".old-3.12.0/bin/keep").is_file());
+    assert!(!t.placed());
 }
 
 // Unix only: Windows deletes a file where `remove_dir_all` expects a directory.
