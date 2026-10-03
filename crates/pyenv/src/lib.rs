@@ -2,6 +2,7 @@
 
 mod commands;
 mod help;
+pub mod install;
 mod output;
 
 pub use output::Output;

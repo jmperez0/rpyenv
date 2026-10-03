@@ -6,7 +6,16 @@ use std::path::Path;
 /// `pyenv latest <prefix>` over `candidates`, the installed names in
 /// `versions --bare --skip-envs` order. None when nothing matches.
 pub fn latest(prefix: &str, candidates: &[String], versions_dir: &Path) -> Option<String> {
-    if versions_dir.join(prefix).is_dir() || candidates.iter().any(|c| c == prefix) {
+    if versions_dir.join(prefix).is_dir() {
+        return Some(prefix.to_string());
+    }
+    best(prefix, candidates)
+}
+
+/// Steps 3-8 of upstream's algorithm (M1 reference): the exact match, the `t` suffix, the
+/// prefix filter, the exclusions and the sort. Known mode uses this directly.
+pub fn best(prefix: &str, candidates: &[String]) -> Option<String> {
+    if candidates.iter().any(|c| c == prefix) {
         return Some(prefix.to_string());
     }
     let (base, suffix) = match prefix.strip_suffix('t') {

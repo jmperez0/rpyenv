@@ -21,9 +21,9 @@ cp -r "$up/test" "$work/run/test"
 cp -r "$up/pyenv.d" "$work/run/pyenv.d"
 ln -s "$work/bin/pyenv" "$work/run/libexec/pyenv"
 # When a milestone delivers a command (latest, init, shell, completions, sh-*), add it to this
-# list, or its upstream tests keep failing through the missing wrapper.
+# list (latest: M2a), or its upstream tests keep failing through the missing wrapper.
 for c in root prefix version version-name version-origin version-file version-file-read \
-         version-file-write versions which whence exec rehash shims commands help global local; do
+         version-file-write versions which whence exec rehash shims commands help global local latest; do
   printf '#!/bin/sh\nexec "%s" %s "$@"\n' "$work/bin/pyenv" "$c" > "$work/run/libexec/pyenv-$c"
 done
 printf '#!/bin/sh\nexec "%s" --version "$@"\n' "$work/bin/pyenv" > "$work/run/libexec/pyenv---version"

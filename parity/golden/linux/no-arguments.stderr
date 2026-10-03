@@ -7,11 +7,14 @@ Some useful pyenv commands are:
    exec        Run an executable with the selected Python version
    global      Set or show the global Python version(s)
    help        Display help for a command
+   install     Install a Python version using python-build
+   latest      Print the latest installed or known version with the given prefix
    local       Set or show the local application-specific Python version(s)
    prefix      Display prefixes for Python versions
    rehash      Rehash pyenv shims (run this after installing executables)
    root        Display the root directory where versions and shims are kept
    shims       List existing pyenv shims
+   uninstall   Uninstall Python versions
    version     Show the current Python version(s) and its origin
    version-file   Detect the file that sets the current pyenv version
    version-name   Show the current Python version

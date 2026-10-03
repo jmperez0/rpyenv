@@ -40,6 +40,11 @@ const PYENV: &[Topic] = &[
         "Usage: pyenv global <version> <version2> <..>\n\nSets the global Python version(s). You can override the global version at\nany time by setting a directory-specific version with `pyenv local'\nor by setting the `PYENV_VERSION' environment variable.\n\n<version> can be specified multiple times and should be a version\ntag known to pyenv.  The special version string `system' will use\nyour default system Python.  Run `pyenv versions' for a list of\navailable Python versions.\n\nExample: To enable the python2.7 and python3.7 shims to find their\n         respective executables you could set both versions with:\n\n'pyenv global 3.7.0 2.7.15'\n\n"),
     topic("help", Some("Display help for a command"), Some("Usage: pyenv help [--usage] COMMAND"),
         "Usage: pyenv help [--usage] COMMAND\n\nParses and displays help contents from a command's source file.\n\nA command is considered documented if it starts with a comment block\nthat has a `Summary:' or `Usage:' section. Usage instructions can\nspan multiple lines as long as subsequent lines are indented.\nThe remainder of the comment block is displayed as extended\ndocumentation.\n\n"),
+    #[cfg(unix)]
+    topic("install", Some("Install a Python version using python-build"), Some(commands::install::USAGE),
+        commands::install::HELP),
+    topic("latest", Some("Print the latest installed or known version with the given prefix"), Some("Usage: pyenv latest [-k|--known] <prefix>"),
+        "Usage: pyenv latest [-k|--known] <prefix>\n\n  -k/--known      Select from all known versions instead of installed\n  -b/--bypass     (internal) On a resolution failure, do not print an error message\n                  but rather print the argument unchanged\n  -f/--force      (internal) Same as -b but also do not return a failure exit code\n\n"),
     topic("local", Some("Set or show the local application-specific Python version(s)"), Some("Usage: pyenv local [-f|--force] [<version> [...]]\n       pyenv local --unset"),
         "Usage: pyenv local [-f|--force] [<version> [...]]\n       pyenv local --unset\n\n  -f/--force    Do not verify that the versions being set exist\n\nSets the local application-specific Python version(s) by writing the\nversion name to a file named `.python-version'.\n\nWhen you run a Python command, pyenv will look for a `.python-version'\nfile in the current directory and each parent directory. If no such\nfile is found in the tree, pyenv will use the global Python version\nspecified with `pyenv global'. A version specified with the\n`PYENV_VERSION' environment variable takes precedence over local\nand global versions.\n\n<version> can be specified multiple times and should be a version\ntag known to pyenv.  The special version string `system' will use\nyour default system Python.  Run `pyenv versions' for a list of\navailable Python versions.\n\nExample: To enable the python2.7 and python3.7 shims to find their\n         respective executables you could set both versions with:\n\n'pyenv local 3.7.0 2.7.15'\n\n"),
     topic("prefix", Some("Display prefixes for Python versions"), Some("Usage: pyenv prefix [<version>...]"),
@@ -50,6 +55,9 @@ const PYENV: &[Topic] = &[
         "Usage: pyenv root\n\nDisplay the root directory where versions and shims are kept\n\n"),
     topic("shims", Some("List existing pyenv shims"), Some("Usage: pyenv shims [--short]"),
         "Usage: pyenv shims [--short]\n\nList existing pyenv shims\n\n"),
+    #[cfg(unix)]
+    topic("uninstall", Some("Uninstall Python versions"), Some(commands::uninstall::USAGE),
+        commands::uninstall::HELP),
     topic("version", Some("Show the current Python version(s) and its origin"), Some("Usage: pyenv version [--bare]"),
         "Usage: pyenv version [--bare]\n\n    --bare    show just the version name. An alias to `pyenv version-name'\n\n"),
     topic("version-file", Some("Detect the file that sets the current pyenv version"), Some("Usage: pyenv version-file [<dir>]"),

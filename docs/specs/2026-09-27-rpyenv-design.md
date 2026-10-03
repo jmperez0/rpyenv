@@ -401,17 +401,42 @@ instructions, as upstream does.
 - **Source:** official python.org packages, extracted into
   `versions\.tmp-<ver>` and then renamed into place. No installer runs and
   nothing is written to the registry.
-- The python.org package index used by the Python Install Manager and the
-  NuGet packages are both candidates. Which source to use for which version
-  range, and whether it includes Tcl/Tk (tkinter), must be checked in the
-  first installer task. For versions neither source covers, the fallback is
-  extracting the MSI payload from the `.exe` installer, as pyenv-win does
-  today.
+- **Which package, by version** (measured 2026-10-03 against python.org's
+  Install Manager index `index-windows.json` and its `next` pages, NuGet, and
+  pyenv-win 856ed5a's version list):
+
+  | Versions | Package | Checked against (published by python.org) | tkinter |
+  |---|---|---|---|
+  | 3.11.0 and later, amd64/arm64/win32 (and free-threaded 3.13+) | the index's python.org `.zip` | SHA-256 in the index | yes |
+  | Everything else from 3.5.0 on: 3.5.0–3.10.x, gaps such as 3.12.5, older pre-releases | python.org's per-component MSIs, `<ver>/<arch>/{core,exe,lib,tcltk,pip,…}.msi`, the parts of the `.exe` installer | each MSI's OpenPGP signature (`<file>.asc`) by the release manager | yes |
+  | 2.4–3.4, 2.7.x | the single `.msi` installer | its OpenPGP signature (`<file>.asc`) | yes |
+
+  The index lists 3.5.2–3.10.11 and 2.7.18 only as NuGet packages, which have
+  no tkinter, so NuGet is not used.
+- **rpyenv is never the hash authority** (decided 2026-10-03). Every file is
+  checked against what its publisher publishes, fetched at install time:
+  - The index's SHA-256 for the zips.
+  - For MSIs, python.org's release-file API gives only MD5, so the check is the
+    release manager's detached OpenPGP signature.
+    - rpyenv embeds the CPython release managers' public keys that python.org
+      lists, with their source noted, and verifies each `.asc` before
+      extracting.
+    - Signatures were confirmed present for component MSIs (3.8.10, 3.10.11)
+      and for single `.msi` installers (2.4.4, 3.4.4, 2.7.18) on 2026-10-03.
+  - The first Windows installer task proves the verifier on a real `core.msi`
+    before anything depends on it.
+- **MSI extraction** reads the MSI's tables and CAB streams in Rust and writes
+  the files; `msiexec` is not run, so no product is registered. If the Rust
+  reader can't decompress python.org's CABs, the first Windows installer task
+  says so and falls back to `msiexec /a` (an administrative install, which
+  also registers nothing), as pyenv-win does.
+- **No PEP 514 registry keys.** pyenv-win writes
+  `HKCU\SOFTWARE\Python\PythonCore\<ver>`; rpyenv doesn't (an allowlist row).
 - Architectures: amd64, arm64, and win32, matching the host by default.
 - `pyenv install --list` reads a cached version list. `pyenv update`
-  refreshes it from the rpyenv-published catalog (§15.1, resolution 1). The
-  scheduled workflow that publishes the catalog is built in M2, the first
-  milestone that needs it.
+  refreshes it from python.org directly: the Install Manager index for 3.11+,
+  and python.org's release listing for the MSI-based versions. rpyenv
+  publishes no CPython catalog.
 
 ### 9.2 Linux
 
@@ -433,12 +458,20 @@ instructions, as upstream does.
 ### 9.3 Both
 
 - **Atomic:** a failure or Ctrl+C never leaves a partial `versions/<ver>`.
-- **Verified:** every download is checked against a published SHA-256 before
-  it is used.
+- **Verified:** every download is checked, before it is used, against what its
+  publisher publishes: a SHA-256 (python.org's index, upstream
+  `python-build`) or the publisher's OpenPGP signature (python.org's MSIs).
+  rpyenv never publishes or computes the reference value itself, and MD5 is
+  never accepted.
 - **`:latest` (M2).** `pyenv install 3.12:latest` installs the newest
   matching release. Candidates exclude `-dev`, `-src`, pre-releases
   (`a`/`b`/`rc`), and free-threaded builds (`t` suffix), and are sorted by
-  version number, the same filters as upstream's `install/latest.bash` hook.
+  version number. Upstream's `install/latest.bash` hook differs in three ways
+  that are defects, not contract (measured 2026-10-03,
+  `docs/parity/pyenv-m2-reference.md`): it matches the prefix as a plain
+  substring (`3.1:latest` installs 3.14.x), keeps alpha releases, and sorts on
+  three fields only. rpyenv matches at a version boundary, as `pyenv latest`
+  does, and each difference gets an allowlist row.
   How other version prefixes are handled follows upstream's `pyenv-install`,
   pinned by the parity tests.
 - **Default packages** (the pyenv-default-packages plugin's behavior, built
@@ -585,7 +618,7 @@ warns when it finds one. pyenv-win has the same limitation.
    - expected failures (batch internals, cmd `shell` semantics) are listed
      with reasons
 
-   When a milestone ships a command, its plan must: (1) add the milestone to
+   When a milestone ships a command, its plan must: (1) add the milestone (or sub-milestone, e.g. `M2a`) to
    `DELIVERED` in `parity/allowlist.py`, which makes the expected lists reject
    it as a reason; (2) add a `pyenv-<cmd>` wrapper in `parity/bats_run.sh`;
    (3) remove the now-passing entries from `parity/expected/*.txt`; and
@@ -628,7 +661,8 @@ warns when it finds one. pyenv-win has the same limitation.
 | `RPYENV_LIVE_REHASH` | rpyenv | `1` enables the live watcher |
 | `RPYENV_DEBUG_LOG` | rpyenv | File for diagnostics from shims and `pyenv exec` when there is no console |
 | `RPYENV_BATCH_FORWARD` | rpyenv | `;`-separated batch-target names that get a `.cmd` forwarder instead of an exe shim (Windows) |
-| `RPYENV_CATALOG_URL` | rpyenv | Alternative location (a mirror) for the rpyenv-published Windows catalog |
+| `RPYENV_CATALOG_URL` | rpyenv (M7, only if kept) | Alternative location for the PyPy/conda listing, if M7 keeps one (§15.1); not used for CPython |
+| `RPYENV_SKIP_PREFLIGHT` | rpyenv | `1` skips the Linux build pre-flight check (§9.2), for headers in places the check doesn't look |
 | `RPYENV_BUILD_DEPS` | rpyenv (M8) | `system`, `install`, or `build`: how `pyenv install` resolves missing Linux build dependencies when there is no terminal to ask |
 
 `RPYENV_FORWARD_CP`, `RPYENV_FORWARD_PYENV`, `RPYENV_FORWARD_TARGET` and `RPYENV_FORWARD_DIR` are internal helpers that `.cmd` forwarders set and clear while they run; they are not user settings (allowlist D-47).
@@ -700,8 +734,9 @@ each milestone.
      deletes the folder on failure. A folder without the marker counts as not
      installed.
 5. **Catalog:** on Linux, upstream `python-build` already has PyPy, Anaconda,
-   Miniconda, and Miniforge definitions with hashes. On Windows, versions come
-   from the rpyenv-published catalog (resolution 1 below).
+   Miniconda, and Miniforge definitions with hashes. On Windows, where versions
+   and hashes come from is decided when M7 is planned, under the same rule as
+   CPython: checked against what the publisher publishes (resolution 1 below).
 6. **`install --list` shows only what can be installed on this machine:**
    combinations of distribution, version, OS, and architecture that have an
    official binary.
@@ -721,11 +756,17 @@ each milestone.
      downloads it, and `install --list` reads the cached copy.
      `RPYENV_CATALOG_URL` points to a mirror instead.
    - **Where each hash comes from:** from the source's own published checksum.
-     The catalog never contains a hash that rpyenv computed from a download,
-     so a tampered download at catalog time can't slip in.
+     The catalog never contains a hash that rpyenv computed from an
+     unverified download, so a tampered download at catalog time can't slip
+     in.
    - **Why:** when a web page changes layout, the scheduled job fails in CI,
      not on users' machines.
-   - The Windows CPython list (§9.1) is delivered through the same catalog.
+   - **Superseded for CPython (2026-10-03):** the Windows CPython list and its
+     checks come from python.org directly (§9.1), and rpyenv is never the hash
+     authority (§9.3). M7 revisits this resolution for PyPy and conda under
+     that rule. Its scheduled-workflow idea would make the rpyenv repo a trust
+     anchor; if kept, it may only list where files and their published hashes
+     are, never the hashes themselves.
    - **PyPy on Windows is x64 only:** PyPy 8.0.0 (Python 3.12) ships Windows
      binaries only for x64.
 2. **Conda silent install:**
@@ -878,7 +919,8 @@ that an administrator later runs.
 ## 17. Open questions
 
 1. **Windows package source for each version range**, and tkinter coverage
-   (§9.1). Answered by the first M2 task.
+   (§9.1). Answered 2026-10-03: the index's zips for 3.11+, python.org's
+   component MSIs for everything else, no NuGet (§9.1 table).
 2. **Code signing** for the shim executables and the MSI, which affects
    SmartScreen warnings and machines that only allow signed code. Options and
    cost to be evaluated before M6.

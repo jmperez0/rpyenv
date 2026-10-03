@@ -110,11 +110,11 @@ fn versions_executables() {
 #[test]
 fn full_help_listing_and_commands() {
     let f = Fixture::new();
-    let expected = "Usage: pyenv <command> [<args>]\n\nSome useful pyenv commands are:\n   --version   Display the version of pyenv\n   commands    List all available pyenv commands\n   exec        Run an executable with the selected Python version\n   global      Set or show the global Python version(s)\n   help        Display help for a command\n   local       Set or show the local application-specific Python version(s)\n   prefix      Display prefixes for Python versions\n   rehash      Rehash pyenv shims (run this after installing executables)\n   root        Display the root directory where versions and shims are kept\n   shims       List existing pyenv shims\n   version     Show the current Python version(s) and its origin\n   version-file   Detect the file that sets the current pyenv version\n   version-name   Show the current Python version\n   version-origin   Explain how the current Python version is set\n   versions    List all Python versions available to pyenv\n   whence      List all Python versions that contain the given executable\n   which       Display the full path to an executable\n\nSee `pyenv help <command>' for information on a specific command.\nFor full documentation, see: https://github.com/pyenv/pyenv#readme\n";
+    let expected = "Usage: pyenv <command> [<args>]\n\nSome useful pyenv commands are:\n   --version   Display the version of pyenv\n   commands    List all available pyenv commands\n   exec        Run an executable with the selected Python version\n   global      Set or show the global Python version(s)\n   help        Display help for a command\n   install     Install a Python version using python-build\n   latest      Print the latest installed or known version with the given prefix\n   local       Set or show the local application-specific Python version(s)\n   prefix      Display prefixes for Python versions\n   rehash      Rehash pyenv shims (run this after installing executables)\n   root        Display the root directory where versions and shims are kept\n   shims       List existing pyenv shims\n   uninstall   Uninstall Python versions\n   version     Show the current Python version(s) and its origin\n   version-file   Detect the file that sets the current pyenv version\n   version-name   Show the current Python version\n   version-origin   Explain how the current Python version is set\n   versions    List all Python versions available to pyenv\n   whence      List all Python versions that contain the given executable\n   which       Display the full path to an executable\n\nSee `pyenv help <command>' for information on a specific command.\nFor full documentation, see: https://github.com/pyenv/pyenv#readme\n";
     assert_eq!(f.pyenv(&["help"]).stdout, expected);
     assert_eq!(
         f.pyenv(&["commands"]).stdout,
-        "--version\ncommands\nexec\nglobal\nhelp\nlocal\nprefix\nrehash\nroot\nshims\nversion\nversion-file\nversion-file-read\nversion-file-write\nversion-name\nversion-origin\nversions\nwhence\nwhich\n"
+        "--version\ncommands\nexec\nglobal\nhelp\ninstall\nlatest\nlocal\nprefix\nrehash\nroot\nshims\nuninstall\nversion\nversion-file\nversion-file-read\nversion-file-write\nversion-name\nversion-origin\nversions\nwhence\nwhich\n"
     );
     assert_eq!(f.pyenv(&["commands", "--sh"]).stdout, "");
 }
@@ -189,4 +189,21 @@ fn versions_lists_envs_by_name_when_versions_is_a_symlink() {
         "{}",
         r.stdout
     );
+}
+
+/// The installer's staging names (`versions/.tmp-*`, `.old-*`) are invisible; other dot
+/// directories still list, as upstream's `dotglob` lists them (plan Decision 4).
+// allowlist D-57
+#[cfg(unix)]
+#[test]
+fn installer_staging_names_are_not_versions() {
+    let f = Fixture::new();
+    f.version("3.12.0")
+        .version(".tmp-3.13.0")
+        .version(".old-3.11.0")
+        .version(".hidden");
+    let r = f.pyenv(&["versions", "--bare"]);
+    let mut lines: Vec<&str> = r.stdout.lines().collect();
+    lines.sort_unstable();
+    assert_eq!((lines, r.code), (vec![".hidden", "3.12.0"], 0));
 }

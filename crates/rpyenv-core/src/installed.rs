@@ -26,11 +26,19 @@ fn subdirs(dir: &Path) -> Vec<String> {
         .collect()
 }
 
+/// `versions/.tmp-<name>` and `versions/.old-<name>`: the installer's staging (plan M2a, Decision 4).
+pub fn is_staging_name(name: &str) -> bool {
+    name.starts_with(".tmp-") || name.starts_with(".old-")
+}
+
 /// Top-level entries of `versions/` that are directories (following links),
 /// in the order the flavor lists them. Envs are not included.
 pub fn top_level(versions_dir: &Path, flavor: Flavor) -> Vec<VersionEntry> {
     let mut names = subdirs(versions_dir);
     if flavor == Flavor::Pyenv {
+        // The installer's staging names (plan Decision 4). Upstream lists other dot entries
+        // (`dotglob`), so only these are hidden (allowlist row).
+        names.retain(|n| !is_staging_name(n));
         sort_version_names(&mut names, &versions_dir.to_string_lossy());
     }
     names
