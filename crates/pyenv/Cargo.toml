@@ -24,6 +24,11 @@ tar = "0.4.46"
 # Windows installer (M2b): OpenPGP signatures on python.org MSIs (spec §9.1). Pure Rust;
 # default features off (measured: 143 crates, no C).
 pgp = { version = "0.21.0", default-features = false }
+# MSI tables and cabinets, read in-process: no msiexec, no registry (spec §9.1, plan Decision 4).
+msi = "0.10.0"
+# Exact: `msi::cab_for_each_sequential` relies on how 0.6.0 parses a patched CFFILE record.
+cab = "=0.6.0"
+md-5 = "0.11.0"
 
 [build-dependencies]
 flate2 = "1.1.10"
