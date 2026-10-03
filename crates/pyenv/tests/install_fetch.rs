@@ -3,7 +3,7 @@
 mod common;
 
 use common::server::{start, Reply};
-use pyenv::install::fetch::{FetchRequest, Fetcher};
+use pyenv::install::fetch::{Check, FetchRequest, Fetcher};
 use pyenv::install::InstallError;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -40,7 +40,7 @@ fn get(f: &Fetcher, url: String, sha: &str, dest: &std::path::Path) -> Got {
     let req = FetchRequest {
         file_name: "pkg-1.0.tar.gz".into(),
         url,
-        sha256: sha.into(),
+        check: Check::Sha256(sha.into()),
         dest_dir: dest.to_path_buf(),
     };
     let result = f.fetch(&req, &mut log, &mut |s: &str| said.push(s.to_string()));
@@ -379,7 +379,7 @@ fn a_file_name_that_leaves_the_destination_is_refused() {
         let req = FetchRequest {
             file_name: name.into(),
             url: s.url("/x"),
-            sha256: sum(),
+            check: Check::Sha256(sum()),
             dest_dir: dest.clone(),
         };
         let mut log = Vec::new();

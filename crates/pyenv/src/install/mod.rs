@@ -19,6 +19,7 @@ mod reply;
 pub mod txn;
 #[cfg(unix)]
 pub mod verify;
+pub mod zipx;
 
 #[cfg(unix)]
 pub use reply::{prompt, Reply};

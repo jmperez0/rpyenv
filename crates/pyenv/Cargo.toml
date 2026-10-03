@@ -29,6 +29,8 @@ msi = "0.10.0"
 # Exact: `msi::cab_for_each_sequential` relies on how 0.6.0 parses a patched CFFILE record.
 cab = "=0.6.0"
 md-5 = "0.11.0"
+# python.org's Install Manager zips (deflate only; flate2 is already linked).
+zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2"] }
 
 [build-dependencies]
 flate2 = "1.1.10"
