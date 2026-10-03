@@ -13,6 +13,7 @@ fn config(b: &Built) -> String {
     std::fs::read_to_string(b.root.join("versions/3.12.99/lib/rpyenv-config.txt")).unwrap()
 }
 
+// allowlist D-67
 #[test]
 fn a_standard_build_installs_with_python_builds_flags_and_messages() {
     let b = build(
@@ -78,6 +79,7 @@ fn a_standard_build_installs_with_python_builds_flags_and_messages() {
     );
 }
 
+// allowlist D-60
 #[test]
 fn built_in_patches_are_applied_and_their_output_stays_in_the_log() {
     let b = build(
@@ -111,6 +113,7 @@ fn built_in_patches_are_applied_and_their_output_stays_in_the_log() {
     );
 }
 
+// allowlist D-70
 #[test]
 fn user_flags_combine_as_python_build_does() {
     let vars = [
@@ -226,6 +229,7 @@ fn a_failed_build_over_an_existing_version_restores_it() {
     );
 }
 
+// allowlist D-64
 #[test]
 fn a_failed_ensurepip_does_not_fall_back_to_get_pip() {
     let b = build(

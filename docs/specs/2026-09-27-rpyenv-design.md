@@ -618,7 +618,7 @@ warns when it finds one. pyenv-win has the same limitation.
    - expected failures (batch internals, cmd `shell` semantics) are listed
      with reasons
 
-   When a milestone ships a command, its plan must: (1) add the milestone to
+   When a milestone ships a command, its plan must: (1) add the milestone (or sub-milestone, e.g. `M2a`) to
    `DELIVERED` in `parity/allowlist.py`, which makes the expected lists reject
    it as a reason; (2) add a `pyenv-<cmd>` wrapper in `parity/bats_run.sh`;
    (3) remove the now-passing entries from `parity/expected/*.txt`; and

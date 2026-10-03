@@ -111,6 +111,7 @@ fn an_existing_version_prompts_and_eof_stops_the_run() {
     );
 }
 
+// allowlist D-58
 #[test]
 fn skip_existing_is_silent_and_force_rebuilds() {
     let f = Fixture::new();
@@ -132,6 +133,7 @@ fn skip_existing_is_silent_and_force_rebuilds() {
     );
 }
 
+// allowlist D-59
 #[test]
 fn an_unknown_version_prints_upstreams_hint_and_exits_2() {
     let f = Fixture::new();
@@ -163,6 +165,7 @@ fn list_prints_the_definitions() {
     assert_eq!(bare.stdout.lines().count() + 1, r.stdout.lines().count());
 }
 
+// allowlist D-66
 #[test]
 fn usage_errors_and_version() {
     let f = Fixture::new();
@@ -205,6 +208,7 @@ fn with_no_arguments_the_local_version_file_is_used() {
     );
 }
 
+// allowlist D-62
 #[test]
 fn default_packages_run_in_the_new_version_and_a_failure_still_succeeds() {
     let f = Fixture::new();
@@ -266,6 +270,7 @@ fn an_empty_alias_installs_under_the_version_name() {
 
 /// A name that isn't one directory under `versions/` is refused before anything is
 /// locked, downloaded or built (review I1).
+// allowlist D-69
 #[test]
 fn a_name_that_is_not_one_directory_is_refused() {
     let f = Fixture::new();
@@ -312,6 +317,7 @@ fn keep_leaves_the_sources_in_the_build_root() {
 
 /// Ctrl+C while `continue with installation?` waits for a reply ends the run at once
 /// with 130, as upstream does (review I2). stdin is a pipe that is never written to.
+// allowlist D-71
 #[test]
 fn ctrl_c_at_the_existing_version_prompt_exits_130() {
     use std::io::BufRead;
@@ -399,6 +405,7 @@ fn makefile_written(f: &Fixture) -> bool {
 
 /// Review focus 3: Ctrl+C mid-build exits 130 and leaves nothing behind, or restores what
 /// was there.
+// allowlist D-59
 #[test]
 fn ctrl_c_rolls_back_and_exits_130() {
     use std::os::unix::process::CommandExt;

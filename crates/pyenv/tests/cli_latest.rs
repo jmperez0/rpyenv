@@ -19,11 +19,30 @@ fn installed_mode_picks_the_newest_matching_version() {
     );
 }
 
+// allowlist D-57
 #[test]
 fn installed_mode_ignores_the_installers_staging() {
     let f = Fixture::new();
     f.version("3.12.1").version(".tmp-3.12.20");
     assert_eq!(f.pyenv(&["latest", "3.12"]).stdout, "3.12.1\n");
+}
+
+// A staging name matches a prefix of its own text, so this fails if staging names are not
+// hidden (the case above passes either way: `.tmp-3.12.20` does not start with `3.12`).
+// allowlist D-57
+#[test]
+fn a_staging_name_is_not_a_match_for_its_own_prefix() {
+    let f = Fixture::new();
+    f.version("3.12.1").version(".old-3.12.30");
+    let r = f.pyenv(&["latest", ".old"]);
+    assert_eq!(
+        (r.stdout.as_str(), r.stderr.as_str(), r.code),
+        (
+            "",
+            "pyenv: no installed versions match the prefix `.old'\n",
+            1
+        )
+    );
 }
 
 #[test]

@@ -11,15 +11,15 @@ test_pyenv_feature_exec.py::test_exec_arg[Pound-python shim] | D-36 shims are `.
 test_pyenv_feature_exec.py::test_exec_arg[Single Quote-python shim] | D-36 shims are `.exe`, not `python.bat`
 test_pyenv_feature_exec.py::test_exec_arg[Two Words-python shim] | D-36 shims are `.exe`, not `python.bat`
 test_pyenv_feature_exec.py::test_path_not_updated | D-36 shims are `.exe`, not `python.bat`
-test_pyenv_feature_install.py::test_check_pyenv_install_list | M2 installer
-test_pyenv_feature_install.py::test_patched_venv_module[3.10.11-python310] | M2 installer
-test_pyenv_feature_install.py::test_patched_venv_module[3.11.3-python311] | M2 installer
-test_pyenv_feature_install.py::test_patched_venv_module[3.9.13-python39] | M2 installer
-test_pyenv_feature_latest.py::test_latest_arch_cases[<lambda>] | M2 `pyenv latest` arrives with the installer
-test_pyenv_feature_latest.py::test_latest_edge_cases[<lambda>] | M2 `pyenv latest` arrives with the installer
-test_pyenv_feature_latest.py::test_latest_help | M2 `pyenv latest` arrives with the installer
-test_pyenv_feature_latest.py::test_latest_quiet | M2 `pyenv latest` arrives with the installer
-test_pyenv_feature_latest.py::test_latest_sort[<lambda>] | M2 `pyenv latest` arrives with the installer
+test_pyenv_feature_install.py::test_check_pyenv_install_list | M2b installer
+test_pyenv_feature_install.py::test_patched_venv_module[3.10.11-python310] | M2b installer
+test_pyenv_feature_install.py::test_patched_venv_module[3.11.3-python311] | M2b installer
+test_pyenv_feature_install.py::test_patched_venv_module[3.9.13-python39] | M2b installer
+test_pyenv_feature_latest.py::test_latest_arch_cases[<lambda>] | M2b `pyenv latest` arrives with the installer
+test_pyenv_feature_latest.py::test_latest_edge_cases[<lambda>] | M2b `pyenv latest` arrives with the installer
+test_pyenv_feature_latest.py::test_latest_help | M2b `pyenv latest` arrives with the installer
+test_pyenv_feature_latest.py::test_latest_quiet | M2b `pyenv latest` arrives with the installer
+test_pyenv_feature_latest.py::test_latest_sort[<lambda>] | M2b `pyenv latest` arrives with the installer
 test_pyenv_feature_rehash.py::test_rehash_global_version[<lambda>] | D-36 one `.exe` shim per program; no extensionless sh shims
 test_pyenv_feature_rehash.py::test_rehash_local_version[<lambda>] | D-36 one `.exe` shim per program; no extensionless sh shims
 test_pyenv_feature_shell.py::test_no_shell_version[cmd] | M3 shell integration (`pyenv shell`)

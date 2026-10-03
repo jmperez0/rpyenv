@@ -159,6 +159,7 @@ fn old_definitions_require_gcc() {
     assert!(!parse_builtin("2.7.18").require_gcc);
 }
 
+// allowlist D-56
 #[test]
 fn other_bash_is_refused_with_its_line() {
     let f = Found {

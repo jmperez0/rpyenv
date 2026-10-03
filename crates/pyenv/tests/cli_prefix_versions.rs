@@ -193,6 +193,7 @@ fn versions_lists_envs_by_name_when_versions_is_a_symlink() {
 
 /// The installer's staging names (`versions/.tmp-*`, `.old-*`) are invisible; other dot
 /// directories still list, as upstream's `dotglob` lists them (plan Decision 4).
+// allowlist D-57
 #[cfg(unix)]
 #[test]
 fn installer_staging_names_are_not_versions() {

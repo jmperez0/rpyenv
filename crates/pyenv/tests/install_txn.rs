@@ -143,6 +143,7 @@ fn staging_lives_inside_versions_and_commit_leaves_only_the_version() {
     assert!(is_complete(&versions.join("3.12.0")));
 }
 
+// allowlist D-58
 #[test]
 fn dropping_without_commit_restores_the_previous_version() {
     let root = tempfile::tempdir().unwrap();

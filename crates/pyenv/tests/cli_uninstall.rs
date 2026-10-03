@@ -97,6 +97,7 @@ fn usage_errors_and_help() {
 /// The installer's `.tmp-*` and `.old-*` directories are hidden from `pyenv versions`; they
 /// may belong to a running install, so uninstall treats them as absent. `.` and `..` would
 /// name `versions/` or the root itself.
+// allowlist D-68
 #[test]
 fn staging_names_and_dot_names_are_not_installed() {
     let f = Fixture::new();
@@ -128,6 +129,7 @@ fn staging_names_and_dot_names_are_not_installed() {
 /// only on a tty, so the test waits for the reply-reading helper thread to exist: the
 /// process then has main, the Ctrl+C handler thread and that helper (3 entries in
 /// /proc/<pid>/task), which happens after the handler is installed.
+// allowlist D-71
 #[test]
 fn ctrl_c_at_the_remove_prompt_exits_130() {
     use std::os::unix::process::CommandExt;
@@ -187,13 +189,16 @@ fn ctrl_c_at_the_remove_prompt_exits_130() {
 /// Path-escape arguments must never delete anything above `versions/<name>`. The root sits
 /// five levels inside a dedicated tempdir T with a canary file at every level, and every
 /// argument resolves inside T at worst, so even a broken build cannot touch anything else.
+// allowlist D-68
 #[test]
 fn escaping_arguments_remove_nothing_outside_a_version() {
     let t = tempfile::tempdir().unwrap();
     let t_path = t.path().to_path_buf();
     let l2 = t_path.join("l1/l2");
     let root = l2.join("l3/l4/root");
-    let work = t_path.join("work");
+    // `work` is deeper than the argument's reach: even a regression that resolved arguments
+    // against the working directory could not get above T.
+    let work = t_path.join("a/b/work");
     std::fs::create_dir_all(&work).unwrap();
     for v in ["u2", "u3"] {
         std::fs::create_dir_all(root.join("versions").join(v).join("bin")).unwrap();
@@ -254,6 +259,7 @@ fn escaping_arguments_remove_nothing_outside_a_version() {
 }
 
 /// An install of the same name holds `<root>/.locks/install-<name>`; uninstall refuses.
+// allowlist D-68
 #[test]
 fn uninstall_refuses_while_an_install_of_that_name_runs() {
     let f = Fixture::new();

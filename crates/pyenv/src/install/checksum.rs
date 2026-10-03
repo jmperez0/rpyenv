@@ -59,6 +59,7 @@ mod tests {
         assert_eq!(sha256_of_fragment("u", Some(&upper)), Ok(ABC.to_string()));
     }
 
+    // allowlist D-64
     #[test]
     fn md5_missing_and_malformed_fragments_are_refused() {
         let msg = Err("rpyenv requires a SHA-256 checksum for https://x/a.tgz".to_string());

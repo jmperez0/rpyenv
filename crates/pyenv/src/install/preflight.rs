@@ -415,6 +415,7 @@ mod tests {
         assert!(!r.refuse && r.lines.is_empty());
     }
 
+    // allowlist D-65
     #[test]
     fn missing_ssl_refuses_with_the_debian_package() {
         let deps = evaluate(&missing_only(&["openssl/ssl.h"]), false, false);

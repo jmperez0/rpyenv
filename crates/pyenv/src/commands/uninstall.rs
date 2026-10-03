@@ -123,6 +123,7 @@ pub fn uninstall(ctx: &Ctx, args: &[&str]) -> Output {
 mod tests {
     use super::version_name;
 
+    // allowlist D-68
     #[test]
     fn names_come_from_the_text_after_the_last_slash_and_never_from_the_argument() {
         for refused in [

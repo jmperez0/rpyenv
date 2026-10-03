@@ -114,6 +114,7 @@ fn a_checksum_mismatch_fails_and_leaves_no_file() {
     );
 }
 
+// allowlist D-63
 #[test]
 fn a_server_error_is_retried() {
     let s = start(vec![(
