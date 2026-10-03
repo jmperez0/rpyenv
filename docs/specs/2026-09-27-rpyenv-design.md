@@ -401,12 +401,25 @@ instructions, as upstream does.
 - **Source:** official python.org packages, extracted into
   `versions\.tmp-<ver>` and then renamed into place. No installer runs and
   nothing is written to the registry.
-- The python.org package index used by the Python Install Manager and the
-  NuGet packages are both candidates. Which source to use for which version
-  range, and whether it includes Tcl/Tk (tkinter), must be checked in the
-  first installer task. For versions neither source covers, the fallback is
-  extracting the MSI payload from the `.exe` installer, as pyenv-win does
-  today.
+- **Which package, by version** (measured 2026-10-03 against python.org's
+  Install Manager index `index-windows.json` and its `next` pages, NuGet, and
+  pyenv-win 856ed5a's version list):
+
+  | Versions | Package | Upstream hash | tkinter |
+  |---|---|---|---|
+  | 3.11.0 and later, amd64/arm64/win32 (and free-threaded 3.13+) | the index's python.org `.zip` | SHA-256 in the index | yes |
+  | Everything else from 3.5.0 on: 3.5.0–3.10.x, gaps such as 3.12.5, older pre-releases | python.org's per-component MSIs, `<ver>/<arch>/{core,exe,lib,tcltk,pip,…}.msi`, the parts of the `.exe` installer | MD5 only | yes |
+  | 2.4–3.4, 2.7.x | the single `.msi` installer | MD5 only | yes |
+
+  The index lists 3.5.2–3.10.11 and 2.7.18 only as NuGet packages, which have
+  no tkinter, so NuGet is not used.
+- **MSI extraction** reads the MSI's tables and CAB streams in Rust and writes
+  the files; `msiexec` is not run, so no product is registered. If the Rust
+  reader can't decompress python.org's CABs, the first Windows installer task
+  says so and falls back to `msiexec /a` (an administrative install, which
+  also registers nothing), as pyenv-win does.
+- **No PEP 514 registry keys.** pyenv-win writes
+  `HKCU\SOFTWARE\Python\PythonCore\<ver>`; rpyenv doesn't (an allowlist row).
 - Architectures: amd64, arm64, and win32, matching the host by default.
 - `pyenv install --list` reads a cached version list. `pyenv update`
   refreshes it from the rpyenv-published catalog (§15.1, resolution 1). The
@@ -433,7 +446,8 @@ instructions, as upstream does.
 ### 9.3 Both
 
 - **Atomic:** a failure or Ctrl+C never leaves a partial `versions/<ver>`.
-- **Verified:** every download is checked against a published SHA-256 before
+- **Verified:** every download is checked against a published SHA-256 (from
+  python.org's index, upstream `python-build`, or rpyenv's own catalog) before
   it is used.
 - **`:latest` (M2).** `pyenv install 3.12:latest` installs the newest
   matching release. Candidates exclude `-dev`, `-src`, pre-releases
@@ -721,8 +735,15 @@ each milestone.
      downloads it, and `install --list` reads the cached copy.
      `RPYENV_CATALOG_URL` points to a mirror instead.
    - **Where each hash comes from:** from the source's own published checksum.
-     The catalog never contains a hash that rpyenv computed from a download,
-     so a tampered download at catalog time can't slip in.
+     The catalog never contains a hash that rpyenv computed from an
+     unverified download, so a tampered download at catalog time can't slip
+     in.
+     - **One exception (decided 2026-10-03, M2):** python.org publishes only
+       MD5 for its MSIs and installers. For those, the workflow downloads the
+       file, checks it against python.org's MD5 (and its sigstore bundle or
+       GPG signature where one exists), and only then publishes the file's
+       SHA-256. Forging such a file would take an MD5 second preimage, not a
+       collision, because python.org built the original.
    - **Why:** when a web page changes layout, the scheduled job fails in CI,
      not on users' machines.
    - The Windows CPython list (§9.1) is delivered through the same catalog.
@@ -878,7 +899,8 @@ that an administrator later runs.
 ## 17. Open questions
 
 1. **Windows package source for each version range**, and tkinter coverage
-   (§9.1). Answered by the first M2 task.
+   (§9.1). Answered 2026-10-03: the index's zips for 3.11+, python.org's
+   component MSIs for everything else, no NuGet (§9.1 table).
 2. **Code signing** for the shim executables and the MSI, which affects
    SmartScreen warnings and machines that only allow signed code. Options and
    cost to be evaluated before M6.
