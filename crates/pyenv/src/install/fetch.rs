@@ -5,7 +5,9 @@ use super::checksum::sha256_file;
 use super::{interrupted, InstallError};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{mpsc, Arc};
+use std::time::{Duration, Instant};
 
 /// Large enough for any CPython tarball.
 const MAX_DOWNLOAD: u64 = 4 << 30;
@@ -33,6 +35,8 @@ pub struct Fetcher {
     cache: Option<PathBuf>,
     /// Pause before attempts 2 and 3 (zero in tests).
     pub retry_delay: Duration,
+    /// An attempt with no new bytes for this long is abandoned and retried.
+    pub stall_timeout: Duration,
 }
 
 enum Attempt {
@@ -70,6 +74,7 @@ impl Fetcher {
             .tls_config(tls)
             .proxy(ureq::Proxy::try_from_env())
             .timeout_connect(Some(Duration::from_secs(30)))
+            .timeout_recv_response(Some(Duration::from_secs(60)))
             .build()
             .into();
         Fetcher {
@@ -77,6 +82,7 @@ impl Fetcher {
             mirror,
             cache,
             retry_delay: Duration::from_secs(1),
+            stall_timeout: Duration::from_secs(60),
         }
     }
 
@@ -101,56 +107,81 @@ impl Fetcher {
         log: &mut dyn Write,
         say: &mut dyn FnMut(&str),
     ) -> Result<PathBuf, InstallError> {
+        if req.sha256.len() != 64
+            || !req
+                .sha256
+                .bytes()
+                .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+        {
+            return Err(InstallError::Message(format!(
+                "pyenv: invalid SHA-256 for {}: {}",
+                req.file_name, req.sha256
+            )));
+        }
         let dest = req.dest_dir.join(&req.file_name);
         if let Some(cache) = &self.cache {
             let cached = cache.join(&req.file_name);
             if sha256_file(&cached).ok().as_deref() == Some(req.sha256.as_str()) {
-                std::fs::copy(&cached, &dest).map_err(|e| {
-                    InstallError::Message(format!(
-                        "pyenv: cannot copy {} from the cache: {e}",
-                        req.file_name
-                    ))
-                })?;
-                return Ok(dest);
+                let part = dest.with_file_name(format!("{}.part", req.file_name));
+                let placed =
+                    std::fs::copy(&cached, &part).and_then(|_| std::fs::rename(&part, &dest));
+                match placed {
+                    Ok(()) => return Ok(dest),
+                    Err(e) => {
+                        let _ = std::fs::remove_file(&part);
+                        let _ = writeln!(log, "cannot use the cached {}: {e}", req.file_name);
+                    }
+                }
             }
         }
         say(&format!("Downloading {}...", req.file_name));
         let mut fetched = false;
         if let Some(m) = self.mirror_url(&req.url, &req.sha256) {
             if self.agent.head(&m).call().is_ok() {
+                let _ = writeln!(log, "mirror HEAD ok: {m}");
                 say(&format!("-> {m}"));
-                fetched = self.download(&m, &dest, &req.sha256, &req.file_name, log)?;
+                fetched = self.download(&m, &dest, req, log, say)? == Outcome::Done;
             } else {
                 let _ = writeln!(log, "mirror HEAD failed: {m}");
             }
         }
         if !fetched {
             say(&format!("-> {}", req.url));
-            if !self.download(&req.url, &dest, &req.sha256, &req.file_name, log)? {
-                say(&format!("error: failed to download {}", req.file_name));
+            if self.download(&req.url, &dest, req, log, say)? != Outcome::Done {
                 return Err(InstallError::Failed);
             }
         }
         if let Some(cache) = &self.cache {
-            let _ = std::fs::copy(&dest, cache.join(&req.file_name));
+            if cache != &req.dest_dir {
+                let tmp = cache.join(format!("{}.tmp-{}", req.file_name, std::process::id()));
+                let stored = std::fs::copy(&dest, &tmp)
+                    .and_then(|_| std::fs::rename(&tmp, cache.join(&req.file_name)));
+                if let Err(e) = stored {
+                    let _ = std::fs::remove_file(&tmp);
+                    let _ = writeln!(log, "cannot store {} in the cache: {e}", req.file_name);
+                }
+            }
         }
         Ok(dest)
     }
 
-    /// Up to 3 attempts. Ok(false) when the file couldn't be fetched or didn't verify.
+    /// Up to 3 attempts at one URL. Prints `error: failed to download` when the GET finally fails.
     fn download(
         &self,
         url: &str,
         dest: &Path,
-        sha256: &str,
-        file_name: &str,
+        req: &FetchRequest,
         log: &mut dyn Write,
-    ) -> Result<bool, InstallError> {
-        let part = dest.with_file_name(format!("{file_name}.part"));
-        for attempt in 1..=3 {
+        say: &mut dyn FnMut(&str),
+    ) -> Result<Outcome, InstallError> {
+        let file_name = &req.file_name;
+        let sha256 = &req.sha256;
+        for attempt in 1..=3u32 {
             if attempt > 1 {
                 std::thread::sleep(self.retry_delay * (attempt - 1));
             }
+            // A fresh name per attempt: an abandoned (stalled) worker may still hold the old one.
+            let part = dest.with_file_name(format!("{file_name}.part{attempt}"));
             let outcome = self.attempt(url, &part);
             let _ = std::fs::remove_file(dest);
             if interrupted() {
@@ -160,36 +191,41 @@ impl Fetcher {
             match outcome {
                 Attempt::Ok => {
                     let got = sha256_file(&part).unwrap_or_default();
-                    if got == sha256 {
-                        std::fs::rename(&part, dest).map_err(|e| {
-                            InstallError::Message(format!(
+                    if &got == sha256 {
+                        if let Err(e) = std::fs::rename(&part, dest) {
+                            let _ = std::fs::remove_file(&part);
+                            return Err(InstallError::Message(format!(
                                 "pyenv: cannot write {}: {e}",
                                 dest.display()
-                            ))
-                        })?;
-                        return Ok(true);
+                            )));
+                        }
+                        return Ok(Outcome::Done);
                     }
                     let _ = std::fs::remove_file(&part);
                     let _ = write!(
                         log,
                         "\nchecksum mismatch: {file_name} (file is corrupt)\nexpected {sha256}, got {got}\n\n"
                     );
-                    return Ok(false);
+                    return Ok(Outcome::Mismatch);
                 }
                 Attempt::Transient(e) => {
+                    let _ = std::fs::remove_file(&part);
                     let _ = writeln!(log, "{url}: {e} (attempt {attempt} of 3)");
                 }
                 Attempt::Final(e) => {
                     let _ = std::fs::remove_file(&part);
                     let _ = writeln!(log, "{url}: {e}");
-                    return Ok(false);
+                    say(&format!("error: failed to download {file_name}"));
+                    return Ok(Outcome::GetFailed);
                 }
             }
         }
-        let _ = std::fs::remove_file(&part);
-        Ok(false)
+        say(&format!("error: failed to download {file_name}"));
+        Ok(Outcome::GetFailed)
     }
 
+    /// The GET and the body copy run on a worker thread, so that Ctrl+C and a stalled
+    /// connection are noticed here even while a read blocks.
     fn attempt(&self, url: &str, part: &Path) -> Attempt {
         if let Some(path) = url.strip_prefix("file://") {
             return match std::fs::copy(path, part) {
@@ -197,31 +233,90 @@ impl Fetcher {
                 Err(e) => Attempt::Final(e.to_string()),
             };
         }
-        let mut resp = match self.agent.get(url).call() {
-            Ok(r) => r,
-            Err(ureq::Error::StatusCode(code)) if code >= 500 => {
-                return Attempt::Transient(format!("HTTP {code}"))
-            }
-            Err(ureq::Error::StatusCode(code)) => return Attempt::Final(format!("HTTP {code}")),
-            Err(e) => return Attempt::Transient(e.to_string()),
-        };
-        let Ok(mut out) = std::fs::File::create(part) else {
-            return Attempt::Final(format!("cannot create {}", part.display()));
-        };
-        let mut reader = resp.body_mut().with_config().limit(MAX_DOWNLOAD).reader();
-        let mut buf = vec![0u8; 1 << 16];
+        let progress = Arc::new(AtomicU64::new(0));
+        let (tx, rx) = mpsc::channel();
+        {
+            let (agent, url, part, progress) = (
+                self.agent.clone(),
+                url.to_string(),
+                part.to_path_buf(),
+                progress.clone(),
+            );
+            std::thread::spawn(move || {
+                let _ = tx.send(transfer(&agent, &url, &part, &progress));
+            });
+        }
+        let mut last = (0u64, Instant::now());
         loop {
+            match rx.recv_timeout(Duration::from_millis(100)) {
+                Ok(done) => return done,
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Attempt::Transient("download thread failed".into())
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+            }
             if interrupted() {
                 return Attempt::Final("interrupted".into());
             }
-            match reader.read(&mut buf) {
-                Ok(0) => return Attempt::Ok,
-                Ok(n) => {
-                    if let Err(e) = out.write_all(&buf[..n]) {
-                        return Attempt::Final(e.to_string());
-                    }
+            let n = progress.load(Ordering::Relaxed);
+            if n != last.0 {
+                last = (n, Instant::now());
+            } else if last.1.elapsed() >= self.stall_timeout {
+                return Attempt::Transient(format!(
+                    "no data for {} s",
+                    self.stall_timeout.as_secs_f32()
+                ));
+            }
+        }
+    }
+}
+
+#[derive(PartialEq, Eq)]
+enum Outcome {
+    Done,
+    /// The GET failed for good (already reported on `say`).
+    GetFailed,
+    /// Downloaded, but not the expected bytes (only in the log).
+    Mismatch,
+}
+
+/// Which errors are worth another try: transport, I/O and timeouts. A bad URL, TLS
+/// failure, redirect trouble or the size limit would fail the same way again.
+fn is_transient(e: &ureq::Error) -> bool {
+    use ureq::Error::*;
+    matches!(e, Io(_) | Timeout(_) | ConnectionFailed | HostNotFound)
+}
+
+fn transfer(agent: &ureq::Agent, url: &str, part: &Path, progress: &AtomicU64) -> Attempt {
+    let mut resp = match agent.get(url).call() {
+        Ok(r) => r,
+        Err(ureq::Error::StatusCode(code)) if code >= 500 => {
+            return Attempt::Transient(format!("HTTP {code}"))
+        }
+        Err(ureq::Error::StatusCode(code)) => return Attempt::Final(format!("HTTP {code}")),
+        Err(e) if is_transient(&e) => return Attempt::Transient(e.to_string()),
+        Err(e) => return Attempt::Final(e.to_string()),
+    };
+    let Ok(mut out) = std::fs::File::create(part) else {
+        return Attempt::Final(format!("cannot create {}", part.display()));
+    };
+    let mut reader = resp.body_mut().with_config().limit(MAX_DOWNLOAD).reader();
+    let mut buf = vec![0u8; 1 << 16];
+    loop {
+        match reader.read(&mut buf) {
+            Ok(0) => return Attempt::Ok,
+            Ok(n) => {
+                if let Err(e) = out.write_all(&buf[..n]) {
+                    return Attempt::Final(e.to_string());
                 }
-                Err(e) => return Attempt::Transient(e.to_string()),
+                progress.fetch_add(n as u64, Ordering::Relaxed);
+            }
+            Err(e) => {
+                let inner = e.get_ref().and_then(|i| i.downcast_ref::<ureq::Error>());
+                return match inner {
+                    Some(ue) if !is_transient(ue) => Attempt::Final(e.to_string()),
+                    _ => Attempt::Transient(e.to_string()),
+                };
             }
         }
     }

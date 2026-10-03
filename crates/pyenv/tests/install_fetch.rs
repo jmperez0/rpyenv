@@ -106,9 +106,10 @@ fn a_checksum_mismatch_fails_and_leaves_no_file() {
     );
     assert_eq!(s.hits("/pkg-1.0.tar.gz"), 1, "a mismatch is not retried");
     assert!(
-        g.said
-            .contains(&"error: failed to download pkg-1.0.tar.gz".to_string()),
-        "{:?}",
+        !g.said
+            .iter()
+            .any(|l| l.starts_with("error: failed to download")),
+        "a mismatch is not a failed GET: {:?}",
         g.said
     );
 }
@@ -210,4 +211,83 @@ fn an_invalid_cached_file_is_downloaded_again() {
         std::fs::read(cache.path().join("pkg-1.0.tar.gz")).unwrap(),
         BODY
     );
+}
+
+#[test]
+fn a_stalled_download_is_abandoned_and_retried() {
+    let s = start(vec![(
+        "/pkg-1.0.tar.gz",
+        vec![Reply::Stall(BODY.to_vec()), Reply::Body(BODY.to_vec())],
+    )]);
+    let d = tempfile::tempdir().unwrap();
+    let mut f = fetcher(NO_MIRROR, None);
+    f.stall_timeout = std::time::Duration::from_millis(500);
+    let t = std::time::Instant::now();
+    let g = get(&f, s.url("/pkg-1.0.tar.gz"), &sum(), d.path());
+    assert!(g.result.is_ok(), "{:?} {}", g.said, g.log);
+    assert_eq!(s.hits("/pkg-1.0.tar.gz"), 2);
+    assert!(
+        t.elapsed() < std::time::Duration::from_secs(10),
+        "{:?}",
+        t.elapsed()
+    );
+}
+
+#[test]
+fn a_mirror_with_a_bad_checksum_falls_back_to_the_original() {
+    let sha = sum();
+    let mirror_path = format!("/m/{sha}");
+    let s = start(vec![
+        (
+            mirror_path.as_str(),
+            vec![Reply::Body(b"wrong bytes".to_vec())],
+        ),
+        ("/pkg-1.0.tar.gz", vec![Reply::Body(BODY.to_vec())]),
+    ]);
+    let d = tempfile::tempdir().unwrap();
+    let base = s.url("/m/");
+    let f = fetcher(&[("PYTHON_BUILD_MIRROR_URL", base.as_str())], None);
+    let g = get(&f, s.url("/pkg-1.0.tar.gz"), &sha, d.path());
+    assert_eq!(g.result.unwrap(), d.path().join("pkg-1.0.tar.gz"));
+    assert_eq!(
+        g.said,
+        vec![
+            "Downloading pkg-1.0.tar.gz...".to_string(),
+            format!("-> {}", s.url(&mirror_path)),
+            format!("-> {}", s.url("/pkg-1.0.tar.gz")),
+        ]
+    );
+    assert!(g.log.contains("checksum mismatch"), "{}", g.log);
+}
+
+#[test]
+fn three_server_errors_fail_after_exactly_three_attempts() {
+    let s = start(vec![("/pkg-1.0.tar.gz", vec![Reply::Status(503)])]);
+    let d = tempfile::tempdir().unwrap();
+    let g = get(
+        &fetcher(NO_MIRROR, None),
+        s.url("/pkg-1.0.tar.gz"),
+        &sum(),
+        d.path(),
+    );
+    assert_eq!(g.result, Err(InstallError::Failed));
+    assert_eq!(s.hits("/pkg-1.0.tar.gz"), 3);
+    assert_eq!(
+        g.said.last().unwrap(),
+        "error: failed to download pkg-1.0.tar.gz"
+    );
+}
+
+#[test]
+fn a_malformed_expected_checksum_is_refused_up_front() {
+    let s = start(vec![("/pkg-1.0.tar.gz", vec![Reply::Body(BODY.to_vec())])]);
+    let d = tempfile::tempdir().unwrap();
+    let g = get(
+        &fetcher(NO_MIRROR, None),
+        s.url("/pkg-1.0.tar.gz"),
+        "ABC",
+        d.path(),
+    );
+    assert!(matches!(g.result, Err(InstallError::Message(_))));
+    assert_eq!(s.hits("/pkg-1.0.tar.gz"), 0);
 }

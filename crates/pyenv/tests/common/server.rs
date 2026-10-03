@@ -14,6 +14,8 @@ pub enum Reply {
     Status(u16),
     /// 200 announcing the full length but sending only the first half, then closing.
     Truncated(Vec<u8>),
+    /// 200 announcing the full length, sending the first half, then sleeping 30 s without closing.
+    Stall(Vec<u8>),
 }
 
 pub struct Server {
@@ -63,6 +65,8 @@ pub fn start(routes: Vec<(&str, Vec<Reply>)>) -> Server {
             let reply = {
                 let mut q = queues.lock().unwrap();
                 match q.get_mut(&path) {
+                    // Only a GET consumes a reply; a HEAD just looks at the next one.
+                    Some(v) if v.len() > 1 && method == "HEAD" => v[0].clone(),
                     Some(v) if v.len() > 1 => v.remove(0),
                     Some(v) if v.len() == 1 => v[0].clone(),
                     _ => Reply::Status(404),
@@ -97,6 +101,23 @@ pub fn start(routes: Vec<(&str, Vec<Reply>)>) -> Server {
                     } else {
                         stream.write_all(&b[..b.len() / 2])
                     }
+                }
+                Reply::Stall(b) => {
+                    let _ = write!(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        b.len()
+                    );
+                    if !head {
+                        let _ = stream.write_all(&b[..b.len() / 2]);
+                        let _ = stream.flush();
+                        // Hold the connection open off the accept thread, so later requests are served.
+                        std::thread::spawn(move || {
+                            std::thread::sleep(std::time::Duration::from_secs(30));
+                            drop(stream);
+                        });
+                    }
+                    Ok(())
                 }
             };
         }
