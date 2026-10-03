@@ -12,8 +12,9 @@ use super::{interrupted, InstallError};
 use std::ffi::OsString;
 use std::io::IsTerminal;
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
 
 pub struct Options {
     pub keep: bool,
@@ -144,6 +145,11 @@ fn os_information(env: &[(OsString, OsString)]) -> String {
 /// The configure, make and install commands python-build composes (reference
 /// "Environment python-build sets up" and "Build steps").
 struct Plan {
+    /// The final prefix, made absolute as python-build does (bin/python-build:2562-2563).
+    prefix: PathBuf,
+    /// Every child's environment: `job.env` plus the prefix-augmented `CPPFLAGS`, `LDFLAGS`
+    /// and `LIBS` python-build exports process-wide (bin/python-build:1575-1578,2847-2848).
+    env: Vec<(OsString, OsString)>,
     configure: Vec<String>,
     configure_env: Vec<(String, String)>,
     make: String,
@@ -154,7 +160,7 @@ struct Plan {
 }
 
 impl Plan {
-    fn new(job: &Job) -> Result<Plan, String> {
+    fn new(job: &Job, prefix: PathBuf) -> Result<Plan, String> {
         let env = job.env;
         let var = |k: &str| -> String {
             job.definition
@@ -166,7 +172,7 @@ impl Plan {
                 .or_else(|| get(env, k))
                 .unwrap_or_default()
         };
-        let p = job.prefix.display().to_string();
+        let p = prefix.display().to_string();
         let (conf_opts, py_conf_opts) = (var("CONFIGURE_OPTS"), var("PYTHON_CONFIGURE_OPTS"));
         let user = format!("{conf_opts} {py_conf_opts}");
         if user.contains("--enable-framework") {
@@ -222,18 +228,24 @@ impl Plan {
         } else {
             var("PYTHON_CFLAGS")
         };
-        let configure_env = vec![
-            (
-                "CFLAGS".into(),
+        // Configure only: `CFLAGS` gains `PYTHON_CFLAGS` (and is left alone without it);
+        // `CPPFLAGS` and `LDFLAGS` gain their `PYTHON_` variants.
+        let mut configure_env = Vec::new();
+        if !py_cflags.trim().is_empty() {
+            configure_env.push((
+                "CFLAGS".to_string(),
                 join(&[&var("CFLAGS"), py_cflags.trim_end()]),
-            ),
-            (
-                "CPPFLAGS".into(),
-                join(&[&cppflags, &var("PYTHON_CPPFLAGS")]),
-            ),
-            ("LDFLAGS".into(), join(&[&ldflags, &var("PYTHON_LDFLAGS")])),
-            ("LIBS".into(), libs),
-        ];
+            ));
+        }
+        configure_env.push((
+            "CPPFLAGS".into(),
+            join(&[&cppflags, &var("PYTHON_CPPFLAGS")]),
+        ));
+        configure_env.push(("LDFLAGS".into(), join(&[&ldflags, &var("PYTHON_LDFLAGS")])));
+        let mut child_env = env.to_vec();
+        for (k, v) in [("CPPFLAGS", cppflags), ("LDFLAGS", ldflags), ("LIBS", libs)] {
+            child_env.push((k.into(), v.into()));
+        }
         let configure_cmd = get(env, "PYTHON_CONFIGURE")
             .filter(|v| !v.is_empty())
             .unwrap_or_else(|| "./configure".into());
@@ -261,6 +273,8 @@ impl Plan {
         install_args.extend(words(&var("MAKE_INSTALL_OPTS")));
         install_args.extend(words(&var("PYTHON_MAKE_INSTALL_OPTS")));
         Ok(Plan {
+            prefix,
+            env: child_env,
             configure,
             configure_env,
             make: get(env, "MAKE")
@@ -303,12 +317,20 @@ fn command(program: impl AsRef<std::ffi::OsStr>, env: &[(OsString, OsString)]) -
     c
 }
 
+/// A child that died from Ctrl+C's SIGINT (2; `libc` isn't a dependency of this crate).
+fn sigint(status: &ExitStatus) -> bool {
+    status.signal() == Some(2)
+}
+
 fn logged(log: &BuildLog, cmd: &mut Command) -> R<()> {
+    if interrupted() {
+        return Err(InstallError::Interrupted);
+    }
     let status = log.run(cmd).map_err(|e| {
         log.line(&format!("{cmd:?}: {e}"));
         InstallError::Failed
     })?;
-    if interrupted() {
+    if interrupted() || sigint(&status) {
         return Err(InstallError::Interrupted);
     }
     if status.success() {
@@ -425,8 +447,8 @@ fn colorize(word: &str) -> String {
 fn verify(job: &Job, plan: &Plan, step: &str, python: &Path, say: &mut dyn FnMut(&str)) -> R<()> {
     let (xy, checks) = verify_plan(step)
         .ok_or_else(|| InstallError::Message(format!("rpyenv cannot run build step `{step}'")))?;
-    symlink_version_suffix(&job.prefix, plan);
-    let exe = job.prefix.join("bin").join(format!("python{xy}"));
+    symlink_version_suffix(&plan.prefix, plan);
+    let exe = plan.prefix.join("bin").join(format!("python{xy}"));
     if std::fs::metadata(&exe)
         .map(|m| m.permissions().mode() & 0o111 == 0)
         .unwrap_or(true)
@@ -447,16 +469,18 @@ fn verify(job: &Job, plan: &Plan, step: &str, python: &Path, say: &mut dyn FnMut
         if c.needs_display && !display {
             continue;
         }
-        let ok = command(python, job.env)
-            .args(["-c", &format!("import {}", c.module)])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
         if interrupted() {
             return Err(InstallError::Interrupted);
         }
+        let status = command(python, &plan.env)
+            .args(["-c", &format!("import {}", c.module)])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .status();
+        if interrupted() || status.as_ref().is_ok_and(sigint) {
+            return Err(InstallError::Interrupted);
+        }
+        let ok = status.is_ok_and(|s| s.success());
         if ok {
             continue;
         }
@@ -508,7 +532,27 @@ fn fix_directory_permissions(dir: &Path) {
 /// Builds every package of the definition, in order, and places the version through `txn`
 /// (not committed). Prints python-build's progress lines through `say` (stderr).
 pub fn run(job: &Job, txn: &mut Txn, say: &mut dyn FnMut(&str)) -> R<()> {
-    let tmp = tmp_dir(job.env).map_err(|m| {
+    // A relative PYENV_ROOT stays relative in rpyenv-core; configure, the rpath and DESTDIR
+    // need it absolute, as python-build makes it (bin/python-build:2562-2563).
+    let absolute = |p: &Path| {
+        std::path::absolute(p).map_err(|e| {
+            InstallError::Message(format!("pyenv: cannot resolve {}: {e}", p.display()))
+        })
+    };
+    let prefix = absolute(&job.prefix)?;
+    let target = absolute(&txn.target())?;
+    if prefix != target {
+        return Err(InstallError::Message(format!(
+            "pyenv: the build prefix {} is not the install target {}",
+            prefix.display(),
+            target.display()
+        )));
+    }
+    let tmp = tmp_dir(job.env);
+    if interrupted() {
+        return Err(InstallError::Interrupted);
+    }
+    let tmp = tmp.map_err(|m| {
         say(&m);
         InstallError::Failed
     })?;
@@ -518,7 +562,7 @@ pub fn run(job: &Job, txn: &mut Txn, say: &mut dyn FnMut(&str)) -> R<()> {
         .filter(|v| !v.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| tmp.join(format!("python-build.{seed}")));
-    let plan = Plan::new(job).map_err(|m| {
+    let plan = Plan::new(job, prefix).map_err(|m| {
         say(&m);
         InstallError::Failed
     })?;
@@ -543,16 +587,24 @@ pub fn run(job: &Job, txn: &mut Txn, say: &mut dyn FnMut(&str)) -> R<()> {
     })?;
     let result = packages(job, txn, &plan, &build_path, &tmp, &log, say);
     match &result {
-        Ok(()) if !job.opts.keep => {
-            let _ = std::fs::remove_dir_all(&build_path);
+        Ok(()) => {
+            if !job.opts.keep {
+                let _ = std::fs::remove_dir_all(&build_path);
+            }
         }
-        Err(InstallError::Failed) => {
+        // No report on Ctrl+C, but an empty build directory goes, as `rmdir` would.
+        Err(InstallError::Interrupted) => {
+            let _ = std::fs::remove_dir(&build_path);
+        }
+        // python-build's ERR trap reports every failing step once the build has started.
+        Err(e) => {
+            if let InstallError::Message(m) = e {
+                say(m);
+            }
             for l in failed_block(&os_information(job.env), &build_path, &log_path) {
                 say(&l);
             }
         }
-        Err(InstallError::Message(m)) => say(m),
-        _ => {}
     }
     match result {
         Err(InstallError::Message(_)) => Err(InstallError::Failed),
@@ -569,7 +621,7 @@ fn packages(
     log: &BuildLog,
     say: &mut dyn FnMut(&str),
 ) -> R<()> {
-    let python = job
+    let python = plan
         .prefix
         .join("bin")
         .join(format!("python{}", plan.xy.clone().unwrap_or_default()));
@@ -586,7 +638,7 @@ fn packages(
                 )))
             }
         }
-        let src = fetch_package(job, pkg, build_path, log, say)?;
+        let src = fetch_package(job, plan, pkg, build_path, log, say)?;
         say(&format!("Installing {}...", pkg.name));
         let patch = if pkg.name.starts_with("Python-") && stdin_patch.is_some() {
             stdin_patch.take()
@@ -595,7 +647,7 @@ fn packages(
             (!files.is_empty()).then(|| files.into_iter().flat_map(|(_, b)| b).collect())
         };
         if let Some(text) = patch {
-            apply_patch(log, &src, tmp, &text, job.env)?;
+            apply_patch(log, &src, tmp, &text, &plan.env)?;
         }
         if job.definition.require_gcc && get(job.env, "CC").is_none() {
             // Only the 2.1–2.4 definitions; a missing gcc fails at configure with its own error.
@@ -605,12 +657,12 @@ fn packages(
             run_step(job, txn, plan, pkg, step, &src, &python, log, say)?;
         }
         if txn.placed() {
-            fix_directory_permissions(&job.prefix);
+            fix_directory_permissions(&plan.prefix);
         }
         say(&format!(
             "Installed {} to {}",
             pkg.name,
-            job.prefix.display()
+            plan.prefix.display()
         ));
     }
     if !txn.placed() {
@@ -619,11 +671,15 @@ fn packages(
             job.found.name
         )));
     }
+    if interrupted() {
+        return Err(InstallError::Interrupted);
+    }
     Ok(())
 }
 
 fn fetch_package(
     job: &Job,
+    plan: &Plan,
     pkg: &Package,
     build_path: &Path,
     log: &BuildLog,
@@ -654,12 +710,14 @@ fn fetch_package(
         }
         Fetch::Git { url, reference } => {
             let dir = build_path.join(&pkg.name);
-            if command("git", job.env)
+            let git = command("git", &plan.env)
                 .arg("--version")
                 .stdout(Stdio::null())
-                .status()
-                .is_err()
-            {
+                .status();
+            if interrupted() || git.as_ref().is_ok_and(sigint) {
+                return Err(InstallError::Interrupted);
+            }
+            if git.is_err() {
                 return Err(InstallError::Message(
                     "error: please install `git` and try again".into(),
                 ));
@@ -668,7 +726,7 @@ fn fetch_package(
             if dir.is_dir() {
                 logged(
                     log,
-                    command("git", job.env).current_dir(&dir).args([
+                    command("git", &plan.env).current_dir(&dir).args([
                         "fetch",
                         "--depth",
                         "1",
@@ -678,7 +736,7 @@ fn fetch_package(
                 )?;
                 logged(
                     log,
-                    command("git", job.env).current_dir(&dir).args([
+                    command("git", &plan.env).current_dir(&dir).args([
                         "checkout",
                         "-q",
                         "-B",
@@ -689,7 +747,7 @@ fn fetch_package(
             } else {
                 logged(
                     log,
-                    command("git", job.env).current_dir(build_path).args([
+                    command("git", &plan.env).current_dir(build_path).args([
                         "clone", "--depth", "1", "--branch", reference, url, &pkg.name,
                     ]),
                 )?;
@@ -711,9 +769,12 @@ fn run_step(
     log: &BuildLog,
     say: &mut dyn FnMut(&str),
 ) -> R<()> {
+    if interrupted() {
+        return Err(InstallError::Interrupted);
+    }
     match step {
         "standard" => {
-            let mut conf = command(&plan.configure[0], job.env);
+            let mut conf = command(&plan.configure[0], &plan.env);
             conf.current_dir(src).args(&plan.configure[1..]);
             for (k, v) in &plan.configure_env {
                 conf.env(k, v);
@@ -721,24 +782,36 @@ fn run_step(
             logged(log, &mut conf)?;
             logged(
                 log,
-                command(&plan.make, job.env)
+                command(&plan.make, &plan.env)
                     .current_dir(src)
                     .args(&plan.make_args),
             )?;
-            let mut install = command(&plan.make, job.env);
+            let mut install = command(&plan.make, &plan.env);
             install.current_dir(src).args(&plan.install_args);
             let staging = pkg.name.starts_with("Python-") && !txn.placed();
+            // Both absolute: DESTDIR is read relative to make's directory, the source tree.
+            let stage = std::path::absolute(txn.stage_dir()).map_err(|e| {
+                InstallError::Message(format!(
+                    "pyenv: cannot resolve {}: {e}",
+                    txn.stage_dir().display()
+                ))
+            })?;
             if staging {
-                install.arg(format!("DESTDIR={}", txn.stage_dir().display()));
+                let mut destdir = OsString::from("DESTDIR=");
+                destdir.push(&stage);
+                install.arg(destdir);
             }
             logged(log, &mut install)?;
             if staging {
-                let rel = job.prefix.strip_prefix("/").unwrap_or(&job.prefix);
-                let staged = txn.stage_dir().join(rel);
-                txn.place(&staged).map_err(|e| {
+                let moved = plan
+                    .prefix
+                    .strip_prefix("/")
+                    .map_err(std::io::Error::other)
+                    .and_then(|rel| txn.place(&stage.join(rel)));
+                moved.map_err(|e| {
                     InstallError::Message(format!(
                         "pyenv: cannot move the build into {}: {e}",
-                        job.prefix.display()
+                        plan.prefix.display()
                     ))
                 })?;
             }
@@ -747,26 +820,25 @@ fn run_step(
         s if s.starts_with("verify_py") => verify(job, plan, s, python, say),
         "ensurepip" | "ensurepip_lt21" => {
             let isolation = if step == "ensurepip" { "-I" } else { "-s" };
-            let mut c = command(python, job.env);
+            let mut c = command(python, &plan.env);
             c.args([isolation, "-m", "ensurepip"]);
             if plan.altinstall {
                 c.arg("--altinstall");
             }
-            let ok = c
+            let status = c
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false);
-            if interrupted() {
+                .status();
+            if interrupted() || status.as_ref().is_ok_and(sigint) {
                 return Err(InstallError::Interrupted);
             }
+            let ok = status.is_ok_and(|s| s.success());
             if !ok {
                 say("error: failed to install pip via ensurepip");
                 return Err(InstallError::Failed);
             }
-            symlink_version_suffix(&job.prefix, plan);
+            symlink_version_suffix(&plan.prefix, plan);
             Ok(())
         }
         "copy_python_gdb" => {
@@ -775,14 +847,14 @@ fn run_step(
             if let (true, Some(v)) = (gdb.exists(), v) {
                 let _ = std::fs::copy(
                     &gdb,
-                    job.prefix.join("bin").join(format!("python{v}-gdb.py")),
+                    plan.prefix.join("bin").join(format!("python{v}-gdb.py")),
                 );
             }
             Ok(())
         }
         "python" => logged(
             log,
-            command(python, job.env)
+            command(python, &plan.env)
                 .current_dir(src)
                 .args(["setup.py", "install"]),
         ),

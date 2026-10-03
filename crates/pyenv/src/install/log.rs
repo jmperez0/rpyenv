@@ -2,7 +2,7 @@
 //! block (reference "Output streams…" and "Failure output").
 
 use std::fs::File;
-use std::io::{BufRead, Read, Write};
+use std::io::{BufRead, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
@@ -117,10 +117,20 @@ fn tail(path: &Path, n: usize) -> Vec<String> {
 
 /// python-build's `build_failed` (bin/python-build:191-216), naming rpyenv (plan Decision 9).
 pub fn failed_block(os: &str, build_path: &Path, log_path: &Path) -> Vec<String> {
+    // On a tty, `BUILD FAILED` is bold and `Results logged to …` yellow (colorize 1 / 33).
+    let tty = std::io::stderr().is_terminal();
+    let paint = |code: &str, s: String| {
+        if tty {
+            format!("\x1b[{code}m{s}\x1b[m")
+        } else {
+            s
+        }
+    };
     let mut out = vec![
         String::new(),
         format!(
-            "BUILD FAILED ({os} using rpyenv {})",
+            "{} ({os} using rpyenv {})",
+            paint("1", "BUILD FAILED".into()),
             env!("CARGO_PKG_VERSION")
         ),
         String::new(),
@@ -134,7 +144,10 @@ pub fn failed_block(os: &str, build_path: &Path, log_path: &Path) -> Vec<String>
     }
     let last = tail(log_path, 10);
     if !last.is_empty() {
-        out.push(format!("Results logged to {}", log_path.display()));
+        out.push(paint(
+            "33",
+            format!("Results logged to {}", log_path.display()),
+        ));
         out.push(String::new());
         out.push("Last 10 log lines:".into());
         let hint = last

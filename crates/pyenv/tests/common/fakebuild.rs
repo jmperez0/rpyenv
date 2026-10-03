@@ -1,5 +1,6 @@
 //! A fake `Python-<v>` source tarball for tier-1 build tests (spec §12.5): `configure`
-//! records its arguments and flags, `make install` honors DESTDIR, and the stand-in
+//! records its arguments and flags (`lib/rpyenv-config.txt`), `make` records the flags in its
+//! own environment (`lib/rpyenv-make.txt`), `make install` honors DESTDIR, and the stand-in
 //! interpreter answers `-c "import X"` and `-m ensurepip`. Unix only: it needs `sh` and `make`.
 
 use std::io::Write;
@@ -8,9 +9,10 @@ const CONFIGURE: &str = r#"#!/bin/sh
 prefix=
 for a in "$@"; do case "$a" in --prefix=*) prefix="${a#--prefix=}";; esac; done
 { printf 'args:'; for a in "$@"; do printf ' %s' "$a"; done; printf '\n'
-  printf 'CFLAGS=%s\nCPPFLAGS=%s\nLDFLAGS=%s\nLIBS=%s\n' "$CFLAGS" "$CPPFLAGS" "$LDFLAGS" "$LIBS"; } > rpyenv-config.txt
+  printf 'CFLAGS=%s\nCPPFLAGS=%s\nLDFLAGS=%s\nLIBS=%s\n' "$CFLAGS" "$CPPFLAGS" "$LDFLAGS" "$LIBS"
+  printf 'CFLAGS_SET=%s\n' "${CFLAGS+yes}"; } > rpyenv-config.txt
 if [ -n "$FAKE_CONFIGURE_FAIL" ]; then echo 'configure: error: no acceptable C compiler found in $PATH'; exit 1; fi
-printf 'all:\n\t@sleep $${FAKE_MAKE_SLEEP:-0}\ninstall:\n\tmkdir -p "$(DESTDIR)%s/bin" "$(DESTDIR)%s/lib"\n\tcp python3.12 "$(DESTDIR)%s/bin/python3.12"\n\tchmod 755 "$(DESTDIR)%s/bin/python3.12"\n\tcp rpyenv-config.txt "$(DESTDIR)%s/lib/rpyenv-config.txt"\n' "$prefix" "$prefix" "$prefix" "$prefix" "$prefix" > Makefile
+printf 'all:\n\t@sleep $${FAKE_MAKE_SLEEP:-0}\n\t@env | grep -E "^(CFLAGS|CPPFLAGS|LDFLAGS|LIBS)=" | sort > rpyenv-make.txt\ninstall:\n\tmkdir -p "$(DESTDIR)%s/bin" "$(DESTDIR)%s/lib"\n\tcp python3.12 "$(DESTDIR)%s/bin/python3.12"\n\tchmod 755 "$(DESTDIR)%s/bin/python3.12"\n\tcp rpyenv-config.txt "$(DESTDIR)%s/lib/rpyenv-config.txt"\n\tcp rpyenv-make.txt "$(DESTDIR)%s/lib/rpyenv-make.txt"\n' "$prefix" "$prefix" "$prefix" "$prefix" "$prefix" "$prefix" > Makefile
 "#;
 
 const PYTHON: &str = r#"#!/bin/sh
