@@ -26,6 +26,15 @@ fn main() {
         ));
     }
     defs.push_str("];\n");
+    // UPSTREAM is `pyenv <commit> <version>`, written by ci/sync_python_build.py.
+    let upstream = fs::read_to_string(manifest.join("python-build").join("UPSTREAM")).unwrap();
+    let version = upstream
+        .split_whitespace()
+        .nth(2)
+        .expect("python-build/UPSTREAM: `pyenv <commit> <version>`");
+    defs.push_str(&format!(
+        "/// The python-build release the vendored definitions come from (UPSTREAM).\npub const UPSTREAM_VERSION: &str = {version:?};\n"
+    ));
     fs::write(out.join("defs.rs"), defs).unwrap();
 
     let gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());

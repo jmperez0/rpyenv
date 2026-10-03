@@ -1,9 +1,14 @@
 name: sync-python-build
-# Keeps crates/pyenv/python-build in step with pyenv's latest release (plan M2a, Decision 1):
-# opens a pull request when the vendored copy differs.
+# Brings crates/pyenv/python-build in step with pyenv's latest release (plan M2a, Decision 1):
+# opens a pull request when the vendored copy differs. Run by hand only; the pull request is
+# not finished on its own. Before merging it:
+#   - bump PYENV_SHA in .github/workflows/parity.yml to the synced commit;
+#   - regenerate the parity goldens (python parity/diff.py ... --update-golden) and review them;
+#   - re-run the bats suite (parity/bats_run.sh) and update parity/expected/bats.txt;
+#   - run cargo test and update any test that names a vendored version.
+# A pull request created with GITHUB_TOKEN triggers no CI run: push a commit to its branch, or
+# close and reopen it, to start one.
 on:
-  schedule:
-    - cron: "41 4 * * 1"
   workflow_dispatch:
 
 permissions:
@@ -41,7 +46,19 @@ jobs:
           git push -f origin "$branch"
           existing=$(gh pr list --head "$branch" --state open --json number --jq 'length')
           if [ "$existing" = "0" ]; then
-            gh pr create --base main --head "$branch" --title "Sync python-build definitions with pyenv $TAG" --body "Automated: crates/pyenv/python-build updated from pyenv $TAG ($SHA) by ci/sync_python_build.py."
+            body_file="$RUNNER_TEMP/pr-body.md"
+            {
+              echo "Automated: crates/pyenv/python-build updated from pyenv $TAG ($SHA) by ci/sync_python_build.py."
+              echo
+              echo "Before merging:"
+              echo
+              echo "- [ ] Bump \`PYENV_SHA\` in \`.github/workflows/parity.yml\` to \`$SHA\`."
+              echo "- [ ] Regenerate the parity goldens (\`python parity/diff.py ... --update-golden\`) and review them."
+              echo "- [ ] Re-run the bats suite (\`parity/bats_run.sh\`) and update \`parity/expected/bats.txt\`."
+              echo "- [ ] Run \`cargo test\` and update any test that names a vendored version."
+              echo "- [ ] Start CI: this pull request was created with \`GITHUB_TOKEN\`, which triggers no run. Push a commit to \`$branch\`, or close and reopen the pull request."
+            } > "$body_file"
+            gh pr create --base main --head "$branch" --title "Sync python-build definitions with pyenv $TAG" --body-file "$body_file"
           else
             echo "a pull request for $branch already exists"
           fi

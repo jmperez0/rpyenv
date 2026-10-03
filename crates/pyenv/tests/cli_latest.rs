@@ -48,11 +48,18 @@ fn a_staging_name_is_not_a_match_for_its_own_prefix() {
 #[test]
 fn known_mode_reads_the_vendored_definitions() {
     let f = Fixture::new();
+    // `3t`: the newest free-threaded 3.x definition in python-build's order, a pre-release
+    // one included (upstream's exclusion only sees names that end in a digit). Derived so a
+    // python-build sync keeps it valid (review I3).
+    let newest_3t = pyenv::install::defs::known(&|_| None)
+        .into_iter()
+        .rfind(|n| n.starts_with("3.") && n.ends_with('t') && !n.contains('-'))
+        .unwrap();
     for (prefix, want) in [
         ("3.12", "3.12.14"),
         ("3.1", "3.1.5"),
         ("3.14t", "3.14.7t"),
-        ("3t", "3.15.0rc2t"),
+        ("3t", newest_3t.as_str()),
         ("2", "2.7.18"),
         ("3.12-dev", "3.12-dev"),
     ] {

@@ -169,10 +169,32 @@ fn an_unknown_version_prints_upstreams_hint_and_exits_2() {
         (r.stderr.as_str(), r.code),
         ("python-build: definition not found: 9.9.9\n\nSee all available versions with `pyenv install --list'.\n\nIf the version you need is missing, try upgrading pyenv.\n", 2)
     );
-    let r = run(&f, &["install", "3.15.0"], &[]);
+    // A release whose pre-releases are defined but which is not (`3.15.0` beside
+    // `3.15.0rc2`), derived from the definitions so a python-build sync keeps it valid.
+    let bare = run(&f, &["install", "--list", "--bare"], &[]).stdout;
+    let names: Vec<&str> = bare.lines().collect();
+    let query = names
+        .iter()
+        .rev()
+        .find_map(|n| {
+            let base = &n[..n.find(|c: char| c.is_ascii_alphabetic())?];
+            let parts: Vec<&str> = base.split('.').collect();
+            let numeric = parts.len() == 3
+                && parts
+                    .iter()
+                    .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()));
+            (numeric && !names.contains(&base)).then_some(base)
+        })
+        .expect("a pre-release whose release is not defined");
+    let containing: String = names
+        .iter()
+        .filter(|n| n.contains(query))
+        .map(|n| format!("  {n}\n"))
+        .collect();
+    let r = run(&f, &["install", query], &[]);
     assert_eq!(
-        r.stderr,
-        "python-build: definition not found: 3.15.0\n\nThe following versions contain `3.15.0' in the name:\n  3.15.0rc2\n  3.15.0rc2t\n\nSee all available versions with `pyenv install --list'.\n\nIf the version you need is missing, try upgrading pyenv.\n"
+        (r.stderr, r.code),
+        (format!("python-build: definition not found: {query}\n\nThe following versions contain `{query}' in the name:\n{containing}\nSee all available versions with `pyenv install --list'.\n\nIf the version you need is missing, try upgrading pyenv.\n"), 2)
     );
 }
 
@@ -225,11 +247,18 @@ fn usage_errors_and_version() {
     assert_eq!(r.code, 1, "options are handled in order");
     let r = run(&f, &["install", "--help", "-x"], &[]);
     assert_eq!(r.code, 0);
+    // The version is UPSTREAM's third field (`pyenv <commit> <version>`), so a python-build
+    // sync updates it (review I3).
+    let upstream = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("python-build/UPSTREAM"),
+    )
+    .unwrap();
+    let version = upstream.split_whitespace().nth(2).unwrap();
     let r = run(&f, &["install", "--version"], &[]);
     assert_eq!(
         r.stdout,
         format!(
-            "python-build 2.8.6 (rpyenv {})\n",
+            "python-build {version} (rpyenv {})\n",
             env!("CARGO_PKG_VERSION")
         )
     );
