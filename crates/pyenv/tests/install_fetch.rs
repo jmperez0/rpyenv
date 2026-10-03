@@ -221,10 +221,15 @@ fn a_stalled_download_is_abandoned_and_retried() {
     )]);
     let d = tempfile::tempdir().unwrap();
     let mut f = fetcher(NO_MIRROR, None);
-    f.stall_timeout = std::time::Duration::from_millis(500);
+    f.stall_timeout = std::time::Duration::from_millis(2000);
     let t = std::time::Instant::now();
     let g = get(&f, s.url("/pkg-1.0.tar.gz"), &sum(), d.path());
     assert!(g.result.is_ok(), "{:?} {}", g.said, g.log);
+    // Hits are counted on the server thread, so allow it a moment.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while s.hits("/pkg-1.0.tar.gz") < 2 && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
     assert_eq!(s.hits("/pkg-1.0.tar.gz"), 2);
     assert!(
         t.elapsed() < std::time::Duration::from_secs(10),
@@ -290,4 +295,63 @@ fn a_malformed_expected_checksum_is_refused_up_front() {
     );
     assert!(matches!(g.result, Err(InstallError::Message(_))));
     assert_eq!(s.hits("/pkg-1.0.tar.gz"), 0);
+}
+
+#[test]
+fn an_abandoned_attempt_leaves_no_part_file() {
+    let s = start(vec![(
+        "/pkg-1.0.tar.gz",
+        vec![Reply::Stall(BODY.to_vec()), Reply::Body(BODY.to_vec())],
+    )]);
+    let d = tempfile::tempdir().unwrap();
+    let mut f = fetcher(NO_MIRROR, None);
+    f.stall_timeout = std::time::Duration::from_millis(2000);
+    let g = get(&f, s.url("/pkg-1.0.tar.gz"), &sum(), d.path());
+    assert!(g.result.is_ok(), "{:?} {}", g.said, g.log);
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let names: Vec<_> = std::fs::read_dir(d.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(names, vec!["pkg-1.0.tar.gz".to_string()]);
+}
+
+#[test]
+fn the_cache_gets_exactly_the_file_and_no_temp_file() {
+    let s = start(vec![("/pkg-1.0.tar.gz", vec![Reply::Body(BODY.to_vec())])]);
+    let cache = tempfile::tempdir().unwrap();
+    let d = tempfile::tempdir().unwrap();
+    let f = fetcher(NO_MIRROR, Some(cache.path().to_path_buf()));
+    assert!(get(&f, s.url("/pkg-1.0.tar.gz"), &sum(), d.path())
+        .result
+        .is_ok());
+    let names: Vec<_> = std::fs::read_dir(cache.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(names, vec!["pkg-1.0.tar.gz".to_string()]);
+}
+
+#[test]
+fn a_successful_mirror_head_is_logged() {
+    let sha = sum();
+    let mirror_path = format!("/m/{sha}");
+    let s = start(vec![(
+        mirror_path.as_str(),
+        vec![Reply::Body(BODY.to_vec())],
+    )]);
+    let d = tempfile::tempdir().unwrap();
+    let base = s.url("/m/");
+    let f = fetcher(&[("PYTHON_BUILD_MIRROR_URL", base.as_str())], None);
+    let g = get(&f, s.url("/pkg-1.0.tar.gz"), &sha, d.path());
+    assert!(g.result.is_ok());
+    assert!(
+        g.log.contains(&format!(
+            "mirror HEAD ok: {}
+",
+            s.url(&mirror_path)
+        )),
+        "{}",
+        g.log
+    );
 }

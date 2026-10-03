@@ -5,7 +5,7 @@ use super::checksum::sha256_file;
 use super::{interrupted, InstallError};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
@@ -233,20 +233,22 @@ impl Fetcher {
                 Err(e) => Attempt::Final(e.to_string()),
             };
         }
-        let progress = Arc::new(AtomicU64::new(0));
+        let shared = Arc::new(Shared::default());
         let (tx, rx) = mpsc::channel();
         {
-            let (agent, url, part, progress) = (
+            let (agent, url, part, shared) = (
                 self.agent.clone(),
                 url.to_string(),
                 part.to_path_buf(),
-                progress.clone(),
+                shared.clone(),
             );
             std::thread::spawn(move || {
-                let _ = tx.send(transfer(&agent, &url, &part, &progress));
+                let _ = tx.send(transfer(&agent, &url, &part, &shared));
             });
         }
-        let mut last = (0u64, Instant::now());
+        // The stall clock starts when the response headers arrive; before that the attempt is
+        // bounded by the agent's connect and response timeouts.
+        let mut last: Option<(u64, Instant)> = None;
         loop {
             match rx.recv_timeout(Duration::from_millis(100)) {
                 Ok(done) => return done,
@@ -256,19 +258,38 @@ impl Fetcher {
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
             }
             if interrupted() {
+                shared.abandoned.store(true, Ordering::SeqCst);
                 return Attempt::Final("interrupted".into());
             }
-            let n = progress.load(Ordering::Relaxed);
-            if n != last.0 {
-                last = (n, Instant::now());
-            } else if last.1.elapsed() >= self.stall_timeout {
-                return Attempt::Transient(format!(
-                    "no data for {} s",
-                    self.stall_timeout.as_secs_f32()
-                ));
+            if !shared.headers.load(Ordering::SeqCst) {
+                continue;
+            }
+            let n = shared.progress.load(Ordering::SeqCst);
+            match &mut last {
+                Some((seen, at)) if *seen == n => {
+                    if at.elapsed() >= self.stall_timeout {
+                        shared.abandoned.store(true, Ordering::SeqCst);
+                        return Attempt::Transient(format!(
+                            "no data for {} s",
+                            self.stall_timeout.as_secs_f32()
+                        ));
+                    }
+                }
+                _ => last = Some((n, Instant::now())),
             }
         }
     }
+}
+
+/// State shared between an attempt and its worker thread.
+#[derive(Default)]
+struct Shared {
+    /// Bytes written so far.
+    progress: AtomicU64,
+    /// The response headers have arrived.
+    headers: AtomicBool,
+    /// The attempt gave up on this worker: it must stop and remove its own `.part`.
+    abandoned: AtomicBool,
 }
 
 #[derive(PartialEq, Eq)]
@@ -287,7 +308,22 @@ fn is_transient(e: &ureq::Error) -> bool {
     matches!(e, Io(_) | Timeout(_) | ConnectionFailed | HostNotFound)
 }
 
-fn transfer(agent: &ureq::Agent, url: &str, part: &Path, progress: &AtomicU64) -> Attempt {
+/// Removes the worker's `.part` on every exit if the attempt abandoned it.
+struct PartGuard<'a> {
+    part: &'a Path,
+    shared: &'a Shared,
+}
+
+impl Drop for PartGuard<'_> {
+    fn drop(&mut self) {
+        if self.shared.abandoned.load(Ordering::SeqCst) {
+            let _ = std::fs::remove_file(self.part);
+        }
+    }
+}
+
+fn transfer(agent: &ureq::Agent, url: &str, part: &Path, shared: &Shared) -> Attempt {
+    let _guard = PartGuard { part, shared };
     let mut resp = match agent.get(url).call() {
         Ok(r) => r,
         Err(ureq::Error::StatusCode(code)) if code >= 500 => {
@@ -297,19 +333,23 @@ fn transfer(agent: &ureq::Agent, url: &str, part: &Path, progress: &AtomicU64) -
         Err(e) if is_transient(&e) => return Attempt::Transient(e.to_string()),
         Err(e) => return Attempt::Final(e.to_string()),
     };
+    shared.headers.store(true, Ordering::SeqCst);
     let Ok(mut out) = std::fs::File::create(part) else {
         return Attempt::Final(format!("cannot create {}", part.display()));
     };
     let mut reader = resp.body_mut().with_config().limit(MAX_DOWNLOAD).reader();
     let mut buf = vec![0u8; 1 << 16];
     loop {
+        if shared.abandoned.load(Ordering::SeqCst) {
+            return Attempt::Final("abandoned".into());
+        }
         match reader.read(&mut buf) {
             Ok(0) => return Attempt::Ok,
             Ok(n) => {
                 if let Err(e) = out.write_all(&buf[..n]) {
                     return Attempt::Final(e.to_string());
                 }
-                progress.fetch_add(n as u64, Ordering::Relaxed);
+                shared.progress.fetch_add(n as u64, Ordering::SeqCst);
             }
             Err(e) => {
                 let inner = e.get_ref().and_then(|i| i.downcast_ref::<ureq::Error>());
