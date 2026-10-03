@@ -452,7 +452,12 @@ instructions, as upstream does.
 - **`:latest` (M2).** `pyenv install 3.12:latest` installs the newest
   matching release. Candidates exclude `-dev`, `-src`, pre-releases
   (`a`/`b`/`rc`), and free-threaded builds (`t` suffix), and are sorted by
-  version number, the same filters as upstream's `install/latest.bash` hook.
+  version number. Upstream's `install/latest.bash` hook differs in three ways
+  that are defects, not contract (measured 2026-10-03,
+  `docs/parity/pyenv-m2-reference.md`): it matches the prefix as a plain
+  substring (`3.1:latest` installs 3.14.x), keeps alpha releases, and sorts on
+  three fields only. rpyenv matches at a version boundary, as `pyenv latest`
+  does, and each difference gets an allowlist row.
   How other version prefixes are handled follows upstream's `pyenv-install`,
   pinned by the parity tests.
 - **Default packages** (the pyenv-default-packages plugin's behavior, built
