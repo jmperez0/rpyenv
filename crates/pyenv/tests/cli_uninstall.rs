@@ -183,3 +183,101 @@ fn ctrl_c_at_the_remove_prompt_exits_130() {
     );
     assert!(f.root.join("versions/3.11.0").is_dir());
 }
+
+/// Path-escape arguments must never delete anything above `versions/<name>`. The root sits
+/// five levels inside a dedicated tempdir T with a canary file at every level, and every
+/// argument resolves inside T at worst, so even a broken build cannot touch anything else.
+#[test]
+fn escaping_arguments_remove_nothing_outside_a_version() {
+    let t = tempfile::tempdir().unwrap();
+    let t_path = t.path().to_path_buf();
+    let l2 = t_path.join("l1/l2");
+    let root = l2.join("l3/l4/root");
+    let work = t_path.join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    for v in ["u2", "u3"] {
+        std::fs::create_dir_all(root.join("versions").join(v).join("bin")).unwrap();
+    }
+    let mut canaries = Vec::new();
+    for d in [
+        t_path.clone(),
+        t_path.join("l1"),
+        l2.clone(),
+        l2.join("l3"),
+        l2.join("l3/l4"),
+        root.clone(),
+    ] {
+        let c = d.join("canary");
+        std::fs::write(&c, "x").unwrap();
+        canaries.push(c);
+    }
+    let f = Fixture::new();
+    let root_s = root.display().to_string();
+    let absolute = format!("{}/..", l2.display());
+    let args: Vec<String> = [
+        "u2/..",
+        "../../..",
+        "../..",
+        "u2/",
+        "u2/.",
+        "../versions/..",
+        &absolute,
+    ]
+    .iter()
+    .map(|a| a.to_string())
+    .collect();
+    for a in &args {
+        for flags in [&["uninstall", "-f"][..], &["uninstall"]] {
+            let mut cmd = f.command(
+                std::path::Path::new(env!("CARGO_BIN_EXE_pyenv")),
+                &work,
+                &[("PYENV_ROOT", root_s.as_str())],
+            );
+            let out = cmd
+                .args(flags)
+                .arg(a)
+                .stdin(std::process::Stdio::null())
+                .output()
+                .unwrap();
+            assert!(out.stdout.is_empty(), "{a} {flags:?}");
+            for c in &canaries {
+                assert!(c.is_file(), "{a} {flags:?}: {} gone", c.display());
+            }
+            for v in ["u2", "u3"] {
+                assert!(
+                    root.join("versions").join(v).join("bin").is_dir(),
+                    "{a}: {v}"
+                );
+            }
+        }
+    }
+}
+
+/// An install of the same name holds `<root>/.locks/install-<name>`; uninstall refuses.
+#[test]
+fn uninstall_refuses_while_an_install_of_that_name_runs() {
+    let f = Fixture::new();
+    f.version("3.11.0");
+    let versions = f.root.join("versions");
+    let txn = pyenv::install::txn::Txn::begin(&versions, "3.11.0").unwrap();
+    let r = f.pyenv(&["uninstall", "-f", "3.11.0"]);
+    assert_eq!(
+        (r.stdout.as_str(), r.stderr.as_str(), r.code),
+        (
+            "",
+            format!(
+                "pyenv: an install of 3.11.0 is in progress ({})\n",
+                f.root.join(".locks/install-3.11.0").display()
+            )
+            .as_str(),
+            1
+        )
+    );
+    assert!(versions.join("3.11.0").is_dir());
+    drop(txn);
+    let r = f.pyenv(&["uninstall", "-f", "3.11.0"]);
+    assert_eq!(
+        (r.stdout.as_str(), r.code),
+        ("pyenv: 3.11.0 uninstalled\n", 0)
+    );
+}

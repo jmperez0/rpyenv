@@ -5,7 +5,6 @@ use crate::install::{interrupted, prompt, watch_interrupt, Reply};
 use crate::output::Output;
 use rpyenv_core::ctx::Ctx;
 use rpyenv_core::installed::is_staging_name;
-use std::path::Path;
 
 pub const HELP: &str = "Usage: pyenv uninstall [-f|--force] <version> ...\n\n   -f  Attempt to remove the specified version without prompting\n       for confirmation. If the version does not exist, do not\n       display an error message.\n\nSee `pyenv versions` for a complete list of installed versions.\n\n";
 pub const USAGE: &str = "Usage: pyenv uninstall [-f|--force] <version> ...";
@@ -18,11 +17,14 @@ fn usage() -> Output {
     }
 }
 
-/// Names that are not one real version directory: rpyenv's own staging directories (they
-/// may belong to a running install) and `.`/`..` (upstream's `rm -rf` would take
-/// `versions/` or the root). They count as not installed.
-fn not_a_version(name: &str) -> bool {
-    name.is_empty() || name == "." || name == ".." || is_staging_name(name)
+/// The version name for an argument, as upstream's `${arg##*/}`: the text after the last
+/// `/`. Pure, never touches the filesystem and never falls back to the raw argument.
+/// `None` (treated as not installed) for an empty name (`u1/`, `/`), `.`, `..`, a NUL byte,
+/// and rpyenv's own staging directories, which may belong to a running install.
+fn version_name(arg: &str) -> Option<&str> {
+    let name = arg.rsplit('/').next().unwrap_or("");
+    let bad = name.is_empty() || name == "." || name == ".." || name.contains('\0');
+    (!bad && !is_staging_name(name)).then_some(name)
 }
 
 pub fn uninstall(ctx: &Ctx, args: &[&str]) -> Output {
@@ -54,15 +56,19 @@ pub fn uninstall(ctx: &Ctx, args: &[&str]) -> Output {
         if interrupted() {
             return out.with_code(130);
         }
-        let name = Path::new(v)
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| (*v).to_string());
-        let prefix = ctx.versions_dir().join(&name);
-        let present = !not_a_version(&name) && prefix.is_dir();
+        let name = version_name(v);
+        let versions_dir = ctx.versions_dir();
+        // Second guard: the target must be a direct child of `versions/`.
+        let prefix = name
+            .map(|n| versions_dir.join(n))
+            .filter(|p| p.parent() == Some(versions_dir.as_path()));
+        let present = prefix.as_ref().is_some_and(|p| p.is_dir());
+        let shown = name.unwrap_or(v);
+        let prefix = prefix.unwrap_or_default();
+        let name = name.unwrap_or_default();
         if !force {
             if !present {
-                out.err(format!("pyenv: version `{name}' not installed"));
+                out.err(format!("pyenv: version `{shown}' not installed"));
                 return out.with_code(1);
             }
             match prompt(&format!("pyenv: remove {}? (y/N) ", prefix.display())) {
@@ -73,6 +79,21 @@ pub fn uninstall(ctx: &Ctx, args: &[&str]) -> Output {
             }
         }
         if present {
+            // An install of this name holds the same lock; do not pull its version away.
+            let lock_path = ctx.root.join(".locks").join(format!("install-{name}"));
+            let lock = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&lock_path);
+            if let Ok(l) = &lock {
+                if matches!(l.try_lock(), Err(std::fs::TryLockError::WouldBlock)) {
+                    out.err(format!(
+                        "pyenv: an install of {name} is in progress ({})",
+                        lock_path.display()
+                    ));
+                    return out.with_code(1);
+                }
+            }
             let is_link = prefix
                 .symlink_metadata()
                 .map(|m| m.file_type().is_symlink())
@@ -86,6 +107,7 @@ pub fn uninstall(ctx: &Ctx, args: &[&str]) -> Output {
                 out.err(format!("pyenv: cannot remove {}: {e}", prefix.display()));
                 return out.with_code(1);
             }
+            drop(lock);
             let r = crate::commands::rehash::rehash(ctx, &[]);
             out.stderr.push_str(&r.stderr);
             if r.code != 0 {
@@ -95,4 +117,32 @@ pub fn uninstall(ctx: &Ctx, args: &[&str]) -> Output {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::version_name;
+
+    #[test]
+    fn names_come_from_the_text_after_the_last_slash_and_never_from_the_argument() {
+        for refused in [
+            "/",
+            "/tmp/..",
+            "u2/..",
+            "../../..",
+            "u1/",
+            "u1/.",
+            ".",
+            "..",
+            "",
+            ".tmp-3.12.0",
+            "a/.old-3.12.0",
+            "u\0x",
+        ] {
+            assert_eq!(version_name(refused), None, "{refused:?}");
+        }
+        assert_eq!(version_name("../x"), Some("x"));
+        assert_eq!(version_name("/some/where/u4"), Some("u4"));
+        assert_eq!(version_name("3.11.0"), Some("3.11.0"));
+    }
 }
