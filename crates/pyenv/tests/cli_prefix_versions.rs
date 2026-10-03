@@ -190,3 +190,19 @@ fn versions_lists_envs_by_name_when_versions_is_a_symlink() {
         r.stdout
     );
 }
+
+/// The installer's staging names (`versions/.tmp-*`, `.old-*`) are invisible; other dot
+/// directories still list, as upstream's `dotglob` lists them (plan Decision 4).
+#[cfg(unix)]
+#[test]
+fn installer_staging_names_are_not_versions() {
+    let f = Fixture::new();
+    f.version("3.12.0")
+        .version(".tmp-3.13.0")
+        .version(".old-3.11.0")
+        .version(".hidden");
+    let r = f.pyenv(&["versions", "--bare"]);
+    let mut lines: Vec<&str> = r.stdout.lines().collect();
+    lines.sort_unstable();
+    assert_eq!((lines, r.code), (vec![".hidden", "3.12.0"], 0));
+}

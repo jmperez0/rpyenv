@@ -16,6 +16,10 @@ rpyenv-core.workspace = true
 ureq = { version = "3.4.2", default-features = false, features = ["rustls", "platform-verifier"] }
 sha2 = "0.11.0"
 ctrlc = "3.5.2"
+flate2 = "1.1.10"
+bzip2 = "0.6.1"
+lzma-rust2 = "0.21.0"
+tar = "0.4.46"
 
 [dev-dependencies]
 tempfile.workspace = true

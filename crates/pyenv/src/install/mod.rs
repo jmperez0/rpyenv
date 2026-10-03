@@ -1,8 +1,10 @@
 //! The installer (spec §9): downloads, extraction, the install transaction, python-build
 //! definitions and the Linux source build.
 
+pub mod archive;
 pub mod checksum;
 pub mod fetch;
+pub mod txn;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
