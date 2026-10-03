@@ -333,10 +333,11 @@ fn transfer(agent: &ureq::Agent, url: &str, part: &Path, shared: &Shared) -> Att
         Err(e) if is_transient(&e) => return Attempt::Transient(e.to_string()),
         Err(e) => return Attempt::Final(e.to_string()),
     };
-    shared.headers.store(true, Ordering::SeqCst);
     let Ok(mut out) = std::fs::File::create(part) else {
         return Attempt::Final(format!("cannot create {}", part.display()));
     };
+    // After the file exists, so the stall clock measures only network silence.
+    shared.headers.store(true, Ordering::SeqCst);
     let mut reader = resp.body_mut().with_config().limit(MAX_DOWNLOAD).reader();
     let mut buf = vec![0u8; 1 << 16];
     loop {
@@ -417,5 +418,39 @@ mod tests {
             with(&[("PYTHON_BUILD_SKIP_MIRROR", "1")]).mirror_url("https://a/b", "ab"),
             None
         );
+    }
+
+    #[test]
+    fn an_abandoned_worker_removes_its_own_part_file() {
+        use std::io::{BufRead, BufReader};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!(
+            "http://127.0.0.1:{}/f",
+            listener.local_addr().unwrap().port()
+        );
+        std::thread::spawn(move || {
+            let (mut c, _) = listener.accept().unwrap();
+            let mut r = BufReader::new(c.try_clone().unwrap());
+            loop {
+                let mut l = String::new();
+                if r.read_line(&mut l).unwrap_or(0) == 0 || l == "\r\n" {
+                    break;
+                }
+            }
+            let _ = c.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nabcd",
+            );
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let part = dir.path().join("f.part1");
+        let shared = Shared::default();
+        // Abandoned before it starts: it still creates the file, then must stop and clean up.
+        shared.abandoned.store(true, Ordering::SeqCst);
+        let agent: ureq::Agent = ureq::Agent::config_builder().build().into();
+        assert!(matches!(
+            transfer(&agent, &url, &part, &shared),
+            Attempt::Final(_)
+        ));
+        assert!(!part.exists(), "the abandoned worker left its part file");
     }
 }

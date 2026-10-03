@@ -299,16 +299,22 @@ fn a_malformed_expected_checksum_is_refused_up_front() {
 
 #[test]
 fn an_abandoned_attempt_leaves_no_part_file() {
+    // The abandoned worker wakes after 3 s, finishes writing and exits; nothing may remain.
+    let pause = std::time::Duration::from_secs(3);
     let s = start(vec![(
         "/pkg-1.0.tar.gz",
-        vec![Reply::Stall(BODY.to_vec()), Reply::Body(BODY.to_vec())],
+        vec![
+            Reply::StallThenFinish(BODY.to_vec(), pause),
+            Reply::Body(BODY.to_vec()),
+        ],
     )]);
     let d = tempfile::tempdir().unwrap();
     let mut f = fetcher(NO_MIRROR, None);
-    f.stall_timeout = std::time::Duration::from_millis(2000);
+    f.stall_timeout = std::time::Duration::from_secs(1);
     let g = get(&f, s.url("/pkg-1.0.tar.gz"), &sum(), d.path());
     assert!(g.result.is_ok(), "{:?} {}", g.said, g.log);
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    assert_eq!(s.hits("/pkg-1.0.tar.gz"), 2, "{}", g.log);
+    std::thread::sleep(pause + std::time::Duration::from_secs(1));
     let names: Vec<_> = std::fs::read_dir(d.path())
         .unwrap()
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())

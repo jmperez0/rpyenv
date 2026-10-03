@@ -16,6 +16,9 @@ pub enum Reply {
     Truncated(Vec<u8>),
     /// 200 announcing the full length, sending the first half, then sleeping 30 s without closing.
     Stall(Vec<u8>),
+    /// 200 announcing the full length, sending the first half, sleeping this long, then sending
+    /// the rest and closing.
+    StallThenFinish(Vec<u8>, std::time::Duration),
 }
 
 pub struct Server {
@@ -101,6 +104,23 @@ pub fn start(routes: Vec<(&str, Vec<Reply>)>) -> Server {
                     } else {
                         stream.write_all(&b[..b.len() / 2])
                     }
+                }
+                Reply::StallThenFinish(b, pause) => {
+                    let _ = write!(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        b.len()
+                    );
+                    if !head {
+                        let _ = stream.write_all(&b[..b.len() / 2]);
+                        let _ = stream.flush();
+                        std::thread::spawn(move || {
+                            std::thread::sleep(pause);
+                            let _ = stream.write_all(&b[b.len() / 2..]);
+                            let _ = stream.flush();
+                        });
+                    }
+                    Ok(())
                 }
                 Reply::Stall(b) => {
                     let _ = write!(
