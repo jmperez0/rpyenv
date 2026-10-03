@@ -39,4 +39,9 @@ jobs:
           git add crates/pyenv/python-build
           git commit -m "Sync python-build definitions with pyenv $TAG"
           git push -f origin "$branch"
-          gh pr create --base main --head "$branch" --title "Sync python-build definitions with pyenv $TAG" --body "Automated: crates/pyenv/python-build updated from pyenv $TAG ($SHA) by ci/sync_python_build.py." || echo "a pull request for $branch already exists"
+          existing=$(gh pr list --head "$branch" --state open --json number --jq 'length')
+          if [ "$existing" = "0" ]; then
+            gh pr create --base main --head "$branch" --title "Sync python-build definitions with pyenv $TAG" --body "Automated: crates/pyenv/python-build updated from pyenv $TAG ($SHA) by ci/sync_python_build.py."
+          else
+            echo "a pull request for $branch already exists"
+          fi

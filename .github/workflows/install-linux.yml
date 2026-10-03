@@ -7,6 +7,10 @@ on:
       - "crates/pyenv/src/install/**"
       - "crates/pyenv/src/commands/install.rs"
       - "crates/pyenv/src/commands/uninstall.rs"
+      - "crates/pyenv/src/commands/latest.rs"
+      - "crates/pyenv/Cargo.toml"
+      - "crates/rpyenv-core/**"
+      - "Cargo.lock"
       - "crates/pyenv/python-build/**"
       - "crates/pyenv/build.rs"
       - "ci/check_install.sh"
@@ -31,8 +35,10 @@ jobs:
           toolchain: "1.96"
       - run: cargo build --release -p pyenv
       - id: pick
+        env:
+          EVENT: ${{ github.event_name }}
         run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
+          if [ "$EVENT" = "pull_request" ]; then
             echo 'list=["3.12.14"]' >> "$GITHUB_OUTPUT"
           else
             list=$(for m in 3.9 3.10 3.11 3.12 3.13 3.14 3.14t; do target/release/pyenv latest -k "$m"; done | python3 -c 'import json,sys; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))')
@@ -59,15 +65,35 @@ jobs:
           sudo apt-get install -yq make build-essential libssl-dev zlib1g-dev libbz2-dev libreadline-dev libsqlite3-dev curl git llvm libncurses5-dev libncursesw5-dev xz-utils tk-dev libxml2-dev libxmlsec1-dev libffi-dev liblzma-dev libzstd-dev ccache
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ~/.cache/ccache
+          path: ${{ github.workspace }}/.ccache
           key: ccache-${{ matrix.version }}-${{ github.run_id }}
           restore-keys: ccache-${{ matrix.version }}-
       - run: cargo build --release -p pyenv -p pyenv-shim
       - name: pyenv install ${{ matrix.version }}
         env:
           CC: ccache gcc
+          CCACHE_DIR: ${{ github.workspace }}/.ccache
+          VERSION: ${{ matrix.version }}
         run: |
           start=$(date +%s)
-          PYENV_ROOT="$RUNNER_TEMP/root" target/release/pyenv install "${{ matrix.version }}"
-          echo "| ${{ matrix.version }} | $(( $(date +%s) - start )) s |" >> "$GITHUB_STEP_SUMMARY"
-      - run: bash ci/check_install.sh "$RUNNER_TEMP/root" "${{ matrix.version }}"
+          trap 'echo "$VERSION $(( $(date +%s) - start ))" > "$RUNNER_TEMP/install-seconds"' EXIT
+          PYENV_ROOT="$RUNNER_TEMP/root" target/release/pyenv install "$VERSION"
+      - name: Record the build time
+        if: always()
+        env:
+          VERSION: ${{ matrix.version }}
+        run: |
+          if [ -f "$RUNNER_TEMP/install-seconds" ]; then
+            read -r _ secs < "$RUNNER_TEMP/install-seconds"
+          else
+            secs="n/a"
+          fi
+          {
+            echo "| version | seconds |"
+            echo "| --- | --- |"
+            echo "| $VERSION | $secs |"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Check the install
+        env:
+          VERSION: ${{ matrix.version }}
+        run: bash ci/check_install.sh "$RUNNER_TEMP/root" "$VERSION"
