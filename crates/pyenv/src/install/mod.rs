@@ -21,7 +21,25 @@ pub mod verify;
 #[cfg(unix)]
 pub use reply::{prompt, Reply};
 
+use std::ffi::OsStr;
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Whether `name` is exactly one plain path component: not empty, `.` or `..`, no root or
+/// drive, and no `/` or `\` (review I2). Package, file and version names are joined to
+/// directories whose results are written and deleted.
+pub fn is_plain_name(name: &str) -> bool {
+    let mut c = Path::new(name).components();
+    matches!((c.next(), c.next()), (Some(Component::Normal(_)), None))
+        && !name.contains(['/', '\\'])
+}
+
+/// `dir/name`, but only when that is a direct child of `dir` (the second guard before a
+/// path built from a name is written or deleted).
+pub fn child_of(dir: &Path, name: &str) -> Option<PathBuf> {
+    let p = dir.join(name);
+    (p.parent() == Some(dir) && p.file_name() == Some(OsStr::new(name))).then_some(p)
+}
 
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 

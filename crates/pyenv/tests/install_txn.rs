@@ -103,6 +103,30 @@ fn parent_and_absolute_paths_are_refused() {
     }
 }
 
+/// The package name is checked again where it is joined to the build directory (review
+/// I2). Every escape here points inside the tempdir, at canaries.
+#[test]
+fn a_package_name_that_leaves_the_build_directory_is_refused() {
+    let d = tempfile::tempdir().unwrap();
+    let build = d.path().join("build");
+    std::fs::create_dir(&build).unwrap();
+    std::fs::create_dir(d.path().join("victim")).unwrap();
+    std::fs::write(d.path().join("victim/canary"), "c").unwrap();
+    std::fs::create_dir(d.path().join("abs")).unwrap();
+    std::fs::write(d.path().join("abs/canary"), "c").unwrap();
+    std::fs::write(build.join("canary"), "c").unwrap();
+    let a = write(d.path(), "a.tar.gz", &tgz(&[("top/f", b"1")]));
+    let abs = d.path().join("abs").display().to_string();
+    for name in ["../victim", abs.as_str(), "..", ".", "a/b", ""] {
+        let err = extract(&a, Kind::Gz, &build, name).unwrap_err();
+        assert!(err.contains("invalid package name"), "{name}: {err}");
+    }
+    assert!(d.path().join("victim/canary").is_file());
+    assert!(d.path().join("abs/canary").is_file());
+    assert!(build.join("canary").is_file());
+    assert!(a.is_file());
+}
+
 // allowlist D-72
 #[cfg(unix)]
 #[test]
@@ -274,6 +298,24 @@ fn begin_finishes_an_interrupted_carry_over() {
     assert!(versions.join("3.12.0/envs/e/pyvenv.cfg").is_file());
     assert!(!versions.join(".old-3.12.0").exists());
     drop(t);
+}
+
+/// The version name must be one directory under `versions/` (review I2); nothing is
+/// created before the check.
+#[test]
+fn begin_refuses_a_name_that_is_not_one_plain_component() {
+    let root = tempfile::tempdir().unwrap();
+    let versions = root.path().join("versions");
+    std::fs::create_dir(&versions).unwrap();
+    std::fs::create_dir(root.path().join("x")).unwrap();
+    std::fs::write(root.path().join("x/canary"), "c").unwrap();
+    for name in ["../x", "..", ".", "a/b", ""] {
+        let err = Txn::begin(&versions, name).err().unwrap();
+        assert_eq!(err, format!("pyenv: invalid version name: {name}"));
+    }
+    assert!(root.path().join("x/canary").is_file());
+    assert!(!root.path().join(".locks").exists());
+    assert_eq!(std::fs::read_dir(&versions).unwrap().count(), 0);
 }
 
 #[test]

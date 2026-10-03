@@ -27,6 +27,10 @@ pub struct Txn {
 
 impl Txn {
     pub fn begin(versions: &Path, name: &str) -> Result<Txn, String> {
+        // Every path below is `versions/<prefix><name>` and some are deleted (review I2).
+        if !super::is_plain_name(name) {
+            return Err(format!("pyenv: invalid version name: {name}"));
+        }
         std::fs::create_dir_all(versions)
             .map_err(|e| format!("pyenv: cannot create {}: {e}", versions.display()))?;
         let locks = versions.parent().unwrap_or(versions).join(".locks");

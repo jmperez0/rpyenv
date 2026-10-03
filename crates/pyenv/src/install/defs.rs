@@ -484,6 +484,12 @@ fn run(
                         fragment: f.map(str::to_string),
                     }
                 };
+                if !super::is_plain_name(&w[1]) {
+                    return Err(format!(
+                        "{}: line {n}: invalid package name: {}",
+                        found.name, w[1]
+                    ));
+                }
                 def.packages.push(Package {
                     name: w[1].clone(),
                     fetch,

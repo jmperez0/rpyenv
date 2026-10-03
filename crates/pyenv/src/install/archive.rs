@@ -74,13 +74,16 @@ impl Drop for Scratch {
 }
 
 /// Extracts into `build_dir/<name>` and returns that path. An existing `build_dir/<name>`
-/// is replaced.
+/// is replaced, so `name` must make a direct child of `build_dir`.
 pub fn extract(
     archive: &Path,
     kind: Kind,
     build_dir: &Path,
     name: &str,
 ) -> Result<PathBuf, String> {
+    let Some(dest) = super::child_of(build_dir, name) else {
+        return Err(format!("invalid package name: {name}"));
+    };
     let scratch = build_dir.join(format!(".extract-{name}"));
     let _ = std::fs::remove_dir_all(&scratch);
     std::fs::create_dir_all(&scratch).map_err(|e| format!("{}: {e}", scratch.display()))?;
@@ -123,7 +126,6 @@ pub fn extract(
         Ok(())
     })();
     result?;
-    let dest = build_dir.join(name);
     let _ = std::fs::remove_dir_all(&dest);
     let tops: Vec<PathBuf> = std::fs::read_dir(&scratch)
         .map_err(|e| e.to_string())?

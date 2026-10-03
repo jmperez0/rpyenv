@@ -362,3 +362,35 @@ fn a_successful_mirror_head_is_logged() {
         g.log
     );
 }
+
+/// The file name is joined to the build directory and the cache (review I2): one that
+/// leaves them is refused before anything is downloaded or written.
+#[test]
+fn a_file_name_that_leaves_the_destination_is_refused() {
+    let s = start(vec![("/x", vec![Reply::Body(BODY.to_vec())])]);
+    let d = tempfile::tempdir().unwrap();
+    let dest = d.path().join("build");
+    let cache = d.path().join("cache");
+    std::fs::create_dir(&dest).unwrap();
+    std::fs::create_dir(&cache).unwrap();
+    std::fs::write(d.path().join("victim.tar.gz"), "canary").unwrap();
+    let f = fetcher(NO_MIRROR, Some(cache.clone()));
+    for name in ["../victim.tar.gz", "..", "a/b.tar.gz", ""] {
+        let req = FetchRequest {
+            file_name: name.into(),
+            url: s.url("/x"),
+            sha256: sum(),
+            dest_dir: dest.clone(),
+        };
+        let mut log = Vec::new();
+        let r = f.fetch(&req, &mut log, &mut |_: &str| {});
+        assert!(matches!(r, Err(InstallError::Message(_))), "{name}: {r:?}");
+    }
+    assert_eq!(s.hits("/x"), 0);
+    assert_eq!(
+        std::fs::read_to_string(d.path().join("victim.tar.gz")).unwrap(),
+        "canary"
+    );
+    assert_eq!(std::fs::read_dir(&dest).unwrap().count(), 0);
+    assert_eq!(std::fs::read_dir(&cache).unwrap().count(), 0);
+}

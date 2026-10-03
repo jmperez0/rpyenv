@@ -174,6 +174,36 @@ fn other_bash_is_refused_with_its_line() {
     );
 }
 
+/// A package name becomes `<build dir>/<name>`, which is extracted into and deleted
+/// (review I2): it must be one plain path component.
+#[test]
+fn a_package_name_that_is_not_one_plain_component_is_refused() {
+    for bad in ["../x", "/abs", "a/b", r"a\b", ".", "..", ""] {
+        for line in [
+            format!("install_package \"{bad}\" \"https://example.invalid/x.tgz\" standard"),
+            format!("install_git \"{bad}\" \"https://example.invalid/x.git\" main standard"),
+        ] {
+            let f = Found {
+                name: "3.99.0".into(),
+                text: format!("# comment\n{line}\n"),
+                origin: Origin::Path("/x".into()),
+            };
+            let err = defs::parse(&f, &no_env, &|_| None).unwrap_err();
+            assert_eq!(
+                err,
+                format!("3.99.0: line 2: invalid package name: {bad}"),
+                "{line}"
+            );
+        }
+    }
+    let ok = Found {
+        name: "3.99.0".into(),
+        text: "install_package \"Python-3.99.0\" \"https://example.invalid/x.tgz\"\n".into(),
+        origin: Origin::Path("/x".into()),
+    };
+    assert!(defs::parse(&ok, &no_env, &|_| None).is_ok());
+}
+
 #[test]
 fn the_listing_sorts_like_python_build() {
     let mut v: Vec<String> = [

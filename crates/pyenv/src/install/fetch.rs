@@ -118,7 +118,12 @@ impl Fetcher {
                 req.file_name, req.sha256
             )));
         }
-        let dest = req.dest_dir.join(&req.file_name);
+        let Some(dest) = super::child_of(&req.dest_dir, &req.file_name) else {
+            return Err(InstallError::Message(format!(
+                "pyenv: invalid file name: {}",
+                req.file_name
+            )));
+        };
         if let Some(cache) = &self.cache {
             let cached = cache.join(&req.file_name);
             if sha256_file(&cached).ok().as_deref() == Some(req.sha256.as_str()) {
@@ -152,8 +157,10 @@ impl Fetcher {
             }
         }
         if let Some(cache) = &self.cache {
-            if cache != &req.dest_dir {
-                let tmp = cache.join(format!("{}.tmp-{}", req.file_name, std::process::id()));
+            // The temporary name is checked like `dest` (review I2).
+            let tmp_name = format!("{}.tmp-{}", req.file_name, std::process::id());
+            let tmp = super::child_of(cache, &tmp_name).filter(|_| cache != &req.dest_dir);
+            if let Some(tmp) = tmp {
                 let stored = std::fs::copy(&dest, &tmp)
                     .and_then(|_| std::fs::rename(&tmp, cache.join(&req.file_name)));
                 if let Err(e) = stored {
