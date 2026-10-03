@@ -239,6 +239,42 @@ fn commit_carries_over_envs_and_site_packages_entries() {
     assert!(is_complete(&target));
 }
 
+/// Scripts pip put in `bin/` are carried over; entries in both trees keep the new tree's
+/// copy, and a symlink moves as a link (review follow-up F1b).
+// allowlist D-58
+#[test]
+fn commit_carries_over_bin_entries_the_new_tree_lacks() {
+    let root = tempfile::tempdir().unwrap();
+    let versions = root.path().join("versions");
+    let old = versions.join("3.12.0");
+    std::fs::create_dir_all(old.join("bin")).unwrap();
+    std::fs::write(old.join("bin/black"), "#!/x/bin/python3.12\n").unwrap();
+    std::fs::write(old.join("bin/python3.12"), "old python").unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink("black", old.join("bin/black-link")).unwrap();
+    let mut t = Txn::begin(&versions, "3.12.0").unwrap();
+    let staged = t.stage_dir().join("p");
+    std::fs::create_dir_all(staged.join("bin")).unwrap();
+    std::fs::write(staged.join("bin/python3.12"), "new python").unwrap();
+    t.place(&staged).unwrap();
+    t.commit().unwrap();
+    let bin = versions.join("3.12.0/bin");
+    assert_eq!(
+        std::fs::read_to_string(bin.join("black")).unwrap(),
+        "#!/x/bin/python3.12\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(bin.join("python3.12")).unwrap(),
+        "new python"
+    );
+    #[cfg(unix)]
+    assert_eq!(
+        std::fs::read_link(bin.join("black-link")).unwrap(),
+        std::path::PathBuf::from("black")
+    );
+    assert!(!versions.join(".old-3.12.0").exists());
+}
+
 /// The Windows layout (`Lib/site-packages`, for M2b) is carried over too, and a
 /// site-packages directory the new tree lacks is created.
 #[test]

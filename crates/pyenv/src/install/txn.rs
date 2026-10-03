@@ -150,16 +150,17 @@ impl Txn {
 }
 
 /// Moves what upstream's build over the old tree would have kept from `old` into the new
-/// tree `new`: `envs/` (pyenv-virtualenv) when `new` has none, and each site-packages entry
-/// (`lib/python*/site-packages`, and `Lib/site-packages` for Windows) that `new` lacks.
-/// Entries in both keep `new`'s copy. Everything moves by rename, so a failure part way
-/// loses nothing: what has not moved is still in `old`.
+/// tree `new`: `envs/` (pyenv-virtualenv) when `new` has none, and each entry that `new`
+/// lacks in `bin/` (scripts pip installed) and in site-packages (`lib/python*/site-packages`,
+/// and `Lib/site-packages` for Windows). Entries in both keep `new`'s copy. Everything moves
+/// by rename, which moves a symlink as a link, so a failure part way loses nothing: what has
+/// not moved is still in `old`.
 fn carry_over(old: &Path, new: &Path) -> std::io::Result<()> {
     let envs = old.join("envs");
     if envs.symlink_metadata().is_ok() && new.join("envs").symlink_metadata().is_err() {
         std::fs::rename(&envs, new.join("envs"))?;
     }
-    let mut dirs: Vec<PathBuf> = Vec::new();
+    let mut dirs: Vec<PathBuf> = vec![PathBuf::from("bin")];
     if let Ok(rd) = std::fs::read_dir(old.join("lib")) {
         for e in rd.filter_map(Result::ok) {
             let name = e.file_name();

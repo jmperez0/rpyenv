@@ -117,7 +117,8 @@ fn skip_existing_is_silent_and_force_rebuilds() {
     let f = Fixture::new();
     let s = plugin_def(&f);
     f.version("3.12.99/bin");
-    f.file(&f.root.join("versions/3.12.99/bin/old"), "");
+    // Outside what the carry-over keeps (envs/, bin/, site-packages).
+    f.file(&f.root.join("versions/3.12.99/old"), "");
     let r = run(&f, &["install", "-sf", "3.12.99"], &[]);
     assert_eq!(
         (r.stdout.as_str(), r.stderr.as_str(), r.code),
@@ -128,7 +129,7 @@ fn skip_existing_is_silent_and_force_rebuilds() {
     assert_eq!(r.code, 0, "{}", r.stderr);
     assert_eq!(s.hits("/Python-3.12.99.tar.gz"), 1);
     assert!(
-        !f.root.join("versions/3.12.99/bin/old").exists(),
+        !f.root.join("versions/3.12.99/old").exists(),
         "replaced, not built over"
     );
 }
@@ -145,6 +146,9 @@ fn force_keeps_the_versions_envs_and_site_packages() {
     let p = f.root.join("versions/3.12.99");
     f.file(&p.join("lib/python3.12/site-packages/userpkg.py"), "user\n");
     f.file(&p.join("envs/myenv/pyvenv.cfg"), "home = x\n");
+    // A script pip put in the version's bin/ (review follow-up F1b).
+    f.exe("3.12.99/bin/black");
+    assert!(!f.root.join("shims/black").exists());
     let r = run(&f, &["install", "-f", "3.12.99"], &[]);
     assert_eq!(r.code, 0, "{}", r.stderr);
     assert_eq!(s.hits("/Python-3.12.99.tar.gz"), 2, "rebuilt");
@@ -157,6 +161,11 @@ fn force_keeps_the_versions_envs_and_site_packages() {
         "home = x\n"
     );
     assert!(p.join("bin/python3.12").is_file());
+    assert!(p.join("bin/black").is_file());
+    assert!(
+        f.root.join("shims/black").exists(),
+        "rehashed after the carry-over"
+    );
     assert!(staging_left(&f).is_empty(), "{:?}", staging_left(&f));
 }
 
