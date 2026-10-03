@@ -65,6 +65,14 @@ fn link_stays_inside(entry: &Path, target: &Path) -> bool {
     true
 }
 
+struct Scratch(PathBuf);
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 /// Extracts into `build_dir/<name>` and returns that path. An existing `build_dir/<name>`
 /// is replaced.
 pub fn extract(
@@ -76,9 +84,14 @@ pub fn extract(
     let scratch = build_dir.join(format!(".extract-{name}"));
     let _ = std::fs::remove_dir_all(&scratch);
     std::fs::create_dir_all(&scratch).map_err(|e| format!("{}: {e}", scratch.display()))?;
+    // Removes the scratch directory on every exit; after a successful rename it is gone
+    // already and this does nothing.
+    let _guard = Scratch(scratch.clone());
     let result = (|| {
         let mut ar = tar::Archive::new(reader(archive, kind).map_err(|e| e.to_string())?);
         ar.set_preserve_permissions(true);
+        // No setuid/setgid bits from an untrusted archive.
+        ar.set_mask(0o6000);
         for entry in ar.entries().map_err(|e| e.to_string())? {
             let mut entry = entry.map_err(|e| e.to_string())?;
             let path = entry.path().map_err(|e| e.to_string())?.into_owned();
@@ -109,10 +122,7 @@ pub fn extract(
         }
         Ok(())
     })();
-    if let Err(e) = result {
-        let _ = std::fs::remove_dir_all(&scratch);
-        return Err(e);
-    }
+    result?;
     let dest = build_dir.join(name);
     let _ = std::fs::remove_dir_all(&dest);
     let tops: Vec<PathBuf> = std::fs::read_dir(&scratch)
@@ -121,7 +131,11 @@ pub fn extract(
         .map(|e| e.path())
         .collect();
     let moved = match tops.as_slice() {
-        [only] if only.is_dir() => {
+        [only]
+            if std::fs::symlink_metadata(only)
+                .map(|m| m.file_type().is_dir())
+                .unwrap_or(false) =>
+        {
             std::fs::rename(only, &dest).and_then(|_| std::fs::remove_dir(&scratch))
         }
         _ => std::fs::rename(&scratch, &dest),

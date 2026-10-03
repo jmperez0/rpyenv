@@ -1,8 +1,7 @@
-//! The install transaction (spec §9.3, plan Decision 4): a per-name lock, a staging directory
+//! The install transaction (spec §9.3, plan Decision 4): a per-name OS lock, a staging directory
 //! inside `versions/`, a swap that keeps the previous version until commit, and rollback on
 //! drop.
 
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 /// Present in `versions/<name>` from the move until commit: a version that still has it
@@ -17,58 +16,53 @@ pub fn is_complete(dir: &Path) -> bool {
 pub struct Txn {
     versions: PathBuf,
     name: String,
-    lock: PathBuf,
+    /// Held for the transaction's life; the OS releases it on drop or crash. The file is
+    /// never deleted: deleting a lock file reintroduces the takeover race.
+    _lock: std::fs::File,
     stage: PathBuf,
     old: Option<PathBuf>,
     placed: bool,
     done: bool,
 }
 
-/// Whether the process that wrote `lock` may still run. Only Linux can tell (`/proc`);
-/// elsewhere a lock is never taken over (M2b handles Windows).
-fn holder_alive(lock: &Path) -> bool {
-    let Ok(text) = std::fs::read_to_string(lock) else {
-        return true;
-    };
-    let Ok(pid) = text.trim().parse::<u32>() else {
-        return true;
-    };
-    if cfg!(target_os = "linux") {
-        Path::new("/proc").join(pid.to_string()).exists()
-    } else {
-        true
-    }
-}
-
 impl Txn {
     pub fn begin(versions: &Path, name: &str) -> Result<Txn, String> {
         std::fs::create_dir_all(versions)
             .map_err(|e| format!("pyenv: cannot create {}: {e}", versions.display()))?;
-        let lock = versions.join(format!(".lock-{name}"));
-        let busy = || {
-            format!(
-                "pyenv: another install of {name} is in progress ({})",
-                lock.display()
-            )
-        };
-        let open = || {
-            std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&lock)
-        };
-        let mut f = match open() {
-            Ok(f) => f,
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                if holder_alive(&lock) {
-                    return Err(busy());
-                }
-                let _ = std::fs::remove_file(&lock);
-                open().map_err(|_| busy())?
+        let locks = versions.parent().unwrap_or(versions).join(".locks");
+        std::fs::create_dir_all(&locks)
+            .map_err(|e| format!("pyenv: cannot create {}: {e}", locks.display()))?;
+        let lock_path = locks.join(format!("install-{name}"));
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+            .map_err(|e| format!("pyenv: cannot create {}: {e}", lock_path.display()))?;
+        match lock.try_lock() {
+            Ok(()) => {}
+            Err(std::fs::TryLockError::WouldBlock) => {
+                return Err(format!(
+                    "pyenv: another install of {name} is in progress ({})",
+                    lock_path.display()
+                ))
             }
-            Err(e) => return Err(format!("pyenv: cannot create {}: {e}", lock.display())),
-        };
-        let _ = writeln!(f, "{}", std::process::id());
+            Err(std::fs::TryLockError::Error(e)) => {
+                return Err(format!("pyenv: cannot lock {}: {e}", lock_path.display()))
+            }
+        }
+        // Recovery from a process killed mid-swap (we hold the lock, so nobody else is
+        // installing this name).
+        let target = versions.join(name);
+        let old = versions.join(format!(".old-{name}"));
+        if old.symlink_metadata().is_ok() {
+            if target.symlink_metadata().is_err() {
+                let _ = std::fs::rename(&old, &target);
+            } else if is_complete(&target) {
+                let _ = std::fs::remove_dir_all(&old);
+            }
+        }
         let stage = versions.join(format!(".tmp-{name}"));
         let _ = std::fs::remove_dir_all(&stage);
         std::fs::create_dir_all(&stage)
@@ -76,7 +70,7 @@ impl Txn {
         Ok(Txn {
             versions: versions.to_path_buf(),
             name: name.to_string(),
-            lock,
+            _lock: lock,
             stage,
             old: None,
             placed: false,
@@ -99,6 +93,9 @@ impl Txn {
     /// Moves the staged prefix to `versions/<name>`, setting any existing version aside.
     pub fn place(&mut self, staged_prefix: &Path) -> std::io::Result<()> {
         let target = self.target();
+        // The marker goes in before the move, so placing is one atomic rename and a failed
+        // marker write changes nothing.
+        std::fs::write(staged_prefix.join(MARKER), "")?;
         if target.symlink_metadata().is_ok() {
             let old = self.versions.join(format!(".old-{}", self.name));
             let _ = std::fs::remove_dir_all(&old);
@@ -106,7 +103,6 @@ impl Txn {
             self.old = Some(old);
         }
         std::fs::rename(staged_prefix, &target)?;
-        std::fs::write(target.join(MARKER), "")?;
         self.placed = true;
         Ok(())
     }
@@ -117,7 +113,6 @@ impl Txn {
             let _ = std::fs::remove_dir_all(&old);
         }
         let _ = std::fs::remove_dir_all(&self.stage);
-        let _ = std::fs::remove_file(&self.lock);
         self.done = true;
         Ok(())
     }
@@ -136,6 +131,5 @@ impl Drop for Txn {
             let _ = std::fs::rename(&old, &target);
         }
         let _ = std::fs::remove_dir_all(&self.stage);
-        let _ = std::fs::remove_file(&self.lock);
     }
 }
