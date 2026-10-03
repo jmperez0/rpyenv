@@ -8,6 +8,8 @@ pub mod checksum;
 pub mod defs;
 pub mod fetch;
 pub mod log;
+#[cfg(unix)]
+pub mod preflight;
 pub mod txn;
 #[cfg(unix)]
 pub mod verify;

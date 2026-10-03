@@ -662,6 +662,7 @@ warns when it finds one. pyenv-win has the same limitation.
 | `RPYENV_DEBUG_LOG` | rpyenv | File for diagnostics from shims and `pyenv exec` when there is no console |
 | `RPYENV_BATCH_FORWARD` | rpyenv | `;`-separated batch-target names that get a `.cmd` forwarder instead of an exe shim (Windows) |
 | `RPYENV_CATALOG_URL` | rpyenv (M7, only if kept) | Alternative location for the PyPy/conda listing, if M7 keeps one (§15.1); not used for CPython |
+| `RPYENV_SKIP_PREFLIGHT` | rpyenv | `1` skips the Linux build pre-flight check (§9.2), for headers in places the check doesn't look |
 | `RPYENV_BUILD_DEPS` | rpyenv (M8) | `system`, `install`, or `build`: how `pyenv install` resolves missing Linux build dependencies when there is no terminal to ask |
 
 `RPYENV_FORWARD_CP`, `RPYENV_FORWARD_PYENV`, `RPYENV_FORWARD_TARGET` and `RPYENV_FORWARD_DIR` are internal helpers that `.cmd` forwarders set and clear while they run; they are not user settings (allowlist D-47).
