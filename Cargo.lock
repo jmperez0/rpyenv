@@ -423,6 +423,7 @@ dependencies = [
  "bzip2",
  "ctrlc",
  "flate2",
+ "libc",
  "lzma-rust2",
  "rpyenv-core",
  "sha2",

@@ -30,3 +30,6 @@ tar = "0.4.46"
 tempfile.workspace = true
 flate2 = "1.1.10"
 tar = "0.4.46"
+
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"

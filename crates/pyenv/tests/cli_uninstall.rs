@@ -193,10 +193,7 @@ fn ctrl_c_at_the_remove_prompt_exits_130() {
         );
         std::thread::sleep(Duration::from_millis(10));
     }
-    std::process::Command::new("kill")
-        .args(["-INT", &format!("-{}", child.id())])
-        .status()
-        .unwrap();
+    common::sigint_group(child.id());
     let start = Instant::now();
     let status = loop {
         if let Some(st) = child.try_wait().unwrap() {

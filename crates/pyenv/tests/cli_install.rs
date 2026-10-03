@@ -476,10 +476,7 @@ fn ctrl_c_at_the_existing_version_prompt_exits_130() {
         )
         .as_str())
     );
-    std::process::Command::new("kill")
-        .args(["-INT", &format!("-{}", child.id())])
-        .status()
-        .unwrap();
+    common::sigint_group(child.id());
     let start = Instant::now();
     let status = loop {
         if let Some(st) = child.try_wait().unwrap() {
@@ -561,10 +558,7 @@ fn ctrl_c_rolls_back_and_exits_130() {
             "the install holds its lock"
         );
         std::thread::sleep(std::time::Duration::from_millis(500));
-        std::process::Command::new("kill")
-            .args(["-INT", &format!("-{}", child.id())])
-            .status()
-            .unwrap();
+        common::sigint_group(child.id());
         let status = child.wait().unwrap();
         assert_eq!(status.code(), Some(130), "preexisting={preexisting}");
         assert!(staging_left(&f).is_empty(), "{:?}", staging_left(&f));

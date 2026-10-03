@@ -174,3 +174,22 @@ pub fn nl(s: &str) -> String {
         s.to_string()
     }
 }
+
+/// Ctrl+C at a terminal: SIGINT to every process in the group `pgid` (a child spawned with
+/// `process_group(0)`, so its PID). Sent with kill(2), not `kill -INT -<pgid>`: procps-ng
+/// 4.0.4 (Ubuntu 24.04) parses that as `kill(-1, SIGINT)`, which signals every process the
+/// user owns (traced with strace in an ubuntu:24.04 container).
+#[cfg(unix)]
+pub fn sigint_group(pgid: u32) {
+    let pgid = i32::try_from(pgid).unwrap();
+    // pgid 0 or 1 would turn this into "my own group" or "every process".
+    assert!(pgid > 1, "refusing to signal process group {pgid}");
+    // SAFETY: a plain syscall with a checked, positive group id.
+    let rc = unsafe { libc::kill(-pgid, libc::SIGINT) };
+    assert_eq!(
+        rc,
+        0,
+        "kill(-{pgid}, SIGINT): {}",
+        std::io::Error::last_os_error()
+    );
+}
