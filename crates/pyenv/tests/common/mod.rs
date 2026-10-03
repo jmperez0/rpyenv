@@ -1,6 +1,8 @@
 #![allow(dead_code)]
 //! A temporary PYENV_ROOT and working directory, and a way to run the real `pyenv` binary in them.
 
+pub mod server;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 

@@ -12,6 +12,10 @@ path = "src/main.rs"
 
 [dependencies]
 rpyenv-core.workspace = true
+# Installer (spec §3: the CLI may link HTTP/TLS and archive code; the shims may not).
+ureq = { version = "3.4.2", default-features = false, features = ["rustls", "platform-verifier"] }
+sha2 = "0.11.0"
+ctrlc = "3.5.2"
 
 [dev-dependencies]
 tempfile.workspace = true
