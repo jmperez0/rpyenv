@@ -425,6 +425,18 @@ instructions, as upstream does.
       and for single `.msi` installers (2.4.4, 3.4.4, 2.7.18) on 2026-10-03.
   - The first Windows installer task proves the verifier on a real `core.msi`
     before anything depends on it.
+  - Measured 2026-10-03 (`crates/pyenv/keys/README.md`): every one of the 757
+    MSI signatures on python.org is by one of three keys (Steve Dower, Martin
+    v. Löwis, Anthony Baxter). rpyenv embeds exactly those three, pinned by full
+    fingerprint.
+  - **Unsigned files (decided 2026-10-03).** python.org publishes no signature
+    and no hash for a few versions: 3.5.2's component MSIs, the 2.7.7–2.7.9
+    MSIs, and some old pre-releases. These install with a warning that names
+    the version and says its files were checked only by HTTPS.
+    - The "unsigned" verdict comes only from python.org's own folder listing,
+      which has no `<file>.asc` for the file.
+    - A `.asc` that is listed but can't be fetched, or that fails
+      verification, stops the install. Neither ever downgrades to the warning.
 - **MSI extraction** reads the MSI's tables and CAB streams in Rust and writes
   the files; `msiexec` is not run, so no product is registered. If the Rust
   reader can't decompress python.org's CABs, the first Windows installer task
@@ -433,10 +445,15 @@ instructions, as upstream does.
 - **No PEP 514 registry keys.** pyenv-win writes
   `HKCU\SOFTWARE\Python\PythonCore\<ver>`; rpyenv doesn't (an allowlist row).
 - Architectures: amd64, arm64, and win32, matching the host by default.
-- `pyenv install --list` reads a cached version list. `pyenv update`
-  refreshes it from python.org directly: the Install Manager index for 3.11+,
-  and python.org's release listing for the MSI-based versions. rpyenv
-  publishes no CPython catalog.
+- `pyenv install --list` reads a cached version list: `<root>\.versions_cache.xml`,
+  in pyenv-win's own format, so an existing pyenv-win cache works unchanged.
+  `pyenv update` rewrites it from python.org directly: the Install Manager
+  index for the zips, and python.org's `/ftp/python/` folder listings for the
+  MSI-based versions. rpyenv publishes no CPython catalog.
+  - The cache holds version names only. `pyenv install` works out the package
+    and fetches its reference value (the index's SHA-256, or the `.asc` named
+    in the folder listing) from python.org each time, so the cache can never
+    supply a hash.
 
 ### 9.2 Linux
 
@@ -462,7 +479,8 @@ instructions, as upstream does.
   publisher publishes: a SHA-256 (python.org's index, upstream
   `python-build`) or the publisher's OpenPGP signature (python.org's MSIs).
   rpyenv never publishes or computes the reference value itself, and MD5 is
-  never accepted.
+  never accepted. The one exception is a file python.org publishes no
+  signature or hash for: it installs with a warning (§9.1, *Unsigned files*).
 - **`:latest` (M2).** `pyenv install 3.12:latest` installs the newest
   matching release. Candidates exclude `-dev`, `-src`, pre-releases
   (`a`/`b`/`rc`), and free-threaded builds (`t` suffix), and are sorted by
