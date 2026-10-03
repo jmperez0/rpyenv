@@ -72,16 +72,43 @@ fn parse<'a>(args: &[&'a str]) -> Result<(Flags, Vec<&'a str>), Early> {
 }
 
 /// `read -p`: the prompt shows only on a terminal; None on EOF.
-fn prompt(text: &str) -> Option<String> {
-    let stdin = std::io::stdin();
-    if stdin.is_terminal() {
+enum Reply {
+    Line(String),
+    Eof,
+    Interrupted,
+}
+
+/// `read -p`: the prompt shows only on a terminal. The line is read on a helper thread so
+/// that a Ctrl+C while waiting ends the run at once, as it does upstream, instead of being
+/// noticed only after Enter or EOF.
+fn prompt(text: &str) -> Reply {
+    if std::io::stdin().is_terminal() {
         rpyenv_core::textout::write(true, text);
     }
-    let mut line = String::new();
-    match stdin.lock().read_line(&mut line) {
-        Ok(0) | Err(_) => None,
-        Ok(_) => Some(line.trim_end_matches(['\n', '\r']).to_string()),
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        let got = match std::io::stdin().lock().read_line(&mut line) {
+            Ok(0) | Err(_) => None,
+            Ok(_) => Some(line.trim_end_matches(['\n', '\r']).to_string()),
+        };
+        let _ = tx.send(got);
+    });
+    loop {
+        if interrupted() {
+            return Reply::Interrupted;
+        }
+        match rx.recv_timeout(std::time::Duration::from_millis(100)) {
+            Ok(Some(line)) => return Reply::Line(line),
+            Ok(None) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return Reply::Eof,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+        }
     }
+}
+
+/// A name that can't be a directory directly under `versions/`.
+fn invalid_name(name: &str) -> bool {
+    name.is_empty() || name == "." || name == ".." || name.contains('/')
 }
 
 fn not_found(definition: &str, names: &[String]) {
@@ -201,9 +228,16 @@ pub fn install(ctx: &Ctx, args: &[&str]) -> Output {
     let mut status = 0;
     let mut stdin_patch: Option<Vec<u8>> = None;
     for arg in &wanted {
-        // Alias: the text after the last `:`, unless it is `latest`.
+        // A Ctrl+C during the previous version's default packages or rehash.
+        if interrupted() {
+            return Output::new().with_code(130);
+        }
+        // Alias: the text after the last `:`, unless it is `latest`. An empty alias is no
+        // alias (`${VERSION_ALIAS:-$VERSION_NAME}`).
         let (mut definition, alias) = match arg.rsplit_once(':') {
-            Some((d, a)) if a != "latest" => (d.to_string(), Some(a.to_string())),
+            Some((d, a)) if a != "latest" => {
+                (d.to_string(), (!a.is_empty()).then(|| a.to_string()))
+            }
             _ => (arg.clone(), None),
         };
         if let Some(prefix) = definition.strip_suffix(":latest") {
@@ -230,6 +264,11 @@ pub fn install(ctx: &Ctx, args: &[&str]) -> Output {
             base_name
         };
         let name = alias.unwrap_or(version_name);
+        if invalid_name(&name) {
+            say(&format!("pyenv: invalid version name: {name}"));
+            status = status.max(1);
+            break;
+        }
         let prefix = ctx.versions_dir().join(&name);
         if is_complete(&prefix) {
             if f.skip {
@@ -238,9 +277,10 @@ pub fn install(ctx: &Ctx, args: &[&str]) -> Output {
             if !f.force {
                 say(&format!("pyenv: {} already exists", prefix.display()));
                 match prompt("continue with installation? (y/N) ") {
-                    None => return Output::new().with_code(1),
-                    Some(r) if ["y", "Y", "yes", "YES"].contains(&r.as_str()) => {}
-                    Some(_) => {
+                    Reply::Interrupted => return Output::new().with_code(130),
+                    Reply::Eof => return Output::new().with_code(1),
+                    Reply::Line(r) if ["y", "Y", "yes", "YES"].contains(&r.as_str()) => {}
+                    Reply::Line(_) => {
                         status = status.max(1);
                         continue;
                     }
@@ -348,9 +388,11 @@ pub fn install(ctx: &Ctx, args: &[&str]) -> Output {
                     say(&line);
                 }
                 let r = crate::commands::rehash::rehash(ctx, &[]);
+                // A failed rehash ends the run, as upstream's `set -e` does.
                 if r.code != 0 {
                     r.emit(ctx.flavor);
                     status = status.max(r.code);
+                    break;
                 }
             }
             Err(InstallError::Interrupted) => {
@@ -368,6 +410,9 @@ pub fn install(ctx: &Ctx, args: &[&str]) -> Output {
                 break;
             }
         }
+    }
+    if interrupted() {
+        return Output::new().with_code(130);
     }
     Output::new().with_code(status)
 }

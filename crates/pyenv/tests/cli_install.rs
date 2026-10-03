@@ -155,7 +155,7 @@ fn list_prints_the_definitions() {
     assert!(
         r.stdout.starts_with("Available versions:\n  2.1.3\n"),
         "{}",
-        &r.stdout[..80]
+        r.stdout.get(..80).unwrap_or(&r.stdout)
     );
     assert!(r.stdout.contains("\n  3.12.14\n") && r.stdout.contains("\n  3.12.99\n"));
     let bare = run(&f, &["install", "-l", "--bare"], &[]);
@@ -250,6 +250,140 @@ fn a_failed_build_exits_1_and_stops_at_the_first_failure() {
     assert!(r.stderr.contains("BUILD FAILED"), "{}", r.stderr);
     assert!(!f.root.join("versions/3.12.99").exists() && !f.root.join("versions/second").exists());
     assert!(staging_left(&f).is_empty());
+}
+
+/// `X:` is `X`: upstream's `${VERSION_ALIAS:-$VERSION_NAME}` (review I1).
+#[test]
+fn an_empty_alias_installs_under_the_version_name() {
+    let f = Fixture::new();
+    plugin_def(&f);
+    let r = run(&f, &["install", "3.12.99:"], &[]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert!(f.root.join("versions/3.12.99/bin/python3.12").is_file());
+    assert!(!f.root.join(".locks/install-").exists());
+    assert!(staging_left(&f).is_empty());
+}
+
+/// A name that isn't one directory under `versions/` is refused before anything is
+/// locked, downloaded or built (review I1).
+#[test]
+fn a_name_that_is_not_one_directory_is_refused() {
+    let f = Fixture::new();
+    let s = plugin_def(&f);
+    for alias in ["..", ".", "a/b"] {
+        let arg = format!("3.12.99:{alias}");
+        let r = run(&f, &["install", &arg, "3.12.99:later"], &[]);
+        assert_eq!(
+            (r.stderr.as_str(), r.code),
+            (
+                format!("pyenv: invalid version name: {alias}\n").as_str(),
+                1
+            )
+        );
+    }
+    assert_eq!(s.hits("/Python-3.12.99.tar.gz"), 0);
+    assert!(!f.root.join("versions/a").exists());
+    assert!(!f.root.join("versions/later").exists(), "the run stops");
+    assert!(!f.root.join(".locks").exists());
+}
+
+/// `-k` keeps the source tree and the tarball in `$PYENV_ROOT/sources/<name>`; a non-empty
+/// PYENV_BUILD_ROOT does the same there, even without `-k`.
+#[test]
+fn keep_leaves_the_sources_in_the_build_root() {
+    let f = Fixture::new();
+    plugin_def(&f);
+    let r = run(&f, &["install", "-k", "3.12.99"], &[]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    let kept = f.root.join("sources/3.12.99");
+    assert!(kept.join("Python-3.12.99/configure").is_file());
+    assert!(kept.join("Python-3.12.99.tar.gz").is_file());
+    let br = f.base.join("br");
+    let br_s = br.display().to_string();
+    let r = run(
+        &f,
+        &["install", "3.12.99:other"],
+        &[("PYENV_BUILD_ROOT", br_s.as_str())],
+    );
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert!(br.join("other/Python-3.12.99/configure").is_file());
+    assert!(br.join("other/Python-3.12.99.tar.gz").is_file());
+}
+
+/// Ctrl+C while `continue with installation?` waits for a reply ends the run at once
+/// with 130, as upstream does (review I2). stdin is a pipe that is never written to.
+#[test]
+fn ctrl_c_at_the_existing_version_prompt_exits_130() {
+    use std::io::BufRead;
+    use std::os::unix::process::CommandExt;
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+    let f = Fixture::new();
+    let s = plugin_def(&f);
+    f.version("3.12.99/bin");
+    let owned = env(&f, &[]);
+    let mut cmd = f.command(
+        std::path::Path::new(env!("CARGO_BIN_EXE_pyenv")),
+        &f.work,
+        &[],
+    );
+    for (k, v) in &owned {
+        cmd.env(k, v);
+    }
+    let mut child = cmd
+        .args(["install", "3.12.99", "3.12.99:other"])
+        .process_group(0)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let _held_open = child.stdin.take().unwrap();
+    let stderr = child.stderr.take().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in std::io::BufReader::new(stderr)
+            .lines()
+            .map_while(Result::ok)
+        {
+            let _ = tx.send(line);
+        }
+    });
+    let line = rx.recv_timeout(Duration::from_secs(20));
+    assert_eq!(
+        line.as_deref(),
+        Ok(format!(
+            "pyenv: {} already exists",
+            f.root.join("versions/3.12.99").display()
+        )
+        .as_str())
+    );
+    std::process::Command::new("kill")
+        .args(["-INT", &format!("-{}", child.id())])
+        .status()
+        .unwrap();
+    let start = Instant::now();
+    let status = loop {
+        if let Some(st) = child.try_wait().unwrap() {
+            break Some(st);
+        }
+        if start.elapsed() > Duration::from_secs(3) {
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    if status.is_none() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    assert_eq!(
+        status.and_then(|st| st.code()),
+        Some(130),
+        "exit within 3 s of SIGINT"
+    );
+    assert_eq!(s.hits("/Python-3.12.99.tar.gz"), 0);
+    assert!(f.root.join("versions/3.12.99/bin").is_dir());
+    assert!(!f.root.join("versions/other").exists());
 }
 
 /// The fake `configure` writes the Makefile as its last act, in
