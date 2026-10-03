@@ -85,6 +85,7 @@ fn an_archive_without_a_top_directory_still_gets_the_package_name() {
     assert!(out.join("configure").is_file() && out.join("README").is_file());
 }
 
+// allowlist D-72
 #[test]
 fn parent_and_absolute_paths_are_refused() {
     for evil in ["../evil", "/tmp/rpyenv-evil-abs", "a/../../evil"] {
@@ -102,6 +103,7 @@ fn parent_and_absolute_paths_are_refused() {
     }
 }
 
+// allowlist D-72
 #[cfg(unix)]
 #[test]
 fn a_symlink_that_leaves_the_tree_is_refused() {
@@ -185,6 +187,7 @@ fn dropping_a_fresh_install_removes_it() {
     assert_eq!(std::fs::read_dir(&versions).unwrap().count(), 0);
 }
 
+// allowlist D-58
 #[test]
 fn a_second_install_of_the_same_name_is_refused_while_the_first_runs() {
     let root = tempfile::tempdir().unwrap();
@@ -341,6 +344,7 @@ fn tgz_with_hardlink(target: &str) -> Vec<u8> {
     b.into_inner().unwrap().finish().unwrap()
 }
 
+// allowlist D-72
 #[cfg(unix)]
 #[test]
 fn a_hard_link_inside_the_tree_extracts() {
@@ -350,6 +354,7 @@ fn a_hard_link_inside_the_tree_extracts() {
     assert_eq!(std::fs::read(out.join("hard")).unwrap(), b"x");
 }
 
+// allowlist D-72
 #[cfg(unix)]
 #[test]
 fn a_hard_link_to_a_path_outside_the_tree_is_refused() {
@@ -363,6 +368,7 @@ fn a_hard_link_to_a_path_outside_the_tree_is_refused() {
     }
 }
 
+// allowlist D-72
 #[cfg(unix)]
 #[test]
 fn setuid_and_setgid_bits_are_not_extracted() {

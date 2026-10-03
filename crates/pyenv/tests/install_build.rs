@@ -125,6 +125,7 @@ fn user_flags_combine_as_python_build_does() {
         ("PYTHON_CPPFLAGS", "-pycpp"),
         ("LDFLAGS", "-gld"),
         ("PYTHON_LDFLAGS", "-pyld"),
+        ("MAKE_OPTS", "-j3"),
     ];
     let b = build("standard", &vars, opts(), false, false);
     assert_eq!(b.result, Ok(()), "{:?}", b.said);
@@ -145,10 +146,11 @@ fn user_flags_combine_as_python_build_does() {
     // make (and every later child) sees the exported prefix flags; `CFLAGS` and the
     // `PYTHON_` variants are configure's only (python-build:1575-1578,2847-2848).
     let m = std::fs::read_to_string(b.root.join("versions/3.12.99/lib/rpyenv-make.txt")).unwrap();
+    // D-70: `MAKE_OPTS` reaches make as given (upstream re-exports it as `MAKEOPTS`).
     assert_eq!(
         m,
         format!(
-            "CFLAGS=-gcflag\nCPPFLAGS=-I{p}/include -gcpp\nLDFLAGS=-L{p}/lib -Wl,-rpath,{p}/lib -gld\nLIBS=-L{p}/lib -Wl,-rpath,{p}/lib\n"
+            "CFLAGS=-gcflag\nCPPFLAGS=-I{p}/include -gcpp\nLDFLAGS=-L{p}/lib -Wl,-rpath,{p}/lib -gld\nLIBS=-L{p}/lib -Wl,-rpath,{p}/lib\nMAKE_OPTS=-j3\n"
         )
     );
 }
@@ -249,6 +251,7 @@ fn a_failed_ensurepip_does_not_fall_back_to_get_pip() {
     );
 }
 
+// allowlist D-70
 #[test]
 fn debug_builds_add_pydebug_and_o0() {
     let b = build(
@@ -264,10 +267,8 @@ fn debug_builds_add_pydebug_and_o0() {
     let c = config(&b);
     assert!(c.contains(" --with-pydebug --enable-shared "), "{c}");
     assert!(c.contains("CFLAGS_SET=yes\n"), "{c}");
-    assert!(
-        c.contains("CFLAGS=-O0\n") || c.contains("CFLAGS=-O0 \n"),
-        "{c}"
-    );
+    // D-70: no trailing space after `-O0`.
+    assert!(c.contains("CFLAGS=-O0\n"), "{c}");
 }
 
 #[test]

@@ -149,6 +149,23 @@ fn an_unknown_version_prints_upstreams_hint_and_exits_2() {
     );
 }
 
+// Upstream exits 1 here (the pre-existing directory leaks PREFIX_EXISTS); rpyenv always 2.
+// allowlist D-59
+#[test]
+fn an_unknown_version_exits_2_even_when_its_directory_exists() {
+    let f = Fixture::new();
+    std::fs::create_dir_all(f.root.join("versions/9.9.9")).unwrap();
+    let r = run(&f, &["install", "9.9.9"], &[]);
+    assert!(
+        r.stderr
+            .starts_with("python-build: definition not found: 9.9.9\n"),
+        "{}",
+        r.stderr
+    );
+    assert_eq!(r.code, 2);
+    assert!(f.root.join("versions/9.9.9").is_dir());
+}
+
 #[test]
 fn list_prints_the_definitions() {
     let f = Fixture::new();
