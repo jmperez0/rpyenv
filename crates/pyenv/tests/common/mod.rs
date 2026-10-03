@@ -1,6 +1,8 @@
 #![allow(dead_code)]
 //! A temporary PYENV_ROOT and working directory, and a way to run the real `pyenv` binary in them.
 
+#[cfg(unix)]
+pub mod buildharness;
 pub mod fakebuild;
 pub mod server;
 
