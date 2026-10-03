@@ -365,6 +365,30 @@ fn a_name_that_is_not_one_directory_is_refused() {
     assert!(!f.root.join(".locks").exists());
 }
 
+/// The installer's own staging names (`.tmp-<x>`, `.old-<x>`) are refused as version names:
+/// an install under one would be hidden from listings and collide with another install's
+/// staging (review M1).
+// allowlist D-69
+#[test]
+fn a_staging_name_is_refused() {
+    let f = Fixture::new();
+    let s = plugin_def(&f);
+    for alias in [".tmp-3.12.99", ".old-3.12.99"] {
+        let arg = format!("3.12.99:{alias}");
+        let r = run(&f, &["install", &arg], &[]);
+        assert_eq!(
+            (r.stderr.as_str(), r.code),
+            (
+                format!("pyenv: invalid version name: {alias}\n").as_str(),
+                1
+            )
+        );
+        assert!(!f.root.join("versions").join(alias).exists());
+    }
+    assert_eq!(s.hits("/Python-3.12.99.tar.gz"), 0);
+    assert!(!f.root.join(".locks").exists());
+}
+
 /// `-k` keeps the source tree and the tarball in `$PYENV_ROOT/sources/<name>`; a non-empty
 /// PYENV_BUILD_ROOT does the same there, even without `-k`.
 #[test]

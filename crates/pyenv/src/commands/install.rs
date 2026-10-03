@@ -73,9 +73,14 @@ fn parse<'a>(args: &[&'a str]) -> Result<(Flags, Vec<&'a str>), Early> {
     Ok((f, pos))
 }
 
-/// A name that can't be a directory directly under `versions/`.
+/// A name that can't be a directory directly under `versions/`, or is one of the
+/// installer's own staging names (allowlist D-69).
 fn invalid_name(name: &str) -> bool {
-    name.is_empty() || name == "." || name == ".." || name.contains('/')
+    name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.contains('/')
+        || rpyenv_core::installed::is_staging_name(name)
 }
 
 fn not_found(definition: &str, names: &[String]) {
