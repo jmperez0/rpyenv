@@ -42,6 +42,39 @@ fn a_missing_version_stops_without_force_and_is_silent_with_it() {
     );
 }
 
+/// Each `uninstalled` line is printed as its version goes, as upstream prints inside its
+/// loop: with stdout and stderr on one file, it comes before a later argument's error
+/// (review M2).
+#[test]
+fn each_uninstalled_line_is_printed_as_it_happens() {
+    use std::io::Write;
+    use std::process::Stdio;
+    let f = Fixture::new();
+    f.version("3.11.0");
+    let both = f.base.join("both.txt");
+    let file = std::fs::File::create(&both).unwrap();
+    let mut child = f
+        .command(
+            std::path::Path::new(env!("CARGO_BIN_EXE_pyenv")),
+            &f.work,
+            &[],
+        )
+        .args(["uninstall", "3.11.0", "9.9"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::from(file.try_clone().unwrap()))
+        .stderr(Stdio::from(file))
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(b"y\n").unwrap();
+    let status = child.wait().unwrap();
+    assert_eq!(status.code(), Some(1));
+    assert_eq!(
+        std::fs::read_to_string(&both).unwrap(),
+        "pyenv: 3.11.0 uninstalled\npyenv: version `9.9' not installed\n"
+    );
+    assert!(!f.root.join("versions/3.11.0").exists());
+}
+
 #[test]
 fn without_force_eof_at_the_prompt_stops_and_removes_nothing() {
     let f = Fixture::new();

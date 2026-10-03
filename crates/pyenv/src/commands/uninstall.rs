@@ -108,12 +108,14 @@ pub fn uninstall(ctx: &Ctx, args: &[&str]) -> Output {
                 return out.with_code(1);
             }
             drop(lock);
+            // Printed as each version goes, as upstream does inside its loop: a later
+            // argument's error then follows this version's line.
             let r = crate::commands::rehash::rehash(ctx, &[]);
-            out.stderr.push_str(&r.stderr);
+            rpyenv_core::textout::write(true, &r.stderr);
             if r.code != 0 {
                 return out.with_code(r.code);
             }
-            out.out(format!("pyenv: {name} uninstalled"));
+            rpyenv_core::textout::write(false, &format!("pyenv: {name} uninstalled\n"));
         }
     }
     out
