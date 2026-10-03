@@ -1,0 +1,42 @@
+name: sync-python-build
+# Keeps crates/pyenv/python-build in step with pyenv's latest release (plan M2a, Decision 1):
+# opens a pull request when the vendored copy differs.
+on:
+  schedule:
+    - cron: "41 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Fetch pyenv's latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=$(gh api repos/pyenv/pyenv/releases/latest --jq .tag_name)
+          sha=$(gh api "repos/pyenv/pyenv/commits/$tag" --jq .sha)
+          curl -fsSL "https://github.com/pyenv/pyenv/archive/$sha.tar.gz" | tar -xz -C "$RUNNER_TEMP"
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+          echo "SHA=$sha" >> "$GITHUB_ENV"
+      - name: Update the vendored copy
+        run: python3 ci/sync_python_build.py --upstream "$RUNNER_TEMP/pyenv-$SHA" --commit "$SHA" --write
+      - name: Open a pull request when it changed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -z "$(git status --porcelain crates/pyenv/python-build)" ]; then echo "up to date with $TAG"; exit 0; fi
+          branch="sync-python-build-$TAG"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+          git add crates/pyenv/python-build
+          git commit -m "Sync python-build definitions with pyenv $TAG"
+          git push -f origin "$branch"
+          gh pr create --base main --head "$branch" --title "Sync python-build definitions with pyenv $TAG" --body "Automated: crates/pyenv/python-build updated from pyenv $TAG ($SHA) by ci/sync_python_build.py." || echo "a pull request for $branch already exists"
