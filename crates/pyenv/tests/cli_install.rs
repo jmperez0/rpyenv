@@ -1,0 +1,326 @@
+//! `pyenv install` end to end with a fake CPython over a local server (spec §12.5 tier 1),
+//! against docs/parity/pyenv-m2-reference.md "pyenv install".
+#![cfg(unix)]
+
+mod common;
+
+use common::fakebuild::tarball;
+use common::server::{start, Reply, Server};
+use common::Fixture;
+
+/// A plugin definition `3.12.99` (so `pyenv install 3.12` resolves to it) serving the fake
+/// tarball; returns the server so its hit counts can be checked.
+fn plugin_def(f: &Fixture) -> Server {
+    let body = tarball("3.12.99");
+    let tmp = tempfile::tempdir().unwrap();
+    let p = tmp.path().join("t");
+    std::fs::write(&p, &body).unwrap();
+    let sha = pyenv::install::checksum::sha256_file(&p).unwrap();
+    let s = start(vec![("/Python-3.12.99.tar.gz", vec![Reply::Body(body)])]);
+    f.file(
+        &f.root.join("plugins/fake/share/python-build/3.12.99"),
+        &format!(
+            "install_package \"Python-3.12.99\" \"{}#{sha}\" standard verify_py312 ensurepip\n",
+            s.url("/Python-3.12.99.tar.gz")
+        ),
+    );
+    s
+}
+
+fn env<'a>(f: &'a Fixture, extra: &[(&'a str, &'a str)]) -> Vec<(&'a str, String)> {
+    let mut v: Vec<(&str, String)> = vec![
+        (
+            "PATH",
+            format!("{}:{}", f.syspath.display(), std::env::var("PATH").unwrap()),
+        ),
+        ("TMPDIR", f.base.join("tmp").display().to_string()),
+        ("PYTHON_BUILD_SKIP_MIRROR", "1".into()),
+        ("RPYENV_SKIP_PREFLIGHT", "1".into()),
+    ];
+    v.extend(extra.iter().map(|(k, val)| (*k, val.to_string())));
+    v
+}
+
+fn run(f: &Fixture, args: &[&str], extra: &[(&str, &str)]) -> common::Run {
+    let owned = env(f, extra);
+    let pairs: Vec<(&str, &str)> = owned.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    f.pyenv_env(args, &pairs)
+}
+
+fn staging_left(f: &Fixture) -> Vec<String> {
+    std::fs::read_dir(f.root.join("versions"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with('.'))
+        .collect()
+}
+
+#[test]
+fn a_prefix_resolves_to_a_plugin_definition_builds_and_rehashes() {
+    let f = Fixture::new();
+    let s = plugin_def(&f);
+    let r = run(&f, &["install", "3.12"], &[]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    let p = f.root.join("versions/3.12.99");
+    assert_eq!(
+        r.stderr,
+        format!(
+            "Downloading Python-3.12.99.tar.gz...\n-> {}\nInstalling Python-3.12.99...\nInstalled Python-3.12.99 to {}\n",
+            s.url("/Python-3.12.99.tar.gz"),
+            p.display()
+        )
+    );
+    assert_eq!(r.stdout, "");
+    assert!(
+        f.root.join("shims/python3.12").exists(),
+        "rehashed after the install"
+    );
+    assert!(staging_left(&f).is_empty());
+}
+
+#[test]
+fn an_alias_installs_under_its_name() {
+    let f = Fixture::new();
+    plugin_def(&f);
+    let r = run(&f, &["install", "3.12.99:mine"], &[]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert!(f.root.join("versions/mine/bin/python3.12").is_file());
+}
+
+#[test]
+fn an_existing_version_prompts_and_eof_stops_the_run() {
+    let f = Fixture::new();
+    let s = plugin_def(&f);
+    f.version("3.12.99/bin");
+    let r = run(&f, &["install", "3.12.99", "3.12.99:other"], &[]);
+    assert_eq!(
+        (r.stderr.as_str(), r.code),
+        (
+            format!(
+                "pyenv: {} already exists\n",
+                f.root.join("versions/3.12.99").display()
+            )
+            .as_str(),
+            1
+        )
+    );
+    assert_eq!(s.hits("/Python-3.12.99.tar.gz"), 0);
+    assert!(
+        !f.root.join("versions/other").exists(),
+        "EOF ends the whole run, as upstream"
+    );
+}
+
+#[test]
+fn skip_existing_is_silent_and_force_rebuilds() {
+    let f = Fixture::new();
+    let s = plugin_def(&f);
+    f.version("3.12.99/bin");
+    f.file(&f.root.join("versions/3.12.99/bin/old"), "");
+    let r = run(&f, &["install", "-sf", "3.12.99"], &[]);
+    assert_eq!(
+        (r.stdout.as_str(), r.stderr.as_str(), r.code),
+        ("", "", 0),
+        "-s wins over -f"
+    );
+    let r = run(&f, &["install", "-f", "3.12.99"], &[]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert_eq!(s.hits("/Python-3.12.99.tar.gz"), 1);
+    assert!(
+        !f.root.join("versions/3.12.99/bin/old").exists(),
+        "replaced, not built over"
+    );
+}
+
+#[test]
+fn an_unknown_version_prints_upstreams_hint_and_exits_2() {
+    let f = Fixture::new();
+    let r = run(&f, &["install", "9.9.9"], &[]);
+    assert_eq!(
+        (r.stderr.as_str(), r.code),
+        ("python-build: definition not found: 9.9.9\n\nSee all available versions with `pyenv install --list'.\n\nIf the version you need is missing, try upgrading pyenv.\n", 2)
+    );
+    let r = run(&f, &["install", "3.15.0"], &[]);
+    assert_eq!(
+        r.stderr,
+        "python-build: definition not found: 3.15.0\n\nThe following versions contain `3.15.0' in the name:\n  3.15.0rc2\n  3.15.0rc2t\n\nSee all available versions with `pyenv install --list'.\n\nIf the version you need is missing, try upgrading pyenv.\n"
+    );
+}
+
+#[test]
+fn list_prints_the_definitions() {
+    let f = Fixture::new();
+    plugin_def(&f);
+    let r = run(&f, &["install", "--list"], &[]);
+    assert!(
+        r.stdout.starts_with("Available versions:\n  2.1.3\n"),
+        "{}",
+        &r.stdout[..80]
+    );
+    assert!(r.stdout.contains("\n  3.12.14\n") && r.stdout.contains("\n  3.12.99\n"));
+    let bare = run(&f, &["install", "-l", "--bare"], &[]);
+    assert!(bare.stdout.starts_with("2.1.3\n"));
+    assert_eq!(bare.stdout.lines().count() + 1, r.stdout.lines().count());
+}
+
+#[test]
+fn usage_errors_and_version() {
+    let f = Fixture::new();
+    let r = run(&f, &["install"], &[]);
+    assert_eq!(r.code, 1);
+    assert!(
+        r.stderr
+            .starts_with("Usage: pyenv install [-f] [-kvp] <version>[:<alias>]...\n"),
+        "{}",
+        r.stderr
+    );
+    let r = run(&f, &["install", "-x", "--help"], &[]);
+    assert_eq!(r.code, 1, "options are handled in order");
+    let r = run(&f, &["install", "--help", "-x"], &[]);
+    assert_eq!(r.code, 0);
+    let r = run(&f, &["install", "--version"], &[]);
+    assert_eq!(
+        r.stdout,
+        format!(
+            "python-build 2.8.6 (rpyenv {})\n",
+            env!("CARGO_PKG_VERSION")
+        )
+    );
+}
+
+#[test]
+fn with_no_arguments_the_local_version_file_is_used() {
+    let f = Fixture::new();
+    plugin_def(&f);
+    f.file(&f.work.join(".python-version"), "3.12.99\n");
+    let r = run(&f, &["install"], &[]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert!(f.root.join("versions/3.12.99/bin").is_dir());
+    let global_only = Fixture::new();
+    global_only.file(&global_only.root.join("version"), "3.12.99\n");
+    assert_eq!(
+        run(&global_only, &["install"], &[]).code,
+        1,
+        "the global file is not read"
+    );
+}
+
+#[test]
+fn default_packages_run_in_the_new_version_and_a_failure_still_succeeds() {
+    let f = Fixture::new();
+    plugin_def(&f);
+    f.file(&f.root.join("default-packages"), "requests\n");
+    let log = f.base.join("pip.log");
+    let log_s = log.display().to_string();
+    let r = run(
+        &f,
+        &["install", "3.12.99:dp"],
+        &[("FAKE_PIP_LOG", log_s.as_str())],
+    );
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert_eq!(
+        std::fs::read_to_string(&log).unwrap(),
+        format!(
+            "-m pip install -r {}\n",
+            f.root.join("default-packages").display()
+        )
+    );
+    let r = run(&f, &["install", "3.12.99:dp2"], &[("FAKE_PIP_FAIL", "1")]);
+    assert_eq!(r.code, 0);
+    assert!(
+        r.stderr.ends_with(&format!(
+            "pyenv: error installing packages from  `{}'\n",
+            f.root.join("default-packages").display()
+        )),
+        "{}",
+        r.stderr
+    );
+}
+
+#[test]
+fn a_failed_build_exits_1_and_stops_at_the_first_failure() {
+    let f = Fixture::new();
+    plugin_def(&f);
+    let r = run(
+        &f,
+        &["install", "3.12.99", "3.12.99:second"],
+        &[("FAKE_CONFIGURE_FAIL", "1")],
+    );
+    assert_eq!(r.code, 1);
+    assert!(r.stderr.contains("BUILD FAILED"), "{}", r.stderr);
+    assert!(!f.root.join("versions/3.12.99").exists() && !f.root.join("versions/second").exists());
+    assert!(staging_left(&f).is_empty());
+}
+
+/// The fake `configure` writes the Makefile as its last act, in
+/// `$TMPDIR/python-build.<seed>/Python-3.12.99/`. Once it exists, the download, extraction
+/// and configure are done and the build is in (or entering) `make`, which sleeps.
+fn makefile_written(f: &Fixture) -> bool {
+    std::fs::read_dir(f.base.join("tmp"))
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .any(|e| e.path().join("Python-3.12.99/Makefile").is_file())
+}
+
+/// Review focus 3: Ctrl+C mid-build exits 130 and leaves nothing behind, or restores what
+/// was there.
+#[test]
+fn ctrl_c_rolls_back_and_exits_130() {
+    use std::os::unix::process::CommandExt;
+    for preexisting in [false, true] {
+        let f = Fixture::new();
+        plugin_def(&f);
+        if preexisting {
+            f.file(&f.root.join("versions/3.12.99/bin/old"), "");
+        }
+        let owned = env(&f, &[("FAKE_MAKE_SLEEP", "30")]);
+        let mut cmd = f.command(
+            std::path::Path::new(env!("CARGO_BIN_EXE_pyenv")),
+            &f.work,
+            &[],
+        );
+        for (k, v) in &owned {
+            cmd.env(k, v);
+        }
+        let mut args = vec!["install".to_string()];
+        if preexisting {
+            args.push("-f".into());
+        }
+        args.push("3.12.99".into());
+        let mut child = cmd
+            .args(&args)
+            .process_group(0)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let start = std::time::Instant::now();
+        while !makefile_written(&f) && start.elapsed().as_secs() < 20 {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(
+            makefile_written(&f),
+            "the build never reached make (preexisting={preexisting})"
+        );
+        assert!(
+            f.root.join(".locks/install-3.12.99").is_file(),
+            "the install holds its lock"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        std::process::Command::new("kill")
+            .args(["-INT", &format!("-{}", child.id())])
+            .status()
+            .unwrap();
+        let status = child.wait().unwrap();
+        assert_eq!(status.code(), Some(130), "preexisting={preexisting}");
+        assert!(staging_left(&f).is_empty(), "{:?}", staging_left(&f));
+        assert_eq!(
+            f.root.join("versions/3.12.99/bin/old").is_file(),
+            preexisting
+        );
+        if !preexisting {
+            assert!(!f.root.join("versions/3.12.99").exists());
+        }
+    }
+}

@@ -5,6 +5,8 @@ pub mod archive;
 #[cfg(unix)]
 pub mod builder;
 pub mod checksum;
+#[cfg(unix)]
+pub mod default_packages;
 pub mod defs;
 pub mod fetch;
 pub mod log;
