@@ -1,6 +1,7 @@
 //! The command table.
 
 pub mod exec;
+pub mod latest;
 pub mod local_global;
 pub mod misc;
 pub mod prefix;
@@ -41,11 +42,14 @@ const COMMANDS: &[(&str, Command)] = &[
 /// pyenv-win only.
 const WIN_ONLY: &[(&str, Command)] = &[("vname", version::version_name)];
 
+/// pyenv (Linux) only, until M2b brings pyenv-win's installer commands.
+const LINUX_ONLY: &[(&str, Command)] = &[("latest", latest::latest)];
+
 fn table(flavor: Flavor) -> impl Iterator<Item = &'static (&'static str, Command)> {
     let extra: &'static [(&'static str, Command)] = if flavor == Flavor::PyenvWin {
         WIN_ONLY
     } else {
-        &[]
+        LINUX_ONLY
     };
     COMMANDS.iter().chain(extra)
 }
