@@ -2,10 +2,15 @@
 //! definitions and the Linux source build.
 
 pub mod archive;
+#[cfg(unix)]
+pub mod builder;
 pub mod checksum;
 pub mod defs;
 pub mod fetch;
+pub mod log;
 pub mod txn;
+#[cfg(unix)]
+pub mod verify;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 

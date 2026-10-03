@@ -28,3 +28,5 @@ tar = "0.4.46"
 
 [dev-dependencies]
 tempfile.workspace = true
+flate2 = "1.1.10"
+tar = "0.4.46"
