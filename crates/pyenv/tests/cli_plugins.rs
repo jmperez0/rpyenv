@@ -133,3 +133,85 @@ fn multicall_by_argv0() {
         format!("{}\n", f.root.display())
     );
 }
+
+fn hello(f: &Fixture, block: &str) {
+    plugin(f, "hello", "hello", &format!("{block}echo hello\n"));
+}
+
+#[test]
+fn help_for_a_plugin_reads_its_comment_block() {
+    let f = Fixture::new();
+    hello(&f, "# Usage: pyenv hello <world>\n# Summary: Says \"hello\" to you, from pyenv\n# This command is useful for saying hello.\n");
+    assert_eq!(
+        run(&f, &["help", "hello"]).0,
+        "Usage: pyenv hello <world>\n\nThis command is useful for saying hello.\n\n"
+    );
+    assert_eq!(
+        run(&f, &["hello", "--help"]).0,
+        run(&f, &["help", "hello"]).0
+    );
+    assert_eq!(
+        run(&f, &["help", "--usage", "hello"]).0,
+        "Usage: pyenv hello <world>\n"
+    );
+    assert!(run(&f, &["help"])
+        .0
+        .contains("   hello       Says \"hello\" to you, from pyenv\n"));
+
+    let g = Fixture::new();
+    hello(&g, "# Usage: pyenv hello <world>\n#        pyenv hi [everybody]\n# Summary: Says \"hello\" to you, from pyenv\n");
+    assert_eq!(
+        run(&g, &["help", "hello"]).0,
+        "Usage: pyenv hello <world>\n       pyenv hi [everybody]\n\nSays \"hello\" to you, from pyenv\n\n"
+    );
+    let h = Fixture::new();
+    hello(
+        &h,
+        "# Usage: pyenv hello <world>\n# Summary: S\n# Line one.\n#\n# Line two.\n",
+    );
+    assert_eq!(
+        run(&h, &["help", "hello"]).0,
+        "Usage: pyenv hello <world>\n\nLine one.\n\nLine two.\n\n"
+    );
+    let u = Fixture::new();
+    hello(&u, "# nothing documented\n");
+    assert_eq!(
+        run(&u, &["help", "hello"]),
+        (
+            String::new(),
+            "Sorry, this command isn't documented yet.\n".to_string(),
+            1
+        )
+    );
+}
+
+#[test]
+fn commands_completions_and_init_include_plugins() {
+    let f = Fixture::new();
+    plugin(&f, "x", "hello", "# provide pyenv completions\nif [ \"$1\" = --complete ]; then shift; for a; do echo \"$a\"; done; fi\n");
+    plugin(&f, "x", "sh-activate", "echo :\n");
+    let commands = run(&f, &["commands"]).0;
+    assert!(commands.lines().any(|l| l == "hello") && commands.lines().any(|l| l == "activate"));
+    assert_eq!(
+        run(&f, &["commands", "--sh"]).0,
+        "activate\nrehash\nshell\n"
+    );
+    assert_eq!(
+        run(&f, &["completions", "hello", "happy", "world"]).0,
+        "--help\nhappy\nworld\n"
+    );
+    // Decision 7: plugin sh-* commands join the routed set.
+    assert!(run(&f, &["init", "-", "bash"])
+        .0
+        .contains("\n  activate|rehash|shell)\n"));
+}
+
+/// Review focus 4.
+#[test]
+fn a_non_executable_plugin_is_listed_but_not_run() {
+    let f = Fixture::new();
+    let p = plugin(&f, "x", "plain", "echo no\n");
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(run(&f, &["commands"]).0.lines().any(|l| l == "plain"));
+    assert_eq!(run(&f, &["plain"]).1, "pyenv: no such command `plain'\n");
+}

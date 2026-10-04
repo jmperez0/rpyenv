@@ -68,7 +68,7 @@ pub fn init(ctx: &Ctx, args: &[&str]) -> Output {
             env_line(&mut o, &shell, family);
             completion_line(&mut o, &shell, family);
             rehash_line(&mut o, family, a.no_rehash);
-            o.stdout.push_str(&function(family));
+            o.stdout.push_str(&function(ctx, family));
             finish(o, family)
         }
     }
@@ -229,8 +229,9 @@ fn rehash_line(o: &mut Output, family: Family, no_rehash: bool) {
     }
 }
 
-fn function(family: Family) -> String {
-    let routed = commands::names(Flavor::PyenvWin, Listing::ShOnly);
+fn function(ctx: &Ctx, family: Family) -> String {
+    let names = commands::command_names(ctx, Listing::ShOnly);
+    let routed: Vec<&str> = names.iter().map(String::as_str).collect();
     match family {
         Family::Pwsh => PWSH_FUNCTION.to_string(),
         Family::Fish => init::fish_function(&routed),

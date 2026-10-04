@@ -67,7 +67,7 @@ fn run_pyenv(args: &[&str], raw: &[OsString], ctx: &Ctx) -> Output {
     let Some((&cmd, rest)) = args.split_first() else {
         let mut o = Output::new();
         o.err(version_line(Flavor::Pyenv));
-        o.stderr.push_str(&help::listing(Flavor::Pyenv));
+        o.stderr.push_str(&help::listing(Flavor::Pyenv, Some(ctx)));
         return o.with_code(1);
     };
     // Each upstream command answers `--complete` as its first argument (Decision 5).
@@ -78,7 +78,7 @@ fn run_pyenv(args: &[&str], raw: &[OsString], ctx: &Ctx) -> Output {
     }
     match cmd {
         "-v" | "--version" => return commands::misc::version_cmd(ctx, rest),
-        "-h" | "--help" => return help::help_command(Flavor::Pyenv, &[]),
+        "-h" | "--help" => return help::help_ctx(ctx, &[]),
         // Only when no `pyenv-shell` is on the dispatch PATH (libexec/pyenv:127-128).
         "shell" if plugin::find(ctx, "shell").is_none() => {
             return Output::error(
@@ -96,7 +96,7 @@ fn run_pyenv(args: &[&str], raw: &[OsString], ctx: &Ctx) -> Output {
             o.out(format!("pyenv help \"{cmd}\""));
             o
         }
-        Some(_) if rest.first() == Some(&"--help") => help::help_command(Flavor::Pyenv, &[cmd]),
+        Some(_) if rest.first() == Some(&"--help") => help::help_ctx(ctx, &[cmd]),
         Some(command) => command(ctx, rest),
         None => plugin::dispatch(ctx, cmd, rest, &raw[1..])
             .unwrap_or_else(|| Output::error(format!("pyenv: no such command `{cmd}'"))),
@@ -111,7 +111,7 @@ fn run_pyenv_win(args: &[&str], raw: &[OsString], ctx: &Ctx) -> Output {
     let cmd = typed.to_ascii_lowercase();
     // `pyenv --help [<cmd>]` prints help instead of "no such command" (allowlist D-09).
     if cmd == "--help" || cmd == "help" {
-        return help::help_command(Flavor::PyenvWin, rest);
+        return help::help_ctx(ctx, rest);
     }
     if cmd == "exec" && rest.first() != Some(&"--help") {
         return commands::exec::exec(ctx, &raw[1..]);
@@ -127,9 +127,7 @@ fn run_pyenv_win(args: &[&str], raw: &[OsString], ctx: &Ctx) -> Output {
         return commands::shell_win::lf(o);
     }
     match commands::lookup(Flavor::PyenvWin, &cmd) {
-        Some(_) if rest.first() == Some(&"--help") => {
-            help::help_command(Flavor::PyenvWin, &[cmd.as_str()])
-        }
+        Some(_) if rest.first() == Some(&"--help") => help::help_ctx(ctx, &[cmd.as_str()]),
         // The completion scripts read `commands` and `completions` with `$(…)`; in an
         // integrated bash, zsh or fish (PYENV_SHELL, set by `pyenv init`), they get `\n`
         // line ends, which `$(…)` doesn't strip inside the text (final review #4).
