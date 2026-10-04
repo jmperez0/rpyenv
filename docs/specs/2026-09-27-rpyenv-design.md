@@ -275,10 +275,13 @@ profile doesn't load, and `pyenv` resolves to `pyenv.exe`.
 **Without integration** (always in cmd; PowerShell when the profile is
 blocked or not set up), `shell`, `activate`, and `deactivate`:
 
-1. pick the shell from `PYENV_SHELL`, or else from the parent process's image
-   name (`cmd.exe`, `powershell.exe`/`pwsh.exe`, `bash`/`zsh`/`fish`). The
-   parent is trusted only if it was created before `pyenv` itself, which
-   guards against a reused process ID.
+1. pick the shell from the parent process's image name (`cmd.exe`,
+   `powershell.exe`/`pwsh.exe`, `bash`/`zsh`/`fish`), trusted only if the parent
+   was created before `pyenv` itself, which guards against a reused process ID;
+   else from `PYENV_SHELL`. (Amended 2026-10-04: the parent comes first because
+   only `pyenv init` sets `PYENV_SHELL`, so a shell started from an integrated
+   one, such as `cmd` run from PowerShell, inherits a value that names the
+   wrong shell.)
 2. print that shell's exact command on stdout, and a note on stderr saying
    nothing was applied (plus how to enable integration, except for cmd).
 3. exit with 1. If the shell is unknown, print the command for all supported

@@ -6,6 +6,8 @@ pub mod buildharness;
 pub mod fakebuild;
 pub mod server;
 pub mod winfake;
+#[cfg(windows)]
+pub mod winshell;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
