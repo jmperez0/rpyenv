@@ -4,12 +4,15 @@ use common::{nl, Fixture};
 #[test]
 fn version_flag() {
     let expected = if cfg!(windows) {
-        "pyenv 3.1.1 (rpyenv 0.1.0)\n"
+        "pyenv 3.1.1 (rpyenv 0.1.0)\n".to_string()
     } else {
-        "pyenv 2.8.8 (rpyenv 0.1.0)\n"
+        format!(
+            "pyenv {} (rpyenv 0.1.0)\n",
+            pyenv::install::defs::UPSTREAM_VERSION
+        )
     };
     let r = Fixture::new().pyenv(&["--version"]);
-    assert_eq!((r.stdout, r.code), (nl(expected), 0));
+    assert_eq!((r.stdout, r.code), (nl(&expected), 0));
 }
 
 #[test]
@@ -36,7 +39,10 @@ fn no_arguments_prints_version_and_help_to_stderr() {
     assert_eq!(r.stdout, "");
     assert!(r
         .stderr
-        .starts_with("pyenv 2.8.8 (rpyenv 0.1.0)\nUsage: pyenv <command> [<args>]\n\nSome useful pyenv commands are:\n"));
+        .starts_with(&format!(
+            "pyenv {} (rpyenv 0.1.0)\nUsage: pyenv <command> [<args>]\n\nSome useful pyenv commands are:\n",
+            pyenv::install::defs::UPSTREAM_VERSION
+        )));
     assert!(r
         .stderr
         .ends_with("For full documentation, see: https://github.com/pyenv/pyenv#readme\n"));

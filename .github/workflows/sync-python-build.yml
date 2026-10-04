@@ -1,24 +1,34 @@
 name: sync-python-build
-# Brings crates/pyenv/python-build in step with pyenv's latest release (plan M2a, Decision 1):
-# opens a pull request when the vendored copy differs. Run by hand only; the pull request is
-# not finished on its own. Before merging it:
-#   - bump PYENV_SHA in .github/workflows/parity.yml to the synced commit;
-#   - regenerate the parity goldens (python parity/diff.py ... --update-golden) and review them;
-#   - re-run the bats suite (parity/bats_run.sh) and update parity/expected/bats.txt;
-#   - run cargo test and update any test that names a vendored version.
+# Brings crates/pyenv/python-build in step with pyenv's latest release (plan M2a, Decision 1),
+# weekly and on demand. When the vendored copy differs, it does the mechanical part of the sync
+# and opens (or updates) a pull request that reports what it found:
+#   - updates the vendored copy (ci/sync_python_build.py) and PYENV_SHA in parity.yml;
+#   - regenerates the Linux parity goldens against the new pyenv;
+#   - runs cargo test, the differential cases and the upstream bats suite, and puts each
+#     result, pass or fail, in the pull request;
+#   - lists pyenv's changes outside the definitions (libexec, bin/python-build, tests), which
+#     may need porting, as 2.8.8's `exec -N` did.
+# Failures are left for a person: a test that names a vendored version, a bats row to add or
+# drop in parity/expected/bats.txt, a behavior to port. `pyenv --version` follows
+# python-build/UPSTREAM, so the version needs no edit.
 # A pull request created with GITHUB_TOKEN triggers no CI run: push a commit to its branch, or
 # close and reopen it, to start one.
 on:
+  schedule:
+    - cron: "17 6 * * 1"
   workflow_dispatch:
 
 permissions:
   contents: write
   pull-requests: write
 
+env:
+  BATS_VERSION: "1.11.1"
+
 jobs:
   sync:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Fetch pyenv's latest release
@@ -28,37 +38,88 @@ jobs:
           tag=$(gh api repos/pyenv/pyenv/releases/latest --jq .tag_name)
           sha=$(gh api "repos/pyenv/pyenv/commits/$tag" --jq .sha)
           curl -fsSL "https://github.com/pyenv/pyenv/archive/$sha.tar.gz" | tar -xz -C "$RUNNER_TEMP"
+          old=$(sed -n 's/^  PYENV_SHA: //p' .github/workflows/parity.yml)
           echo "TAG=$tag" >> "$GITHUB_ENV"
           echo "SHA=$sha" >> "$GITHUB_ENV"
-      - name: Update the vendored copy
-        run: python3 ci/sync_python_build.py --upstream "$RUNNER_TEMP/pyenv-$SHA" --commit "$SHA" --write
-      - name: Open a pull request when it changed
+          echo "OLD_SHA=$old" >> "$GITHUB_ENV"
+      - name: Update the vendored copy and the parity pin
+        id: update
+        run: |
+          python3 ci/sync_python_build.py --upstream "$RUNNER_TEMP/pyenv-$SHA" --commit "$SHA" --write
+          if [ -z "$(git status --porcelain crates/pyenv/python-build)" ]; then
+            echo "up to date with $TAG"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          sed -i "s/^  PYENV_SHA: .*/  PYENV_SHA: $SHA/" .github/workflows/parity.yml
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, 2026-10-02
+        if: steps.update.outputs.changed == 'true'
+        with:
+          toolchain: "1.96"
+      - name: Build, regenerate the goldens, and run the checks
+        if: steps.update.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if [ -z "$(git status --porcelain crates/pyenv/python-build)" ]; then echo "up to date with $TAG"; exit 0; fi
+          r="$RUNNER_TEMP/results.md"
+          up="$RUNNER_TEMP/pyenv-$SHA"
+          cargo build --workspace
+          python3 parity/diff.py --rpyenv target/debug --upstream "$up" --update-golden > "$RUNNER_TEMP/golden.log" 2>&1 || true
+          check() { # <title> <command…>: runs it, records pass or fail and the output's tail
+            local title=$1; shift
+            if "$@" > "$RUNNER_TEMP/out.log" 2>&1; then echo "- **$title**: pass" >> "$r"
+            else
+              { echo "- **$title**: FAIL"; echo '  ```'; tail -n 30 "$RUNNER_TEMP/out.log" | sed 's/^/  /'; echo '  ```'; } >> "$r"
+            fi
+          }
+          : > "$r"
+          check "cargo test --workspace" cargo test --workspace
+          check "differential cases (parity/diff.py)" python3 parity/diff.py --rpyenv target/debug --upstream "$up"
+          curl -fsSL "https://github.com/bats-core/bats-core/archive/refs/tags/v${BATS_VERSION}.tar.gz" | tar -xz -C "$RUNNER_TEMP"
+          run_bats() { # as parity.yml's bats step, against the new pyenv
+            docker run --rm -v "$PWD:/w" -v "$RUNNER_TEMP:/t" -w /w debian:trixie-slim bash -c \
+              'apt-get update -qq && apt-get install -y -qq --no-install-recommends gawk git locales >/dev/null && sed -i "/en_US.UTF-8/s/^# //" /etc/locale.gen && locale-gen >/dev/null && bash parity/bats_run.sh /w/target/debug /t/pyenv-'"$SHA"' /t/bats-core-'"$BATS_VERSION"' /w/bats-tap.txt' \
+              && python3 parity/bats_check.py bats-tap.txt
+          }
+          check "upstream bats suite (parity/bats_check.py)" run_bats
+          rm -f bats-tap.txt
+          {
+            echo
+            echo "pyenv changes outside the definitions, $OLD_SHA..$SHA (review each; port what rpyenv implements):"
+            echo
+            gh api "repos/pyenv/pyenv/compare/$OLD_SHA...$SHA" \
+              --jq '.files[] | select(.filename | startswith("plugins/python-build/share/") | not) | "- `\(.filename)` (\(.status), +\(.additions) -\(.deletions))"' \
+              || echo "- (the compare API failed; compare $OLD_SHA...$SHA by hand)"
+          } >> "$r"
+      - name: Open or update the pull request
+        if: steps.update.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
           branch="sync-python-build-$TAG"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -b "$branch"
-          git add crates/pyenv/python-build
+          git add crates/pyenv/python-build .github/workflows/parity.yml parity/golden
           git commit -m "Sync python-build definitions with pyenv $TAG"
           git push -f origin "$branch"
-          existing=$(gh pr list --head "$branch" --state open --json number --jq 'length')
-          if [ "$existing" = "0" ]; then
-            body_file="$RUNNER_TEMP/pr-body.md"
-            {
-              echo "Automated: crates/pyenv/python-build updated from pyenv $TAG ($SHA) by ci/sync_python_build.py."
-              echo
-              echo "Before merging:"
-              echo
-              echo "- [ ] Bump \`PYENV_SHA\` in \`.github/workflows/parity.yml\` to \`$SHA\`."
-              echo "- [ ] Regenerate the parity goldens (\`python parity/diff.py ... --update-golden\`) and review them."
-              echo "- [ ] Re-run the bats suite (\`parity/bats_run.sh\`) and update \`parity/expected/bats.txt\`."
-              echo "- [ ] Run \`cargo test\` and update any test that names a vendored version."
-              echo "- [ ] Start CI: this pull request was created with \`GITHUB_TOKEN\`, which triggers no run. Push a commit to \`$branch\`, or close and reopen the pull request."
-            } > "$body_file"
-            gh pr create --base main --head "$branch" --title "Sync python-build definitions with pyenv $TAG" --body-file "$body_file"
+          body="$RUNNER_TEMP/pr-body.md"
+          {
+            echo "Automated: crates/pyenv/python-build updated from pyenv $TAG ($SHA) by ci/sync_python_build.py,"
+            echo "\`PYENV_SHA\` bumped, and the Linux parity goldens regenerated. Review the golden diff."
+            echo
+            echo "Checks run by the workflow:"
+            echo
+            cat "$RUNNER_TEMP/results.md"
+            echo
+            echo "A failing check is left for a person: update a test that names a vendored version, add or"
+            echo "drop rows in \`parity/expected/bats.txt\`, or port a behavior listed above."
+            echo
+            echo "This pull request was created with \`GITHUB_TOKEN\`, which triggers no CI run: push a commit to \`$branch\`, or close and reopen it, to start one."
+          } > "$body"
+          if [ "$(gh pr list --head "$branch" --state open --json number --jq 'length')" = "0" ]; then
+            gh pr create --base main --head "$branch" --title "Sync python-build definitions with pyenv $TAG" --body-file "$body"
           else
-            echo "a pull request for $branch already exists"
+            gh pr edit "$branch" --body-file "$body"
           fi
