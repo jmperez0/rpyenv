@@ -41,6 +41,18 @@ class Parse(unittest.TestCase):
         self.assertFalse(c.version_matches("3.1", "3.10.2"))
 
 
+class Probe(unittest.TestCase):
+    def test_gil_probe_compiles_and_is_old_python_syntax(self):
+        compile(c.GIL_PROBE, "<probe>", "exec")
+        for token in ("with ", " as ", 'f"', "f'"):
+            self.assertNotIn(token, c.GIL_PROBE)
+
+    def test_gil_probe_runs_here(self):
+        rc, out = c.run([sys.executable, "-E", "-s", "-c", c.GIL_PROBE])
+        self.assertEqual(rc, 0)
+        self.assertIn(out, ("None", "0", "1"))
+
+
 class Main(unittest.TestCase):
     def test_zero_byte_exe_fails_without_raising(self):
         with tempfile.TemporaryDirectory() as root:

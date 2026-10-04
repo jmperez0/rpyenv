@@ -25,6 +25,17 @@ def parse(code):
     return int(m.group(1)), int(m.group(2)), bool(m.group(3))
 
 
+# Must stay valid on 2.4-2.6 and 3.0+: no `with`, no `except X as e`, no f-strings, one-argument print.
+# Pythons without sysconfig (2.6 and older, 3.0-3.1) read as None, which means not free-threaded.
+GIL_PROBE = (
+    "try:" + chr(10) +
+    " import sysconfig; v = sysconfig.get_config_var('Py_GIL_DISABLED')" + chr(10) +
+    "except ImportError:" + chr(10) +
+    " v = None" + chr(10) +
+    "print(v)"
+)
+
+
 def expected_version(code):
     """'X.Y.Z' for a three-part code, 'X.Y' for a two-part one (compare major.minor only)."""
     parse(code)
@@ -85,7 +96,7 @@ def main(root, code):
     rc, out = run([py, "-E", "-s", "-c", "import sys; print('%d.%d.%d' % sys.version_info[:3])"], env)
     if rc or not version_matches(code, out):
         fails.append(f"running version is {out!r} (rc {rc}), expected {expected_version(code)}")
-    rc, out = run([py, "-E", "-s", "-c", "import sysconfig; print(sysconfig.get_config_var('Py_GIL_DISABLED'))"], env)
+    rc, out = run([py, "-E", "-s", "-c", GIL_PROBE], env)
     if rc or (out == "1") != ft:
         fails.append(f"free-threaded mismatch: Py_GIL_DISABLED={out!r} (rc {rc}), expected {'1' if ft else 'not 1'}")
     outs = {}
