@@ -323,3 +323,61 @@ fn a_malformed_cache_is_reported_after_the_banner_and_exits_1() {
     assert!(r.stdout.starts_with(&want), "{}", r.stdout);
     assert!(r.stdout.ends_with("\r\n"), "{}", r.stdout);
 }
+
+/// A mirror changes only the banner: the cache's row points at the mirror (as after pyenv-win's
+/// `update` from it), whose every reply is an error, yet the install succeeds, with the index
+/// and the zip fetched from python.org and nothing from the mirror.
+// allowlist D-87
+#[test]
+fn the_mirror_changes_the_banner_but_not_where_installs_download() {
+    let f = Fixture::new();
+    let mirror = common::server::start(vec![
+        ("/py/index-windows.json", vec![Reply::Status(500)]),
+        (
+            "/py/3.12.1/python-3.12.1-amd64.zip",
+            vec![Reply::Status(500)],
+        ),
+        ("/py/3.12.1.exe", vec![Reply::Status(500)]),
+    ]);
+    let m = mirror.url("/py");
+    let row = pyenv::install::wincatalog::Row {
+        code: "3.12.1".into(),
+        file: "3.12.1.exe".into(),
+        url: format!("{m}/3.12.1.exe"),
+        x64: true,
+        web_install: false,
+        msi: false,
+        zip_root_dir: None,
+    };
+    pyenv::install::wincatalog::write_db(&f.root, &[row]).unwrap();
+    let s = fake();
+    let base = s.url("/ftp/python");
+    let r = f.pyenv_env(
+        &["install", "3.12.1"],
+        &[
+            ("RPYENV_TEST_PYTHON_ORG", base.as_str()),
+            ("PYTHON_BUILD_MIRROR_URL", m.as_str()),
+        ],
+    );
+    assert_eq!(r.code, 0, "{}", r.stdout);
+    assert!(
+        r.stdout
+            .starts_with(&format!(":: [Info] ::  Mirror: {m}\r\n")),
+        "{}",
+        r.stdout
+    );
+    assert!(f
+        .root
+        .join("versions")
+        .join("3.12.1")
+        .join("python.exe")
+        .is_file());
+    assert_eq!(s.hits("/ftp/python/3.12.1/python-3.12.1-amd64.zip"), 1);
+    for p in [
+        "/py/index-windows.json",
+        "/py/3.12.1/python-3.12.1-amd64.zip",
+        "/py/3.12.1.exe",
+    ] {
+        assert_eq!(mirror.hits(p), 0, "{p}");
+    }
+}
