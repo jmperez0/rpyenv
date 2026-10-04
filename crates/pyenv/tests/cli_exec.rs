@@ -132,25 +132,17 @@ fn exec_environment_sets_python_home_and_the_library_path() {
     .unwrap();
     let home = f.root.join("versions").join("3.12.10");
     let home = home.display();
-    // A sibling test's fork can briefly hold a just-written script open, so exec fails
-    // with ETXTBSY (exit 126, ubuntu-latest CI run 37242317356). Retry while that lasts.
     let run = |lib: &str| {
-        for _ in 0..100 {
-            let r = f.pyenv_env(
-                &["exec", "-N", "print_env"],
-                &[
-                    ("PYENV_VERSION", "3.12.10"),
-                    ("LD_LIBRARY_PATH", lib),
-                    ("DYLD_LIBRARY_PATH", lib),
-                ],
-            );
-            if !(r.code == 126 && r.stderr.contains("Text file busy")) {
-                assert_eq!(r.code, 0, "{}", r.stderr);
-                return r;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-        panic!("print_env stayed busy");
+        let r = f.pyenv_env(
+            &["exec", "-N", "print_env"],
+            &[
+                ("PYENV_VERSION", "3.12.10"),
+                ("LD_LIBRARY_PATH", lib),
+                ("DYLD_LIBRARY_PATH", lib),
+            ],
+        );
+        assert_eq!(r.code, 0, "{}", r.stderr);
+        r
     };
     let r = run("");
     assert_eq!(

@@ -123,17 +123,27 @@ impl Fixture {
         cmd
     }
 
+    /// Retries while a script the test just wrote can't be started because another test's
+    /// fork still holds it open (ETXTBSY: `pyenv: <path>: Text file busy`, exit 126; seen
+    /// on ubuntu-latest CI, runs 37242317356 and 37242607167). Nothing else prints that.
     fn run(&self, dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Run {
-        let out = self
-            .command(Path::new(env!("CARGO_BIN_EXE_pyenv")), dir, env)
-            .args(args)
-            .output()
-            .unwrap();
-        Run {
-            stdout: decode(&out.stdout),
-            stderr: decode(&out.stderr),
-            code: out.status.code().unwrap(),
+        for _ in 0..100 {
+            let out = self
+                .command(Path::new(env!("CARGO_BIN_EXE_pyenv")), dir, env)
+                .args(args)
+                .output()
+                .unwrap();
+            let r = Run {
+                stdout: decode(&out.stdout),
+                stderr: decode(&out.stderr),
+                code: out.status.code().unwrap(),
+            };
+            if !(r.code == 126 && r.stderr.contains("Text file busy")) {
+                return r;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
         }
+        panic!("a script stayed busy (ETXTBSY) for 2 s");
     }
 }
 
