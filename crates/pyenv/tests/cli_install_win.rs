@@ -186,6 +186,7 @@ fn a_prefix_installs_the_newest_known_version_then_rehashes() {
     assert_eq!((again.code, again.stdout), (0, BANNER.to_string()));
 }
 
+// allowlist D-74
 #[test]
 fn a_failure_stops_the_run_exits_1_and_leaves_no_version() {
     let f = Fixture::new();
@@ -209,6 +210,7 @@ fn a_failure_stops_the_run_exits_1_and_leaves_no_version() {
     assert!(!f.root.join("versions").join("3.12.2").exists());
 }
 
+// allowlist D-82
 #[test]
 fn pypy_and_graalpy_codes_are_refused() {
     let f = Fixture::new();
@@ -229,6 +231,7 @@ fn no_version_and_none_selected_prints_help_and_exits_0() {
         .starts_with(&format!("{BANNER}Usage: pyenv install")));
 }
 
+// allowlist D-76
 #[test]
 fn register_is_ignored_with_one_info_line() {
     let f = Fixture::new();

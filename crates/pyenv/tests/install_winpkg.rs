@@ -132,6 +132,7 @@ fn leftovers(r: &Run) -> Vec<String> {
         .unwrap_or_default()
 }
 
+// allowlist D-73
 #[test]
 fn components_skip_debug_path_launcher_pip_and_free_threaded() {
     for skip in [
@@ -161,6 +162,7 @@ fn components_skip_debug_path_launcher_pip_and_free_threaded() {
     }
 }
 
+// allowlist D-73
 #[test]
 fn resolve_picks_the_zip_the_components_or_the_single_msi() {
     let zip = small_zip();
@@ -201,6 +203,8 @@ fn resolve_picks_the_zip_the_components_or_the_single_msi() {
     assert_eq!(e, "python.org has no free-threaded package for 3.10.11t");
 }
 
+// allowlist D-73
+// allowlist D-85
 #[test]
 fn a_signed_msi_installs_exactly_its_files_and_is_cached() {
     let s = python_org(
@@ -307,6 +311,7 @@ fn an_installed_version_is_skipped_silently_without_force() {
     assert_eq!(s.hits("/ftp/python/3.10.11/amd64/"), 0);
 }
 
+// allowlist D-75
 #[test]
 fn a_tampered_msi_is_refused_leaves_nothing_and_is_not_cached() {
     let mut bad = tools();
@@ -354,6 +359,7 @@ fn a_listed_signature_that_cannot_be_fetched_never_downgrades_to_unsigned() {
     assert!(leftovers(&r).is_empty());
 }
 
+// allowlist D-78
 #[test]
 fn an_unsigned_msi_installs_with_one_warning() {
     let s = python_org(tools(), None, small_zip(), "0".repeat(64));
@@ -423,6 +429,7 @@ fn a_zip_installs_with_its_copies_and_a_bad_hash_is_refused() {
 
 /// Free-threaded zips have no `python.exe` (measured on 3.13.0t): it is a copy of
 /// `python3.13t.exe`, and the usual copies follow from it.
+// allowlist D-84
 #[test]
 fn a_free_threaded_zip_gets_python_exe_from_python3_13t_exe() {
     let zip = zip_bytes(&[

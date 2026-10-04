@@ -61,6 +61,7 @@ fn codes(f: &Fixture) -> Vec<String> {
         .collect()
 }
 
+// allowlist D-79
 #[test]
 fn update_writes_the_cache_from_listings_and_the_index() {
     let f = Fixture::new();
@@ -87,6 +88,7 @@ fn update_writes_the_cache_from_listings_and_the_index() {
     assert!(raw.ends_with(b"</versions>") && raw.windows(2).any(|w| w == b"\r\n"));
 }
 
+// allowlist D-79
 #[test]
 fn a_failed_root_listing_writes_nothing_and_exits_1_or_0_with_ignore() {
     for (args, code) in [(&["update"][..], 1), (&["update", "--ignore"][..], 0)] {
@@ -107,6 +109,7 @@ fn a_failed_root_listing_writes_nothing_and_exits_1_or_0_with_ignore() {
     }
 }
 
+// allowlist D-79
 #[test]
 fn a_failed_version_page_stops_the_update_unless_ignored() {
     let f = Fixture::new();
@@ -124,6 +127,7 @@ fn a_failed_version_page_stops_the_update_unless_ignored() {
     assert!(codes(&f).contains(&"3.10.0".to_string()));
 }
 
+// allowlist D-79
 #[test]
 fn update_help_prints_the_banner_and_usage() {
     let f = Fixture::new();
@@ -135,6 +139,7 @@ fn update_help_prints_the_banner_and_usage() {
     );
 }
 
+// allowlist D-79
 #[test]
 fn a_failed_index_page_writes_nothing_and_exits_1_or_0_with_ignore() {
     for (args, code) in [(&["update"][..], 1), (&["update", "--ignore"][..], 0)] {

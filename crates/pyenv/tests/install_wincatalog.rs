@@ -119,6 +119,7 @@ fn special_characters_are_escaped_and_unescaped() {
     assert_eq!(parse_db(&render_db(&rows)).unwrap(), rows);
 }
 
+// allowlist D-83
 #[test]
 fn a_missing_empty_or_broken_cache_is_reported_not_a_panic() {
     let d = tempfile::tempdir().unwrap();

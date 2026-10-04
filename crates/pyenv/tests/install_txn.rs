@@ -625,6 +625,7 @@ fn a_pyenv_win_version_is_complete_when_its_folder_exists_without_the_marker() {
     assert!(!is_complete_for(&v, Flavor::PyenvWin));
 }
 
+// allowlist D-75
 #[test]
 fn a_pyenv_win_reinstall_carries_scripts_and_site_packages_and_recovers() {
     let d = tempfile::tempdir().unwrap();

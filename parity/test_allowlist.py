@@ -65,10 +65,11 @@ class Reasons(unittest.TestCase):
         self.assertIn("M2 is delivered", msg)
         self.assertIn("pyenv-<cmd> wrapper", msg)
 
-    def test_m2a_is_delivered_m2b_and_m2_are_not(self):
+    def test_m2a_and_m2b_are_delivered_m2_is_not(self):
         msg = allowlist.check_reason("M2a installer", "Linux", self.table)
         self.assertIn("M2a is delivered", msg)
-        self.assertIsNone(allowlist.check_reason("M2b Windows installer", "Windows", self.table))
+        msg = allowlist.check_reason("M2b Windows installer", "Windows", self.table)
+        self.assertIn("M2b is delivered", msg)
         self.assertIsNone(allowlist.check_reason("M2 x", "Linux", self.table))
 
     def test_m1_is_delivered_and_rejected(self):
