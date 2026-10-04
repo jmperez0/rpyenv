@@ -147,7 +147,7 @@ fn run_pyenv_win(args: &[&str], raw: &[OsString], ctx: &Ctx) -> Output {
 }
 
 /// True when `PYENV_SHELL` names a bash, zsh or fish on Windows.
-fn evaluating_shell() -> bool {
+pub(crate) fn evaluating_shell() -> bool {
     std::env::var("PYENV_SHELL")
         .ok()
         .and_then(|s| rpyenv_core::shellname::windows_name(&s))
