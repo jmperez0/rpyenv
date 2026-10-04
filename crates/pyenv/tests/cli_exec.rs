@@ -319,3 +319,78 @@ fn exec_debug_log_lines_name_pyenv_exec() {
     );
     assert!(lines.iter().any(|l| l.contains("nosuchcmd")), "{text}");
 }
+
+/// The folder of a real `python.exe` on this process's PATH (not a WindowsApps alias).
+#[cfg(windows)]
+fn real_python_dir() -> Option<std::path::PathBuf> {
+    std::env::split_paths(&std::env::var_os("PATH")?)
+        .filter(|d| !d.to_string_lossy().contains("WindowsApps"))
+        .find(|d| d.join("python.exe").is_file())
+}
+
+/// pyenv-win's `test_exec_arg` arguments (tests/test_pyenv_feature_exec.py), passed to
+/// rpyenv's `pyenv exec python` from cmd, as a user types it, and directly. Through cmd,
+/// `%World%` expands and `!World!` doesn't (no delayed expansion); directly, nothing does.
+/// The suite's own variant calls `bin\pyenv.bat`, which rpyenv doesn't ship (D-92).
+#[cfg(windows)]
+#[test]
+fn exec_passes_pyenv_win_s_argument_cases_unchanged() {
+    use common::winshell::{self, host, output};
+    let Some(python_dir) = real_python_dir() else {
+        eprintln!("skipped: no python.exe on PATH");
+        return;
+    };
+    let f = Fixture::new();
+    let link = f.root.join("versions").join("3.99");
+    let made = std::process::Command::new(winshell::cmd_exe())
+        .args(["/d", "/c", "mklink", "/J"])
+        .arg(&link)
+        .arg(&python_dir)
+        .output()
+        .unwrap();
+    assert!(
+        made.status.success(),
+        "{}",
+        String::from_utf8_lossy(&made.stdout)
+    );
+    // The junction points at a real Python install: remove the link itself (`remove_dir`
+    // on a junction never touches its target) before the fixture's tree goes, even on panic.
+    struct Unlink(std::path::PathBuf);
+    impl Drop for Unlink {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir(&self.0);
+        }
+    }
+    let _unlink = Unlink(link.clone());
+    winshell::install_pyenv(&f);
+    let env = [("PYENV_VERSION", "3.99"), ("World", "Earth")];
+    let script = "import sys; print(sys.argv[1])";
+    for arg in [
+        "Hello",
+        "Hello World",
+        "Hello 'World'",
+        "Hello \"World\"",
+        "Hello %World%",
+        "Hello !World!",
+        "Hello #World#",
+        "Hello World'",
+        "Hello World\"",
+        "Hello ''World'",
+        "Hello \"\"World\"",
+    ] {
+        let mut c = host(&f, &winshell::cmd_exe(), &env, &[]);
+        c.args([
+            "/d", "/c", "call", "pyenv", "exec", "python", "-c", script, arg,
+        ]);
+        let (out, err, _) = output(c);
+        assert_eq!(
+            out.trim_end(),
+            arg.replace("%World%", "Earth"),
+            "cmd: {arg} {err}"
+        );
+        let mut d = host(&f, &f.syspath.join("pyenv.exe"), &env, &[]);
+        d.args(["exec", "python", "-c", script, arg]);
+        let (out, err, _) = output(d);
+        assert_eq!(out.trim_end(), arg, "direct: {arg} {err}");
+    }
+}
