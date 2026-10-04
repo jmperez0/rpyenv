@@ -177,6 +177,23 @@ pub struct IndexZip {
     pub sha256: String,
 }
 
+/// A next-page URL is `<base>/index-windows[A-Za-z0-9_.-]*.json`: one plain segment under `base`.
+fn next_is_an_index_page(next: &str, base: &str) -> bool {
+    let Some(seg) = next.strip_prefix(base).and_then(|r| r.strip_prefix('/')) else {
+        return false;
+    };
+    let Some(mid) = seg
+        .strip_prefix("index-windows")
+        .and_then(|r| r.strip_suffix(".json"))
+    else {
+        return false;
+    };
+    !seg.contains("..")
+        && mid
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'))
+}
+
 /// The `PythonCore` zips on one index page (rows whose URL is under `base`, named
 /// `python-<sort-version>[t]-<arch>.zip`, with a 64-hex SHA-256), and the next page's URL,
 /// resolved against this page's folder.
@@ -256,7 +273,7 @@ pub fn index_page(
         }
     });
     if let Some(n) = &next {
-        if !n.starts_with(&format!("{base}/")) {
+        if !next_is_an_index_page(n, base) {
             return Err(format!("index page links outside {base}: {n}"));
         }
     }
@@ -497,6 +514,20 @@ mod tests {
         ] {
             let e = index_page(&index(Some(bad), &[]), &page, b).unwrap_err();
             assert!(e.starts_with("index page links outside "), "{bad}: {e}");
+        }
+        for bad in [
+            "../index.json",
+            "sub/../index-windows-x.json",
+            "%2e%2e/index.json",
+            "index-windows-recent.json?x",
+            "x/index-windows.json",
+        ] {
+            let e = index_page(&index(Some(bad), &[]), &page, b).unwrap_err();
+            assert!(e.starts_with("index page links outside "), "{bad}: {e}");
+        }
+        for good in ["index-windows-recent.json", "index-windows-legacy.json"] {
+            let (_, next) = index_page(&index(Some(good), &[]), &page, b).unwrap();
+            assert_eq!(next.as_deref(), Some(format!("{b}/{good}").as_str()));
         }
         let (_, next) =
             index_page(&index(Some("index-windows-legacy.json"), &[]), &page, b).unwrap();
