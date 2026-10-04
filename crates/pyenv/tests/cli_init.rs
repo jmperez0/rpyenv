@@ -285,3 +285,166 @@ type -t pyenv
         String::from_utf8_lossy(&o.stderr)
     );
 }
+
+fn read(p: &Path) -> String {
+    std::fs::read_to_string(p).unwrap()
+}
+
+const BASH_SETUP: &str = "export PYENV_ROOT=\"$HOME/.pyenv\"\n[[ -d $PYENV_ROOT/bin ]] && export PATH=\"$PYENV_ROOT/bin:$PATH\"\neval \"$(pyenv init - bash)\"\n";
+
+/// The default root, so the setup text is the portable `$HOME` form.
+fn default_root(f: &Fixture) -> String {
+    f.base.join(".pyenv").display().to_string()
+}
+
+#[test]
+fn install_writes_rc_then_profile() {
+    let f = Fixture::new();
+    let r = default_root(&f);
+    let env = [("PYENV_ROOT", r.as_str())];
+    assert_eq!(
+        init(&f, &["--install", "bash"], &env),
+        (String::new(), String::new(), 0)
+    );
+    assert_eq!(read(&f.base.join(".bashrc")), BASH_SETUP);
+    assert_eq!(read(&f.base.join(".profile")), BASH_SETUP);
+    // A second run refuses: idempotence by refusal.
+    let again = init(&f, &["--install", "bash"], &env);
+    assert_eq!(again.2, 1);
+    assert_eq!(read(&f.base.join(".bashrc")), BASH_SETUP);
+}
+
+#[test]
+fn install_uses_an_existing_bash_profile_and_other_shells_files() {
+    let f = Fixture::new();
+    let r = default_root(&f);
+    let env = [("PYENV_ROOT", r.as_str())];
+    f.file(&f.base.join(".bash_profile"), "alias ll=ls");
+    assert_eq!(init(&f, &["--install", "bash"], &env).2, 0);
+    // No trailing newline: one is added before the setup.
+    assert_eq!(
+        read(&f.base.join(".bash_profile")),
+        format!("alias ll=ls\n{BASH_SETUP}")
+    );
+    assert!(!f.base.join(".profile").exists());
+
+    let g = Fixture::new();
+    let r = default_root(&g);
+    let env = [("PYENV_ROOT", r.as_str())];
+    assert_eq!(init(&g, &["--install", "zsh"], &env).2, 0);
+    let zsh = BASH_SETUP.replace("init - bash", "init - zsh");
+    assert_eq!(read(&g.base.join(".zshrc")), zsh);
+    assert_eq!(read(&g.base.join(".zprofile")), zsh);
+    assert_eq!(init(&g, &["--install", "mksh"], &env).2, 0);
+    assert_eq!(
+        read(&g.base.join(".profile")),
+        BASH_SETUP.replace("init - bash", "init - mksh")
+    );
+    assert_eq!(init(&g, &["--install", "pwsh"], &env).2, 0);
+    assert_eq!(
+        read(&g.base.join(".config/powershell/profile.ps1")),
+        "$Env:PYENV_ROOT=\"$Env:HOME/.pyenv\"\nif (Test-Path -LP \"$Env:PYENV_ROOT/bin\" -PathType Container) {\n  $Env:PATH=\"$Env:PYENV_ROOT/bin:$Env:PATH\" }\niex ((pyenv init -) -join \"`n\")\n"
+    );
+}
+
+/// Review focus 5: any mention of "pyenv", in any case, refuses, and the check of every
+/// file comes before any write.
+#[test]
+fn install_refuses_any_mention_and_writes_nothing() {
+    let f = Fixture::new();
+    f.file(&f.base.join(".profile"), "# managed by PYENV-tools\n");
+    let (out, err, code) = init(&f, &["--install", "bash"], &[]);
+    let p = f.base.join(".profile").display().to_string();
+    assert_eq!((out.as_str(), code), ("", 1));
+    assert_eq!(
+        err,
+        format!("pyenv: cannot automatically apply changes to {p}: it appears to already contain Pyenv-related code.\npyenv: review the file's contents and apply changes manually if necessary.\npyenv: run `pyenv init bash` to see the suggested setup.\n")
+    );
+    assert!(!f.base.join(".bashrc").exists());
+}
+
+#[test]
+fn install_refusals() {
+    let f = Fixture::new();
+    std::fs::create_dir(f.base.join(".bashrc")).unwrap();
+    let rc = f.base.join(".bashrc").display().to_string();
+    assert_eq!(
+        init(&f, &["--install", "bash"], &[]),
+        (String::new(), format!("pyenv: failed to inspect {rc}\n"), 1)
+    );
+    assert!(!f.base.join(".profile").exists());
+    for shell in ["sh", "nu"] {
+        assert_eq!(
+            init(&f, &["--install", shell], &[]),
+            (
+                String::new(),
+                format!("pyenv: cannot automatically configure startup files for {shell}\n"),
+                1
+            )
+        );
+    }
+    assert_eq!(
+        init(&f, &["--install", "bash"], &[("HOME", "")]),
+        (
+            String::new(),
+            "pyenv: HOME must be set to configure shell startup files\n".to_string(),
+            1
+        )
+    );
+    // No fish on PATH: refused before anything is written.
+    assert_eq!(
+        init(&f, &["--install", "fish"], &[]).1,
+        "pyenv: fish is not available to configure fish universal variables\n"
+    );
+    assert!(!f.base.join(".config/fish").exists());
+}
+
+/// fish: the universal-variable block goes to `fish -c`, and only the source line to
+/// config.fish (test/init.bats:134-148).
+#[test]
+fn install_for_fish_runs_fish_and_appends_one_line() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new();
+    let log = f.base.join("fish.log");
+    let stub = f.syspath.join("fish");
+    std::fs::write(
+        &stub,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n---\\n' \"$@\" > '{}'\n",
+            log.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    f.file(&f.base.join(".config/fish/config.fish"), "end");
+    let r = default_root(&f);
+    assert_eq!(
+        init(&f, &["--install", "fish"], &[("PYENV_ROOT", r.as_str())]).2,
+        0
+    );
+    assert_eq!(
+        read(&log),
+        "-c\n---\nset -Ux PYENV_ROOT $HOME/.pyenv\nif functions -q fish_add_path\n  test -d $PYENV_ROOT/bin; and fish_add_path $PYENV_ROOT/bin\nelse\n  test -d $PYENV_ROOT/bin; and set -U fish_user_paths $PYENV_ROOT/bin $fish_user_paths\nend\n---\n"
+    );
+    assert_eq!(
+        read(&f.base.join(".config/fish/config.fish")),
+        "end\npyenv init - fish | source\n"
+    );
+}
+
+/// Writes go through symlinks; a dangling one has its target created (M3L).
+#[test]
+fn install_writes_through_symlinks() {
+    let f = Fixture::new();
+    std::fs::create_dir(f.base.join("dotfiles")).unwrap();
+    f.file(&f.base.join("dotfiles/bashrc"), "");
+    std::os::unix::fs::symlink(f.base.join("dotfiles/bashrc"), f.base.join(".bashrc")).unwrap();
+    std::os::unix::fs::symlink(f.base.join("dotfiles/profile"), f.base.join(".profile")).unwrap();
+    let r = default_root(&f);
+    assert_eq!(
+        init(&f, &["--install", "bash"], &[("PYENV_ROOT", r.as_str())]).2,
+        0
+    );
+    assert_eq!(read(&f.base.join("dotfiles/bashrc")), BASH_SETUP);
+    assert_eq!(read(&f.base.join("dotfiles/profile")), BASH_SETUP);
+}

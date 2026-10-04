@@ -14,6 +14,7 @@ pub(crate) enum Mode {
     Print,
     Path,
     DetectShell,
+    Install,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,6 +39,7 @@ pub(crate) fn parse(args: &[&str]) -> Args {
         match arg {
             "-" => a.mode = Mode::Print,
             "--path" => a.mode = Mode::Path,
+            "--install" => a.mode = Mode::Install,
             "--detect-shell" => a.mode = Mode::DetectShell,
             "--no-push-path" => a.no_push_path = true,
             "--no-rehash" => a.no_rehash = true,
@@ -65,6 +67,7 @@ pub fn init(ctx: &Ctx, args: &[&str]) -> Output {
     let shell = shell_name(a.shell.clone());
     match a.mode {
         Mode::Help => help(ctx, &shell),
+        Mode::Install => install(ctx, &shell),
         Mode::DetectShell => {
             let p = detect_profile(&shell);
             let mut o = Output::new();
@@ -461,4 +464,135 @@ fn shell_function(shell: &str) -> String {
         }
         _ => posix_function("pyenv() {\n  local command=${1:-}\n", &routed),
     }
+}
+
+/// `pyenv init --install` (libexec/pyenv-init:291-406): checks every startup file before
+/// writing any, then appends the setup text to each.
+fn install(ctx: &Ctx, shell: &str) -> Output {
+    let home = home();
+    if home.is_empty() {
+        return Output::error("pyenv: HOME must be set to configure shell startup files");
+    }
+    let p = detect_profile(shell);
+    // `${path/#\~/$HOME}`
+    let expand = |s: &str| match s.strip_prefix('~') {
+        Some(rest) => format!("{home}{rest}"),
+        None => s.to_string(),
+    };
+    let files: Vec<(String, String)> = match shell {
+        "bash" | "zsh" | "ksh" | "ksh93" | "mksh" => {
+            let setup = posix_shell_setup(ctx, shell).join("\n");
+            let (rc, profile) = (expand(p.rc), expand(p.profile));
+            let mut f = vec![(rc.clone(), setup.clone())];
+            if profile != rc {
+                f.push((profile, setup));
+            }
+            f
+        }
+        "fish" => vec![(expand(p.rc), FISH_SHELL_SETUP.to_string())],
+        "pwsh" => vec![(expand(p.rc), pwsh_shell_setup(ctx).join("\n"))],
+        _ => {
+            return Output::error(format!(
+                "pyenv: cannot automatically configure startup files for {shell}"
+            ))
+        }
+    };
+    for (file, _) in &files {
+        if let Err(o) = check_startup_file(file, shell) {
+            return o;
+        }
+    }
+    if shell == "fish" {
+        if let Err(o) = install_fish_user_paths(ctx) {
+            return o;
+        }
+    }
+    for (file, text) in &files {
+        // Decision 12: upstream's bash prints its own error here; no test reaches it.
+        if let Err(e) = append_lines(file, text) {
+            return Output::error(format!(
+                "pyenv: {file}: {}",
+                rpyenv_core::launch::io_reason(&e)
+            ));
+        }
+    }
+    Output::new()
+}
+
+/// `check_startup_file`: a missing file is fine (a dangling symlink counts as missing); one
+/// that isn't a readable regular file, or that mentions "pyenv" in any case, refuses.
+fn check_startup_file(file: &str, shell: &str) -> Result<(), Output> {
+    let path = Path::new(file);
+    if !path.exists() {
+        return Ok(());
+    }
+    let inspect = || Output::error(format!("pyenv: failed to inspect {file}"));
+    if !path.is_file() {
+        return Err(inspect());
+    }
+    let bytes = std::fs::read(path).map_err(|_| inspect())?;
+    // `grep -Fi pyenv`
+    if bytes.to_ascii_lowercase().windows(5).any(|w| w == b"pyenv") {
+        let mut o = Output::new();
+        o.err(format!("pyenv: cannot automatically apply changes to {file}: it appears to already contain Pyenv-related code."));
+        o.err("pyenv: review the file's contents and apply changes manually if necessary.");
+        o.err(format!(
+            "pyenv: run `pyenv init {shell}` to see the suggested setup."
+        ));
+        return Err(o.with_code(1));
+    }
+    Ok(())
+}
+
+/// `fish -c "<the fish PATH block>"`, with `fish` from PATH (libexec/pyenv-init:373-386).
+fn install_fish_user_paths(ctx: &Ctx) -> Result<(), Output> {
+    let fish = rpyenv_core::pathsearch::find_first(
+        "fish",
+        ctx.path.as_deref(),
+        None,
+        ctx.flavor,
+        ctx.pathext.as_deref(),
+    )
+    .ok_or_else(|| {
+        Output::error("pyenv: fish is not available to configure fish universal variables")
+    })?;
+    let ok = std::process::Command::new(fish)
+        .arg("-c")
+        .arg(fish_user_path_setup(ctx).join("\n"))
+        .status()
+        .is_ok_and(|s| s.success());
+    if ok {
+        Ok(())
+    } else {
+        Err(Output::error(
+            "pyenv: failed to configure fish universal variables",
+        ))
+    }
+}
+
+/// `append_lines`: make the parent folder, add a newline when the file doesn't end in one,
+/// then append the text and a newline. Opening follows symlinks.
+fn append_lines(file: &str, text: &str) -> std::io::Result<()> {
+    use std::io::{Read, Seek, SeekFrom, Write};
+    if let Some(dir) = Path::new(file)
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(dir)?;
+    }
+    let mut f = std::fs::OpenOptions::new()
+        .read(true)
+        .append(true)
+        .create(true)
+        .open(file)?;
+    if f.metadata()?.len() > 0 {
+        let mut last = [0u8; 1];
+        f.seek(SeekFrom::End(-1))?;
+        f.read_exact(&mut last)?;
+        if last[0] != b'\n' {
+            f.write_all(b"\n")?;
+        }
+    }
+    f.write_all(text.as_bytes())?;
+    f.write_all(b"\n")
 }
