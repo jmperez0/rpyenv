@@ -6,9 +6,11 @@ mod common;
 use common::server::{start_with, Reply, Server};
 use common::winfake::{index_json, listing, sha256, zip_bytes};
 use pyenv::install::fetch::Fetcher;
+use pyenv::install::txn::Txn;
 use pyenv::install::wincatalog::parse_code;
 use pyenv::install::winpkg::{install, resolve, skip_component, Done, Job, Package};
 use pyenv::install::InstallError;
+use rpyenv_core::flavor::Flavor;
 use std::path::{Path, PathBuf};
 
 fn fx(name: &str) -> Vec<u8> {
@@ -554,4 +556,38 @@ fn a_failure_after_the_transaction_began_leaves_nothing() {
         assert!(r.root.path().join("versions").is_dir());
         assert!(leftovers(&r).is_empty(), "{:?}", leftovers(&r));
     }
+}
+
+/// Fix round 1, I1: the version lock is taken before anything is downloaded, so a second
+/// install of the same code can't rename bytes under the cache name the first one verified.
+#[test]
+fn a_locked_version_is_refused_before_any_download() {
+    let s = python_org(
+        tools(),
+        Some(Reply::Body(tools_asc())),
+        small_zip(),
+        "0".repeat(64),
+    );
+    let root = tempfile::tempdir().unwrap();
+    let held = Txn::begin_for(&root.path().join("versions"), "3.10.11", Flavor::PyenvWin).unwrap();
+    let r = run(&s, "3.10.11", false, Some(root));
+    match &r.result {
+        Err(InstallError::Message(m)) => {
+            assert!(
+                m.contains("another install of 3.10.11 is in progress"),
+                "{m}"
+            )
+        }
+        other => panic!("{other:?} {:?}", r.lines),
+    }
+    assert!(r.lines.is_empty(), "{:?}", r.lines);
+    for path in [
+        "/ftp/python/3.10.11/amd64/",
+        "/ftp/python/3.10.11/amd64/tools.msi",
+        "/ftp/python/3.10.11/amd64/tools.msi.asc",
+    ] {
+        assert_eq!(s.hits(path), 0, "{path}");
+    }
+    assert!(!r.root.path().join("install_cache").exists());
+    drop(held);
 }

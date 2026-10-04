@@ -9,6 +9,7 @@ use super::wincatalog::{Arch, Code};
 use super::winsource::{index_zips, listing_names};
 use super::{child_of, interrupted, msi, openpgp, zipx, InstallError};
 use rpyenv_core::flavor::Flavor;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -327,16 +328,42 @@ fn copy_if(src: &Path, dests: &[PathBuf]) -> Result<(), String> {
     Ok(())
 }
 
-/// Runs the version's own Python in `prefix` with the user site and PYTHON* variables shut out
-/// (measured: plain ensurepip read the user site despite `-s`).
-fn python(prefix: &Path, args: &[&str], what: &str) -> Result<(), String> {
-    let out = Command::new(prefix.join("python.exe"))
-        .args(["-E", "-s"])
+/// pip's configuration file setting for "none" (`os.devnull`).
+const NULL_DEVICE: &str = if cfg!(windows) { "NUL" } else { "/dev/null" };
+
+/// The command `python` runs. `parent` names the variables this process has: every `PIP_*` one
+/// is removed (case-insensitively on Windows, whose variable names ignore case) and pip's
+/// configuration file is the null device, as ensurepip does for its own pip (fix round 1, I2:
+/// `PIP_REQUIRE_VIRTUALENV` made pip exit 3, and `PIP_TARGET`, `PIP_PREFIX` or `PIP_USER` could
+/// write outside the version).
+fn python_command(prefix: &Path, args: &[&str], parent: &[OsString]) -> Command {
+    let mut cmd = Command::new(prefix.join("python.exe"));
+    cmd.args(["-E", "-s"])
         .args(args)
         .current_dir(prefix)
         .env("PYTHONNOUSERSITE", "1")
         .env_remove("PYTHONHOME")
-        .env_remove("PYTHONPATH")
+        .env_remove("PYTHONPATH");
+    for name in parent {
+        let n = name.to_string_lossy();
+        let pip = if cfg!(windows) {
+            n.get(..4).is_some_and(|p| p.eq_ignore_ascii_case("PIP_"))
+        } else {
+            n.starts_with("PIP_")
+        };
+        if pip {
+            cmd.env_remove(name);
+        }
+    }
+    cmd.env("PIP_CONFIG_FILE", NULL_DEVICE);
+    cmd
+}
+
+/// Runs the version's own Python in `prefix` with the user site and PYTHON* variables shut out
+/// (measured: plain ensurepip read the user site despite `-s`).
+fn python(prefix: &Path, args: &[&str], what: &str) -> Result<(), String> {
+    let parent: Vec<OsString> = std::env::vars_os().map(|(k, _)| k).collect();
+    let out = python_command(prefix, args, &parent)
         .stdin(std::process::Stdio::null())
         .output()
         .map_err(|e| format!("{what}: {e}"))?;
@@ -409,6 +436,7 @@ pub fn finish(code: &Code, prefix: &Path, kind: Kind) -> Result<(), String> {
                     &[
                         "-m",
                         "pip",
+                        "--isolated",
                         "install",
                         "--no-index",
                         "--no-deps",
@@ -441,8 +469,16 @@ pub struct Job<'a> {
 }
 
 /// One version, end to end. Errors leave no `versions\<code>` behind (the transaction rolls
-/// back) and no unverified file in the cache.
+/// back) and no unverified file in the cache. Any failure after Ctrl+C is reported as
+/// `Interrupted` (fix round 1, M3): a step it cut short fails with its own message.
 pub fn install(job: &Job, say: &mut dyn FnMut(&str)) -> Result<Done, InstallError> {
+    match install_one(job, say) {
+        Err(_) if interrupted() => Err(InstallError::Interrupted),
+        r => r,
+    }
+}
+
+fn install_one(job: &Job, say: &mut dyn FnMut(&str)) -> Result<Done, InstallError> {
     let text = job.code.text.as_str();
     let versions = job.root.join("versions");
     let msg = InstallError::Message;
@@ -452,6 +488,11 @@ pub fn install(job: &Job, say: &mut dyn FnMut(&str)) -> Result<Done, InstallErro
     if is_complete_for(&versions.join(text), Flavor::PyenvWin) && !job.force {
         return Ok(Done::Skipped);
     }
+    // The version lock is held from before the first download (fix round 1, I1): MSIs are
+    // renamed onto their cache names before they are verified, so a concurrent install of the
+    // same code could otherwise swap the bytes between this one's check and its extraction.
+    // Every `?` from here on drops `txn`, which rolls back.
+    let mut txn = Txn::begin_for(&versions, text, Flavor::PyenvWin).map_err(msg)?;
     let pkg = resolve(job.code, job.base, job.fetcher).map_err(msg)?;
     let cache = job.root.join("install_cache");
     let fetched = fetch_package(&pkg, text, &cache, job.fetcher, &mut |from, to| {
@@ -466,7 +507,6 @@ pub fn install(job: &Job, say: &mut dyn FnMut(&str)) -> Result<Done, InstallErro
         ));
     }
     say(&format!(":: [Installing] ::  {text} ..."));
-    let mut txn = Txn::begin_for(&versions, text, Flavor::PyenvWin).map_err(msg)?;
     let stage = txn.stage_dir().to_path_buf();
     unpack(&fetched, &stage).map_err(msg)?;
     if interrupted() {
@@ -487,7 +527,52 @@ pub fn install(job: &Job, say: &mut dyn FnMut(&str)) -> Result<Done, InstallErro
 #[cfg(test)]
 mod tests {
     use super::super::openpgp::PINNED;
-    use super::signer_allowed;
+    use super::{python_command, signer_allowed, NULL_DEVICE};
+    use std::ffi::{OsStr, OsString};
+    use std::path::Path;
+
+    /// Fix round 1, I2: the child sees none of the parent's `PIP_*` variables and no pip
+    /// configuration file, as ensurepip arranges for its own pip.
+    #[test]
+    fn python_children_get_no_pip_configuration() {
+        let parent: Vec<OsString> = [
+            "PIP_REQUIRE_VIRTUALENV",
+            "PIP_TARGET",
+            "PATH",
+            "PIPX_HOME",
+            "pip_user",
+        ]
+        .iter()
+        .map(OsString::from)
+        .collect();
+        let cmd = python_command(Path::new("prefix"), &["-m", "pip"], &parent);
+        let envs: Vec<(&OsStr, Option<&OsStr>)> = cmd.get_envs().collect();
+        let get = |k: &str| {
+            envs.iter()
+                .find(|(n, _)| *n == OsStr::new(k))
+                .map(|(_, v)| *v)
+        };
+        assert_eq!(get("PIP_REQUIRE_VIRTUALENV"), Some(None), "{envs:?}");
+        assert_eq!(get("PIP_TARGET"), Some(None), "{envs:?}");
+        assert_eq!(
+            get("PIP_CONFIG_FILE"),
+            Some(Some(OsStr::new(NULL_DEVICE))),
+            "{envs:?}"
+        );
+        assert_eq!(
+            get("PYTHONNOUSERSITE"),
+            Some(Some(OsStr::new("1"))),
+            "{envs:?}"
+        );
+        assert_eq!(get("PYTHONHOME"), Some(None), "{envs:?}");
+        assert_eq!(get("PYTHONPATH"), Some(None), "{envs:?}");
+        assert_eq!(get("PATH"), None, "inherited untouched: {envs:?}");
+        assert_eq!(get("PIPX_HOME"), None, "not a PIP_ variable: {envs:?}");
+        // Windows variable names ignore case; on Linux pip reads only upper-case names.
+        assert_eq!(get("pip_user"), cfg!(windows).then_some(None), "{envs:?}");
+        let args: Vec<&OsStr> = cmd.get_args().collect();
+        assert_eq!(args, ["-E", "-s", "-m", "pip"]);
+    }
 
     /// Ruling R4: any pinned key for a single MSI; only Steve Dower's for a component MSI.
     #[test]
