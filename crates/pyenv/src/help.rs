@@ -243,7 +243,7 @@ pub fn listing(flavor: Flavor, ctx: Option<&Ctx>) -> String {
         })
         .collect();
     if let Some(ctx) = ctx {
-        let path = crate::plugin::dispatch_path(ctx);
+        let path = crate::plugin::search_path(ctx);
         for raw in crate::plugin::listed(ctx, &path) {
             // `pyenv-commands` strips `sh-`; `pyenv-help` then tries both names.
             let name = raw.strip_prefix("sh-").unwrap_or(&raw).to_string();
@@ -308,6 +308,15 @@ fn help_pyenv(args: &[&str], ctx: Option<&Ctx>) -> Output {
         o.stdout.push_str(&listing(Flavor::Pyenv, ctx));
         return o;
     };
+    // `command -v pyenv-<cmd> || command -v pyenv-sh-<cmd>`: a plugin `pyenv-<cmd>` comes
+    // before a built-in that is only `sh-<cmd>` (`shell`).
+    if let Some(c) = ctx.filter(|_| commands::lookup(Flavor::Pyenv, cmd).is_none()) {
+        if crate::plugin::find(c, cmd).is_some() {
+            if let Some(o) = plugin_help(c, cmd, usage_only) {
+                return o;
+            }
+        }
+    }
     match find(Flavor::Pyenv, cmd) {
         Some(t) if usage_only => {
             if let Some(u) = t.usage {

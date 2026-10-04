@@ -238,13 +238,20 @@ Upstream's command set:
 | Virtualenvs | `virtualenv`, `virtualenvs`, `virtualenv-delete`, `virtualenv-prefix`, `activate`, `deactivate` |
 
 Plugin dispatch: for a command rpyenv doesn't have, run `pyenv-<cmd>` from
-`<prefix>/libexec`, `$PYENV_ROOT/plugins/*/bin`, `<prefix>/plugins/*/bin` or
-`PATH`, in that order, with the environment upstream's dispatcher exports
-(`PYENV_ROOT`, `PYENV_DIR`, `_PYENV_INSTALL_PREFIX`, that `PATH`, and on Linux
-`PYENV_HOOK_PATH`). A plugin can't shadow a built-in. On Linux, existing bash
-plugins work unchanged: rpyenv keeps a `pyenv-<cmd>` symlink to itself for
-each built-in in `$PYENV_ROOT/.rpyenv/libexec` (on the plugin's `PATH`), and
-run under such a name it acts as `pyenv <cmd>`. On Windows, a plugin must be
+`<prefix>/libexec` (Linux, and only when it holds `pyenv-*` files: rpyenv's
+install folder may be `/usr`), `$PYENV_ROOT/plugins/*/bin` (when the prefix
+isn't the root), `<prefix>/plugins/*/bin` or `PATH`, in that order, with the
+environment upstream's dispatcher exports (`PYENV_ROOT`, `PYENV_DIR`,
+`_PYENV_INSTALL_PREFIX`, that `PATH`, and on Linux `PYENV_HOOK_PATH`). On
+Windows `<prefix>\libexec` is never searched: in a pyenv-win root it holds
+pyenv-win's own scripts. A plugin can't shadow a built-in, and a name with a
+path separator is no command. On Linux, existing bash plugins work
+unchanged: when a plugin runs, rpyenv makes (or repairs, or prunes) a
+`pyenv-<cmd>` symlink to itself for each built-in in
+`$PYENV_ROOT/.rpyenv/libexec` and puts that folder on the plugin's `PATH`;
+run under such a name it acts as `pyenv <cmd>`. Commands that only list or
+look up plugins write nothing. `pyenv hooks` lists hook scripts for plugins
+that source them; rpyenv runs none itself (D4). On Windows, a plugin must be
 an executable that `PATHEXT` finds (`.exe`, `.bat`, `.cmd`). Plugins appear
 in `pyenv commands`, `pyenv help` (from their leading `#` comment block) and
 `pyenv completions`, and plugin `sh-*` commands join the shell function's

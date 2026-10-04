@@ -229,7 +229,8 @@ pub fn completions(ctx: &Ctx, args: &[&str]) -> Output {
     let sh = format!("sh-{cmd}");
     let target = if commands::lookup(ctx.flavor, cmd).is_some() {
         cmd
-    } else if commands::lookup(ctx.flavor, &sh).is_some() {
+    } else if crate::plugin::find(ctx, cmd).is_none() && commands::lookup(ctx.flavor, &sh).is_some()
+    {
         sh.as_str()
     } else {
         // A plugin, or (`set -e` ends the script when neither exists) no output at all.
@@ -278,29 +279,29 @@ fn plugin_completions(ctx: &Ctx, cmd: &str, args: &[&str]) -> Option<Output> {
     if !marked {
         return Some(o);
     }
-    let path = crate::plugin::dispatch_path(ctx);
-    let mut c = std::process::Command::new(&file);
-    c.arg("--complete").args(args);
-    for (k, v) in crate::plugin::env(ctx, path) {
-        if let Some(v) = v {
-            c.env(k, v);
-        }
-    }
-    match c.output() {
-        Ok(out) => {
-            o.stdout.push_str(&String::from_utf8_lossy(&out.stdout));
-            o.stderr.push_str(&String::from_utf8_lossy(&out.stderr));
-            Some(o.with_code(out.status.code().unwrap_or(1)))
-        }
-        Err(e) => {
-            o.err(format!(
-                "pyenv: {}: {}",
-                file.display(),
-                rpyenv_core::launch::io_reason(&e)
-            ));
-            Some(o.with_code(1))
-        }
-    }
+    // `--help` now, then the plugin with the caller's stdin, stdout and stderr, as
+    // upstream's `exec`.
+    #[cfg(windows)]
+    let o = if crate::evaluating_shell() {
+        crate::commands::shell_win::lf(o)
+    } else {
+        o
+    };
+    o.emit(ctx.flavor);
+    let mut a: Vec<OsString> = vec!["--complete".into()];
+    a.extend(args.iter().map(OsString::from));
+    let plan = rpyenv_core::launch::LaunchPlan {
+        program: file,
+        args: a,
+        raw_tail: None,
+        env: crate::plugin::env(ctx, crate::plugin::run_path(ctx)),
+        warnings: Vec::new(),
+        wait: false,
+    };
+    Some(match rpyenv_core::launch::run(&plan, ctx, None) {
+        Ok(code) => Output::new().with_code(code),
+        Err(r) => r.into(),
+    })
 }
 
 #[cfg(test)]

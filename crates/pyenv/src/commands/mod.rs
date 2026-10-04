@@ -105,7 +105,7 @@ pub enum Listing {
 /// the dispatch `PATH`, with the same `sh-` handling, each once, in the flavor's order
 /// (libexec/pyenv-commands:23-47).
 pub fn command_names(ctx: &Ctx, listing: Listing) -> Vec<String> {
-    let path = crate::plugin::dispatch_path(ctx);
+    let path = crate::plugin::search_path(ctx);
     let plugins = crate::plugin::listed(ctx, &path);
     let mut all: Vec<String> = names(ctx.flavor, listing)
         .into_iter()

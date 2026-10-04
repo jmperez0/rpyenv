@@ -39,7 +39,8 @@ fn a_plugin_runs_with_the_dispatcher_s_environment() {
         run(&f, &["hello", "a b", "c"]),
         (format!("a b|c|{r}|{w}|{r}/pyenv.d\n"), String::new(), 0)
     );
-    // The plugin folders and the built-in links lead PATH, after <prefix>/libexec.
+    // The plugin folders, then the built-in links, lead PATH. The test binary's install
+    // folder (`target`) has no libexec with `pyenv-*` files, so that one isn't added.
     plugin(
         &f,
         "path",
@@ -49,9 +50,9 @@ fn a_plugin_runs_with_the_dispatcher_s_environment() {
     );
     let out = run(&f, &["path"]).0;
     let lines: Vec<&str> = out.lines().collect();
-    assert!(lines[0].ends_with("/libexec"), "{out}");
-    assert_eq!(lines[1], format!("{r}/plugins/path/bin"));
-    assert_eq!(lines[2], format!("{r}/plugins/hello/bin"));
+    assert_eq!(lines[0], format!("{r}/plugins/path/bin"), "{out}");
+    assert_eq!(lines[1], format!("{r}/plugins/hello/bin"));
+    assert_eq!(lines[2], format!("{r}/.rpyenv/libexec"));
 }
 
 #[test]
@@ -327,4 +328,111 @@ fn a_plugin_s_hooks_are_listed_once() {
     plugin(&f, "venv", "list", "pyenv-hooks activate\n");
     let x = f.root.join("pyenv.d/activate/x.bash");
     assert_eq!(run(&f, &["list"]).0, format!("{}\n", x.display()));
+}
+
+/// Deferred minor 1: commands that only list or look up plugins write nothing into the root;
+/// the built-in links come with the first plugin run.
+#[test]
+fn only_a_plugin_run_makes_the_built_in_links() {
+    let f = Fixture::new();
+    let links = f.root.join(".rpyenv");
+    for args in [
+        &["commands"][..],
+        &["help"],
+        &["init", "-", "bash"],
+        &["completions", "nosuch"],
+        &["nosuch"],
+    ] {
+        run(&f, args);
+        assert!(!links.exists(), "{args:?} made {}", links.display());
+    }
+    plugin(&f, "x", "where", "pyenv-root\n");
+    assert_eq!(run(&f, &["where"]).0, format!("{}\n", f.root.display()));
+    assert!(links.join("libexec/pyenv-root").exists());
+}
+
+/// Deferred minor 2: a folder where a link belongs is moved aside, not deleted, and the
+/// link is made.
+#[test]
+fn a_folder_in_a_link_s_place_is_moved_aside() {
+    let f = Fixture::new();
+    let dir = f.root.join(".rpyenv/libexec");
+    f.file(&dir.join("pyenv-root/keep.txt"), "mine");
+    plugin(&f, "x", "where", "pyenv-root\n");
+    assert_eq!(run(&f, &["where"]).0, format!("{}\n", f.root.display()));
+    let kept = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path().join("keep.txt"))
+        .filter(|p| p.is_file())
+        .count();
+    assert_eq!(kept, 1);
+}
+
+/// Deferred minor 3: with a `pyenv-shell` plugin, `help shell` and `completions shell` read
+/// the plugin, as upstream's `command -v pyenv-shell || command -v pyenv-sh-shell` does.
+#[test]
+fn a_shell_plugin_answers_help_and_completions() {
+    let f = Fixture::new();
+    plugin(
+        &f,
+        "x",
+        "shell",
+        "# Summary: Plugin shell\n# Usage: pyenv shell <x>\n\n# Provide pyenv completions\nif [ \"$1\" = --complete ]; then echo from-plugin; exit; fi\n",
+    );
+    assert_eq!(
+        run(&f, &["help", "shell"]).0,
+        "Usage: pyenv shell <x>\n\nPlugin shell\n\n"
+    );
+    assert_eq!(
+        run(&f, &["completions", "shell"]).0,
+        "--help\nfrom-plugin\n"
+    );
+}
+
+/// Deferred minor 4: a plugin's completions run with the caller's stdin and streams.
+#[test]
+fn plugin_completions_get_the_caller_s_stdin() {
+    use std::io::Write;
+    let f = Fixture::new();
+    plugin(
+        &f,
+        "x",
+        "ask",
+        "# Provide pyenv completions\nread x\necho \"got $x\"\necho err >&2\n",
+    );
+    for _ in 0..100 {
+        let mut child = f
+            .command(Path::new(env!("CARGO_BIN_EXE_pyenv")), &f.work, &[])
+            .args(["completions", "ask"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(b"hi\n").unwrap();
+        let o = child.wait_with_output().unwrap();
+        let err = String::from_utf8_lossy(&o.stderr);
+        if err.contains("Text file busy") {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            continue;
+        }
+        assert_eq!(String::from_utf8_lossy(&o.stdout), "--help\ngot hi\n");
+        assert_eq!(err, "err\n");
+        return;
+    }
+    panic!("busy");
+}
+
+/// Deferred minor 7: links to built-ins this binary no longer has are removed.
+#[test]
+fn stale_built_in_links_are_pruned() {
+    let f = Fixture::new();
+    let dir = f.root.join(".rpyenv/libexec");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_pyenv"), dir.join("pyenv-gone")).unwrap();
+    plugin(&f, "x", "where", "pyenv-root\n");
+    run(&f, &["where"]);
+    assert!(dir.join("pyenv-root").exists());
+    assert!(std::fs::symlink_metadata(dir.join("pyenv-gone")).is_err());
 }

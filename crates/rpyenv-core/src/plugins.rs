@@ -25,14 +25,20 @@ fn plugin_dirs(base: &Path, sub: &str) -> Vec<PathBuf> {
         .collect()
 }
 
-/// The folders the dispatcher puts in front of `PATH`, first to last: `<prefix>/libexec`,
+/// The folders the dispatcher puts in front of `PATH`, first to last: `<prefix>/libexec`
+/// (when it holds `pyenv-*` files),
 /// `$PYENV_ROOT/plugins/*/bin` (only when the prefix isn't the root), then
 /// `<prefix>/plugins/*/bin`. Each glob is reversed, because upstream prepends every match
 /// in turn (libexec/pyenv:84-94).
 pub fn front_dirs(root: &Path, prefix: Option<&Path>) -> Vec<PathBuf> {
     let mut v = Vec::new();
-    if let Some(p) = prefix {
-        v.push(p.join("libexec"));
+    // Upstream's is always pyenv's own libexec. rpyenv's install folder may be /usr, whose
+    // libexec isn't pyenv's: it counts only when it holds `pyenv-*` files.
+    if let Some(l) = prefix
+        .map(|p| p.join("libexec"))
+        .filter(|l| holds_pyenv_files(l))
+    {
+        v.push(l);
     }
     if prefix != Some(root) {
         v.extend(plugin_dirs(root, "bin").into_iter().rev());
@@ -41,6 +47,13 @@ pub fn front_dirs(root: &Path, prefix: Option<&Path>) -> Vec<PathBuf> {
         v.extend(plugin_dirs(p, "bin").into_iter().rev());
     }
     v
+}
+
+fn holds_pyenv_files(dir: &Path) -> bool {
+    std::fs::read_dir(dir).is_ok_and(|rd| {
+        rd.flatten()
+            .any(|e| e.file_name().to_string_lossy().starts_with("pyenv-"))
+    })
 }
 
 /// `front`, then the inherited `PATH`, joined as text with the flavor's separator, as
@@ -160,6 +173,16 @@ mod tests {
         let (root, prefix) = (tmp.path().join("root"), tmp.path().join("prefix"));
         dirs(&root, &["python-build", "pyenv-each", ".hidden"]);
         dirs(&prefix, &["python-build"]);
+        // An install folder whose libexec holds no `pyenv-*` file (rpyenv in /usr/bin) adds
+        // no libexec: /usr/libexec isn't pyenv's.
+        std::fs::create_dir_all(prefix.join("libexec")).unwrap();
+        assert_eq!(
+            front_dirs(&root, Some(&prefix))[0],
+            root.join("plugins/python-build/bin")
+        );
+        std::fs::write(prefix.join("libexec/pyenv-x"), "").unwrap();
+        std::fs::create_dir_all(root.join("libexec")).unwrap();
+        std::fs::write(root.join("libexec/pyenv-x"), "").unwrap();
         assert_eq!(
             front_dirs(&root, Some(&prefix)),
             vec![

@@ -24,6 +24,11 @@ fn a_batch_plugin_runs_with_the_dispatcher_s_environment() {
         "{err}"
     );
     assert!(run(&f, &["commands"]).0.lines().any(|l| l == "hello"));
+    // No marker: `--help` only.
+    assert_eq!(
+        run(&f, &["completions", "hello"]),
+        ("--help\r\n".to_string(), String::new(), 0)
+    );
     assert_eq!(
         run(&f, &["help", "hello"]),
         (
