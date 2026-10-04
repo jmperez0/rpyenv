@@ -3,6 +3,7 @@
 pub mod exec;
 #[cfg(unix)]
 pub mod install;
+pub mod install_win;
 pub mod latest;
 pub mod local_global;
 pub mod misc;
@@ -44,9 +45,12 @@ const COMMANDS: &[(&str, Command)] = &[
     ("which", which::which),
 ];
 
-/// pyenv-win only.
-const WIN_ONLY: &[(&str, Command)] =
-    &[("update", update::update), ("vname", version::version_name)];
+/// pyenv-win only: its installer commands (`install`, `update`) and the `vname` alias.
+const WIN_ONLY: &[(&str, Command)] = &[
+    ("install", install_win::install),
+    ("update", update::update),
+    ("vname", version::version_name),
+];
 
 /// pyenv (Linux) only, until M2b brings pyenv-win's installer commands.
 const LINUX_ONLY: &[(&str, Command)] = &[

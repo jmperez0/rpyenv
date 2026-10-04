@@ -11,24 +11,29 @@ pub fn run(root: &Path, prefix: &Path) -> Option<String> {
     if !file.is_file() {
         return None;
     }
-    let bin = prefix.join("bin");
-    let python = ["python", "python3"]
-        .iter()
-        .map(|n| bin.join(n))
-        .find(|p| p.exists())
-        .or_else(|| {
-            std::fs::read_dir(&bin)
-                .ok()?
-                .filter_map(Result::ok)
-                .map(|e| e.path())
-                .filter(|p| {
-                    p.file_name().is_some_and(|n| {
-                        let n = n.to_string_lossy();
-                        n.starts_with("python") && n.ends_with(|c: char| c.is_ascii_digit())
+    // pyenv-win versions keep python.exe in the prefix itself; pyenv's in `bin/`.
+    let python = if cfg!(windows) {
+        Some(prefix.join("python.exe")).filter(|p| p.is_file())
+    } else {
+        let bin = prefix.join("bin");
+        ["python", "python3"]
+            .iter()
+            .map(|n| bin.join(n))
+            .find(|p| p.exists())
+            .or_else(|| {
+                std::fs::read_dir(&bin)
+                    .ok()?
+                    .filter_map(Result::ok)
+                    .map(|e| e.path())
+                    .filter(|p| {
+                        p.file_name().is_some_and(|n| {
+                            let n = n.to_string_lossy();
+                            n.starts_with("python") && n.ends_with(|c: char| c.is_ascii_digit())
+                        })
                     })
-                })
-                .max()
-        });
+                    .max()
+            })
+    };
     let ok = python.is_some_and(|python| {
         Command::new(&python)
             .args(["-m", "pip", "install", "-r"])

@@ -194,6 +194,10 @@ fn help_win(args: &[&str]) -> Output {
     let cmd = args.first().map(|c| c.to_ascii_lowercase());
     match cmd.as_deref() {
         None | Some("help" | "--help") => o.stdout.push_str(WIN_HELP_LISTING),
+        Some("install") => {
+            o.stdout.push_str(&crate::install::winsource::banner());
+            o.stdout.push_str(crate::commands::install_win::HELP);
+        }
         Some("update") => {
             o.stdout.push_str(&crate::install::winsource::banner());
             o.stdout.push_str(crate::commands::update::HELP);
