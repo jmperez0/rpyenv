@@ -11,11 +11,12 @@
 //!   summary Word Count sets bit 0 (short names). `.` adds no segment.
 //! * `File.FileName` is `short|long`; the long name is written.
 //! * A file is in a cabinet if its attributes have 0x4000, beside the MSI if 0x2000, otherwise
-//!   per Word Count bit 1. Files beside the MSI are read flat by name (Word Count bit 1 set);
-//!   python.org's MSIs have none.
+//!   per Word Count bit 1. Files beside the MSI are refused: the MSI's `.asc` doesn't cover
+//!   them, and python.org's MSIs have none.
 //! * Only files of features with Level != 0 are written (the Condition table, INSTALLLEVEL and
 //!   Component.Condition are ignored by an admin install).
-//! * `Media.Cabinet` `#name` is a stream in the MSI; anything else is a file beside it.
+//! * `Media.Cabinet` `#name` is a stream in the MSI; anything else is a file beside it, which is
+//!   refused for the same reason.
 //! * Nothing else is written: no copy of the .msi, no empty CreateFolder directories.
 //! * Each written file's size must equal `File.FileSize`, and its MD5 the `MsiFileHash` row if
 //!   there is one (an integrity check of the extraction; authenticity comes from the `.asc`).
@@ -371,7 +372,6 @@ pub fn extract_msi(msi: &Path, target: &Path) -> Result<Vec<PathBuf>, String> {
     let mut pkg = Package::open(file).map_err(|e| format!("not an MSI {}: {e}", msi.display()))?;
     fs::create_dir_all(target).map_err(|e| format!("create {}: {e}", target.display()))?;
     let plan = plan_msi(&mut pkg)?;
-    let msi_dir = msi.parent().unwrap_or(Path::new("."));
     let by_key: HashMap<&str, &PlannedFile> =
         plan.files.iter().map(|f| (f.key.as_str(), f)).collect();
     let mut done: HashSet<String> = HashSet::new();
@@ -388,9 +388,13 @@ pub fn extract_msi(msi: &Path, target: &Path) -> Result<Vec<PathBuf>, String> {
                 .map_err(io_err("read cabinet stream"))?;
             v
         } else {
+            // A cabinet beside the MSI isn't covered by the MSI's signature (final review M3);
+            // python.org embeds every cabinet. The name check stays as a first line of defense.
             check_segment(cab_name, "cabinet")?;
-            fs::read(msi_dir.join(cab_name))
-                .map_err(|e| format!("external cabinet {cab_name:?}: {e}"))?
+            return Err(format!(
+                "{}: external cabinet {cab_name} is not supported",
+                msi.display()
+            ));
         };
         let mut on_entry = |name: &str, reader: &mut dyn Read| -> Result<(), String> {
             let Some(f) = by_key.get(name) else {
@@ -418,11 +422,9 @@ pub fn extract_msi(msi: &Path, target: &Path) -> Result<Vec<PathBuf>, String> {
             .map_err(|e| format!("cabinet {cab_name:?}: {e}"))?;
     }
 
-    // Uncompressed (0x2000) files are read from beside the MSI. In a package whose summary
-    // Word Count says "compressed" (bit 1), msiexec /a read them FLAT from the MSI's folder by
-    // their long name, not from the source-directory tree (measured with synth2.msi). For a
-    // package without that bit the tree path is assumed (inferred, not measured).
-    let pkg_compressed = plan.word_count & WC_COMPRESSED != 0;
+    // Uncompressed (0x2000) files would be read from beside the MSI (msiexec /a reads them flat
+    // by long name, measured with synth2.msi), where the MSI's signature doesn't cover them
+    // (final review M3). python.org's MSIs have none, so they are refused.
     for f in &plan.files {
         if done.contains(&f.key) || !f.installed {
             continue;
@@ -433,19 +435,11 @@ pub fn extract_msi(msi: &Path, target: &Path) -> Result<Vec<PathBuf>, String> {
                 f.key
             ));
         }
-        if !pkg_compressed {
-            // Uncompressed-image layout (source tree) is not measured; python.org never uses it.
-            return Err(format!(
-                "{:?}: uncompressed source image layout is not supported",
-                f.key
-            ));
-        }
-        let src = msi_dir.join(&f.source_name);
-        let mut reader =
-            File::open(&src).map_err(|e| format!("uncompressed source {}: {e}", src.display()))?;
-        let dest = rel_to_path(target, &f.rel);
-        write_checked(&mut reader, &dest, f)?;
-        written.push(dest);
+        return Err(format!(
+            "{}: uncompressed file {} is not supported",
+            msi.display(),
+            f.key
+        ));
     }
     Ok(written)
 }
@@ -879,6 +873,46 @@ mod tests {
         assert_refused(
             hostile_msi("ok", "f.txt", 0x4000, Some("..\\x"), 2),
             "unsafe cabinet name segment \"..\\\\x\"",
+        );
+    }
+
+    /// Extracts `bytes` with `sibling` (name, contents) written beside the MSI, as an external
+    /// cabinet or an uncompressed file would be found, and returns the error. Nothing is written.
+    fn refused_with_sibling(bytes: Vec<u8>, sibling: (&str, &[u8])) -> (String, PathBuf) {
+        let d = tempfile::tempdir().unwrap();
+        let msi_path = d.path().join("h.msi");
+        fs::write(&msi_path, bytes).unwrap();
+        fs::write(d.path().join(sibling.0), sibling.1).unwrap();
+        let target = d.path().join("target");
+        let e = extract_msi(&msi_path, &target).unwrap_err();
+        assert_eq!(fs::read_dir(&target).unwrap().count(), 0, "{e}");
+        (e, msi_path)
+    }
+
+    /// Final review M3: a file beside the MSI isn't covered by the MSI's `.asc`, so an external
+    /// cabinet is refused even when it is there (python.org's MSIs embed theirs).
+    #[test]
+    fn an_external_cabinet_is_not_supported_even_when_present() {
+        let (e, msi) = refused_with_sibling(
+            hostile_msi("ok", "f.txt", 0x4000, Some("x.cab"), 2),
+            ("x.cab", b"MSCF"),
+        );
+        assert_eq!(
+            e,
+            format!("{}: external cabinet x.cab is not supported", msi.display())
+        );
+    }
+
+    /// The same for an uncompressed file read from beside the MSI (python.org's MSIs have none).
+    #[test]
+    fn an_uncompressed_file_is_not_supported_even_when_present() {
+        let (e, msi) = refused_with_sibling(
+            hostile_msi("ok", "f.txt", 0x2000, None, 2),
+            ("f.txt", b"abc"),
+        );
+        assert_eq!(
+            e,
+            format!("{}: uncompressed file F is not supported", msi.display())
         );
     }
 }
