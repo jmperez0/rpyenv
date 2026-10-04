@@ -341,29 +341,29 @@ fn exec_passes_pyenv_win_s_argument_cases_unchanged() {
         return;
     };
     let f = Fixture::new();
-    let link = f.root.join("versions").join("3.99");
-    let made = std::process::Command::new(winshell::cmd_exe())
-        .args(["/d", "/c", "mklink", "/J"])
-        .arg(&link)
-        .arg(&python_dir)
-        .output()
-        .unwrap();
-    assert!(
-        made.status.success(),
-        "{}",
-        String::from_utf8_lossy(&made.stdout)
-    );
-    // The junction points at a real Python install: remove the link itself (`remove_dir`
-    // on a junction never touches its target) before the fixture's tree goes, even on panic.
-    struct Unlink(std::path::PathBuf);
-    impl Drop for Unlink {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir(&self.0);
+    // A copy of `python.exe` and the DLLs beside it, never a link: nothing that later cleans
+    // up the fixture, even after a killed run, can reach the real install, which this test
+    // only reads (its standard library, through PYTHONHOME).
+    let version = f.root.join("versions").join("3.99");
+    std::fs::create_dir_all(&version).unwrap();
+    for entry in std::fs::read_dir(&python_dir).unwrap() {
+        let path = entry.unwrap().path();
+        let name = path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_ascii_lowercase();
+        if path.is_file() && (name == "python.exe" || name.ends_with(".dll")) {
+            std::fs::copy(&path, version.join(path.file_name().unwrap())).unwrap();
         }
     }
-    let _unlink = Unlink(link.clone());
     winshell::install_pyenv(&f);
-    let env = [("PYENV_VERSION", "3.99"), ("World", "Earth")];
+    let home = python_dir.display().to_string();
+    let env = [
+        ("PYENV_VERSION", "3.99"),
+        ("World", "Earth"),
+        ("PYTHONHOME", home.as_str()),
+    ];
     let script = "import sys; print(sys.argv[1])";
     for arg in [
         "Hello",
