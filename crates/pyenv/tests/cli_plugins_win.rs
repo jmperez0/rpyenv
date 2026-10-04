@@ -37,3 +37,27 @@ fn a_batch_plugin_runs_with_the_dispatcher_s_environment() {
         "pyenv: no such command 'nosuch'\r\n"
     );
 }
+
+/// Decision 5: a pyenv-win root's own `libexec\pyenv-<cmd>.bat` scripts aren't plugins
+/// (`<prefix>\libexec` is upstream pyenv's slot, not pyenv-win's).
+#[test]
+fn pyenv_win_s_libexec_scripts_are_not_plugins() {
+    let f = Fixture::new();
+    let inst = f.base.join("inst");
+    std::fs::create_dir_all(inst.join("bin")).unwrap();
+    let exe = inst.join("bin").join("pyenv.exe");
+    std::fs::copy(env!("CARGO_BIN_EXE_pyenv"), &exe).unwrap();
+    f.file(
+        &inst.join("libexec").join("pyenv-duplicate.bat"),
+        "@echo ran\r\n",
+    );
+    let o = f
+        .command(&exe, &f.work, &[("PATHEXT", ".COM;.EXE;.BAT;.CMD")])
+        .arg("duplicate")
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&o.stdout),
+        "pyenv: no such command 'duplicate'\r\n"
+    );
+}
