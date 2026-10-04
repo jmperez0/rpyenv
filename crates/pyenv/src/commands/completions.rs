@@ -248,17 +248,29 @@ pub fn completions(ctx: &Ctx, args: &[&str]) -> Output {
     o.with_code(rest.code)
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
     /// Every Linux entry names a Linux command. Unix only: Linux `install` and
     /// `uninstall` exist only in Unix builds.
+    #[cfg(unix)]
     #[test]
     fn every_linux_entry_names_a_command() {
         for e in TABLE_PYENV {
             assert!(
                 commands::lookup(Flavor::Pyenv, e.name).is_some(),
+                "{}",
+                e.name
+            );
+        }
+    }
+
+    #[test]
+    fn every_windows_entry_names_a_command() {
+        for e in TABLE_WIN {
+            assert!(
+                commands::lookup(Flavor::PyenvWin, e.name).is_some(),
                 "{}",
                 e.name
             );

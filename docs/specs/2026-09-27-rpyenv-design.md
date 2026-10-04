@@ -257,9 +257,14 @@ evaluates the printed code in the current shell.
 
 | Shell | Profile line |
 |---|---|
-| bash, zsh, Git Bash | `eval "$(pyenv init - bash)"` (or `zsh`). Git Bash gets `/c/...` paths when `MSYSTEM` is set. |
+| bash, zsh, Git Bash | `eval "$(pyenv init - bash)"` (or `zsh`). Git Bash gets `/c/...` paths (always: the bash, zsh and fish that run on Windows are MSYS2-based). |
 | fish | `pyenv init - fish \| source` |
-| PowerShell 5.1 and 7 | `pyenv init - pwsh \| Invoke-Expression` |
+| PowerShell 5.1 and 7 | ``iex ((pyenv init - pwsh) -join "`n")`` |
+
+`pyenv init - pwsh | Invoke-Expression` would run each output line on its own
+and break the multi-line function, hence `-join`. On Windows, `pyenv init
+--install` refuses until M6's `pyenv setup` edits profiles (decided
+2026-10-04).
 
 **No `pyenv.ps1` or `pyenv.cmd` for the CLI.** This was tested on the
 development machine, in PowerShell 5.1 and 7.6:
