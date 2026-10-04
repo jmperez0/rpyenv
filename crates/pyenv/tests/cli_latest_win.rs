@@ -96,3 +96,18 @@ fn known_reads_the_version_cache() {
         )
     );
 }
+
+// allowlist D-83
+#[test]
+fn a_malformed_cache_means_no_known_versions() {
+    let f = with(&[]);
+    std::fs::write(f.root.join(".versions_cache.xml"), "garbage").unwrap();
+    let r = f.pyenv(&["latest", "-k", "3.12"]);
+    assert_eq!(
+        (r.code, r.stdout),
+        (
+            1,
+            "pyenv-latest: no known versions match the prefix '3.12'.\r\n".to_string()
+        )
+    );
+}

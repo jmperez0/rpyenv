@@ -310,3 +310,16 @@ fn no_version_argument_installs_the_selected_prefix_resolved_against_the_db() {
         .join("python.exe")
         .is_file());
 }
+
+// allowlist D-83
+#[test]
+fn a_malformed_cache_is_reported_after_the_banner_and_exits_1() {
+    let f = Fixture::new();
+    let cache = f.root.join(".versions_cache.xml");
+    std::fs::write(&cache, "garbage").unwrap();
+    let r = f.pyenv(&["install", "3.12.1"]);
+    assert_eq!(r.code, 1, "{}", r.stdout);
+    let want = format!("{BANNER}pyenv-install: cannot read {}: ", cache.display());
+    assert!(r.stdout.starts_with(&want), "{}", r.stdout);
+    assert!(r.stdout.ends_with("\r\n"), "{}", r.stdout);
+}
