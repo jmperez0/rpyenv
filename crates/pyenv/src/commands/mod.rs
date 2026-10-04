@@ -3,6 +3,7 @@
 pub mod completions;
 pub mod exec;
 pub mod init;
+pub mod init_win;
 #[cfg(unix)]
 pub mod install;
 pub mod install_win;
@@ -54,6 +55,7 @@ const COMMANDS: &[(&str, Command)] = &[
 
 /// pyenv-win only: its installer commands (`install`, `update`) and the `vname` alias.
 const WIN_ONLY: &[(&str, Command)] = &[
+    ("init", init_win::init),
     ("install", install_win::install),
     ("uninstall", uninstall_win::uninstall),
     ("update", update::update),
