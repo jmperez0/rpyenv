@@ -61,3 +61,17 @@ fn pyenv_win_s_libexec_scripts_are_not_plugins() {
         "pyenv: no such command 'duplicate'\r\n"
     );
 }
+
+/// Final review #4: a name with a path separator can't climb out of the plugin folders.
+#[test]
+fn a_plugin_name_cannot_leave_the_plugin_folders() {
+    let f = Fixture::new();
+    std::fs::create_dir_all(f.root.join("plugins/p/bin")).unwrap();
+    f.file(&f.root.join("evil.bat"), "@echo OUTSIDE\r\n");
+    let name = r"x\..\..\..\..\evil";
+    let (out, _, code) = run(&f, &[name]);
+    assert_eq!(
+        (out, code),
+        (format!("pyenv: no such command '{name}'\r\n"), 1)
+    );
+}

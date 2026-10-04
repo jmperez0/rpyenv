@@ -53,6 +53,8 @@ const PYENV: &[Topic] = &[
     #[cfg(unix)]
     topic("install", Some("Install a Python version using python-build"), Some(commands::install::USAGE),
         commands::install::HELP),
+    topic("hooks", Some("List hook scripts for a given pyenv command"), Some("Usage: pyenv hooks <command>"),
+        "Usage: pyenv hooks <command>\n\nList hook scripts for a given pyenv command\n\n"),
     topic("init", Some("Configure the shell environment for pyenv"), Some(INIT_USAGE),
         "Usage: eval \"$(pyenv init [-|--path] [--no-push-path] [--no-rehash] [<shell>])\"\n       pyenv init --install [<shell>]\n       pyenv init --detect-shell [<shell>]\n\nConfigure the shell environment for pyenv\n\n"),
     topic("latest", Some("Print the latest installed or known version with the given prefix"), Some("Usage: pyenv latest [-k|--known] <prefix>"),
@@ -242,7 +244,7 @@ pub fn listing(flavor: Flavor, ctx: Option<&Ctx>) -> String {
         .collect();
     if let Some(ctx) = ctx {
         let path = crate::plugin::dispatch_path(ctx);
-        for raw in rpyenv_core::plugins::listed_names(&path, ctx.flavor, ctx.pathext.as_deref()) {
+        for raw in crate::plugin::listed(ctx, &path) {
             // `pyenv-commands` strips `sh-`; `pyenv-help` then tries both names.
             let name = raw.strip_prefix("sh-").unwrap_or(&raw).to_string();
             if entries.iter().any(|(n, _)| *n == name) || find(Flavor::Pyenv, &name).is_some() {

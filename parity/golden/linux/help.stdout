@@ -6,6 +6,7 @@ Some useful pyenv commands are:
    exec        Run an executable with the selected Python version
    global      Set or show the global Python version(s)
    help        Display help for a command
+   hooks       List hook scripts for a given pyenv command
    init        Configure the shell environment for pyenv
    install     Install a Python version using python-build
    latest      Print the latest installed or known version with the given prefix

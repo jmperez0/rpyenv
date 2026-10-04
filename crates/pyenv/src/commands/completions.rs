@@ -59,6 +59,14 @@ pub(crate) const TABLE_PYENV: &[Entry] = &[
     e("global", true, Words(&["system"], VersionsBare)),
     e("help", true, Words(&["--usage"], Commands)),
     e(
+        "hooks",
+        true,
+        Words(
+            &["exec", "rehash", "version-name", "version-origin", "which"],
+            Nothing,
+        ),
+    ),
+    e(
         "init",
         true,
         Words(

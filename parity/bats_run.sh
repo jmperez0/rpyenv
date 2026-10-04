@@ -31,7 +31,7 @@ ln -s "$work/run/bin/pyenv" "$work/run/libexec/pyenv"
 # failing through the missing wrapper. `shell` has none: upstream has no `pyenv-shell` either.
 for c in root prefix version version-name version-origin version-file version-file-read \
          version-file-write versions which whence exec rehash shims commands help global local latest \
-         init sh-shell sh-rehash completions; do
+         init sh-shell sh-rehash completions hooks; do
   printf '#!/bin/sh\nexec "%s" %s "$@"\n' "$work/run/bin/pyenv" "$c" > "$work/run/libexec/pyenv-$c"
 done
 printf '#!/bin/sh\nexec "%s" --version "$@"\n' "$work/run/bin/pyenv" > "$work/run/libexec/pyenv---version"

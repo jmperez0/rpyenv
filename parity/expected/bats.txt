@@ -1,10 +1,9 @@
 # Expected failures of upstream pyenv's bats suite against rpyenv (plan decision 3).
 exec.bats | carries original IFS within hooks | D-51 no bash hooks
-hooks.bats | prints usage help given no argument | D-51 no bash hooks, no `pyenv hooks` command
-hooks.bats | prints list of hooks | D-51 no bash hooks, no `pyenv hooks` command
-hooks.bats | supports hook paths with spaces | D-51 no bash hooks, no `pyenv hooks` command
-hooks.bats | resolves relative paths | D-51 no bash hooks, no `pyenv hooks` command
-hooks.bats | resolves symlinks | D-51 no bash hooks, no `pyenv hooks` command
+hooks.bats | prints list of hooks | D-51 `pyenv-hooks` goes through the dispatcher, which adds the default hook folders
+hooks.bats | supports hook paths with spaces | D-51 `pyenv-hooks` goes through the dispatcher, which adds the default hook folders
+hooks.bats | resolves relative paths | D-51 `pyenv-hooks` goes through the dispatcher, which adds the default hook folders
+hooks.bats | resolves symlinks | D-51 `pyenv-hooks` goes through the dispatcher, which adds the default hook folders
 init.bats | outputs sh-compatible case syntax | D-88 a stub pyenv-commands can't replace rpyenv's built-in listing
 latest.bats | read from installed | D-52 rpyenv resolves versions in-process; the test stubs pyenv-versions/python-build on PATH
 latest.bats | read from known | D-52 rpyenv resolves versions in-process; the test stubs pyenv-versions/python-build on PATH

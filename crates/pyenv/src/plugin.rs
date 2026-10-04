@@ -4,8 +4,8 @@ use crate::output::Output;
 use rpyenv_core::ctx::Ctx;
 use rpyenv_core::flavor::Flavor;
 use rpyenv_core::{launch, plugins};
-use std::ffi::OsString;
-use std::path::PathBuf;
+use std::ffi::{OsStr, OsString};
+use std::path::{Path, PathBuf};
 
 /// The `PATH` a plugin runs with, and the one plugins are looked up on.
 pub(crate) fn dispatch_path(ctx: &Ctx) -> OsString {
@@ -26,16 +26,39 @@ pub(crate) fn dispatch_path(ctx: &Ctx) -> OsString {
 
 /// `pyenv-<name>` on the dispatch `PATH`.
 pub(crate) fn find(ctx: &Ctx, name: &str) -> Option<PathBuf> {
-    plugins::find(
-        name,
-        &dispatch_path(ctx),
-        ctx.flavor,
-        ctx.pathext.as_deref(),
-    )
+    find_on(ctx, name, &dispatch_path(ctx))
+}
+
+fn find_on(ctx: &Ctx, name: &str, path: &OsStr) -> Option<PathBuf> {
+    plugins::find(name, path, ctx.flavor, ctx.pathext.as_deref()).filter(|p| !is_own(p))
+}
+
+/// The plugin names on `path` (`plugins::listed_names`), without rpyenv's own binaries.
+pub(crate) fn listed(ctx: &Ctx, path: &OsStr) -> Vec<String> {
+    plugins::listed_names(path, ctx.flavor, ctx.pathext.as_deref())
+        .into_iter()
+        .filter(|n| {
+            !plugins::find(n, path, ctx.flavor, ctx.pathext.as_deref()).is_some_and(|p| is_own(&p))
+        })
+        .collect()
+}
+
+/// True for the `pyenv-shim` and `pyenv-shimw` installed next to this binary, which sit on
+/// `PATH` in an install but aren't plugins (upstream's `bin` has no `pyenv-*` files).
+fn is_own(file: &Path) -> bool {
+    let Some(shim) = crate::shim_exe() else {
+        return false;
+    };
+    let shimw = shim.with_file_name(format!("pyenv-shimw{}", std::env::consts::EXE_SUFFIX));
+    let canon = |p: &Path| std::fs::canonicalize(p).ok();
+    let f = canon(file);
+    f.is_some() && (f == canon(&shim) || f == canon(&shimw))
 }
 
 /// `$PYENV_ROOT/.rpyenv/libexec`, with a `pyenv-<cmd>` symlink to this binary per built-in
-/// (Decision 2): made or repaired here, `None` when that fails (a read-only root).
+/// (Decision 2): made or repaired here, `None` when the folder can't be made (a read-only
+/// root). Each link is made under a unique name and renamed over the old one, so a run in
+/// parallel never finds one missing, and a link that can't be made leaves the rest.
 #[cfg(unix)]
 fn builtin_links(ctx: &Ctx) -> Option<PathBuf> {
     if ctx.flavor != Flavor::Pyenv {
@@ -47,8 +70,13 @@ fn builtin_links(ctx: &Ctx) -> Option<PathBuf> {
     for name in crate::commands::builtin_names(Flavor::Pyenv) {
         let link = dir.join(format!("pyenv-{name}"));
         if std::fs::read_link(&link).ok().as_deref() != Some(exe.as_path()) {
-            let _ = std::fs::remove_file(&link);
-            std::os::unix::fs::symlink(&exe, &link).ok()?;
+            let tmp = dir.join(format!(".pyenv-{name}.{}.tmp", std::process::id()));
+            let _ = std::fs::remove_file(&tmp);
+            if std::os::unix::fs::symlink(&exe, &tmp).is_err()
+                || std::fs::rename(&tmp, &link).is_err()
+            {
+                let _ = std::fs::remove_file(&tmp);
+            }
         }
     }
     Some(dir)
@@ -87,7 +115,7 @@ pub(crate) fn env(ctx: &Ctx, path: OsString) -> Vec<(OsString, Option<OsString>)
 /// name. `sh-*` plugins answer `--help` with the help command, as the dispatcher does.
 pub(crate) fn dispatch(ctx: &Ctx, cmd: &str, args: &[&str], raw: &[OsString]) -> Option<Output> {
     let path = dispatch_path(ctx);
-    let program = plugins::find(cmd, &path, ctx.flavor, ctx.pathext.as_deref())?;
+    let program = find_on(ctx, cmd, &path)?;
     if args.first() == Some(&"--help") {
         if cmd.starts_with("sh-") {
             let mut o = Output::new();
