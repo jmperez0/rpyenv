@@ -1,4 +1,4 @@
-# Upstream pyenv ab74141 test files that must appear in the bats log, one per line.
+# Upstream pyenv 07171d0 test files that must appear in the bats log, one per line.
 --version.bats
 commands.bats
 completions.bats

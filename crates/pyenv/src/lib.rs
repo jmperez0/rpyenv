@@ -23,7 +23,7 @@ pub(crate) fn shim_exe() -> Option<PathBuf> {
 /// `pyenv --version`: the upstream version rpyenv matches, then rpyenv's own (allowlist D-01).
 pub fn version_line(flavor: Flavor) -> String {
     let upstream = match flavor {
-        Flavor::Pyenv => "2.8.6",
+        Flavor::Pyenv => "2.8.8",
         Flavor::PyenvWin => "3.1.1",
     };
     format!("pyenv {upstream} (rpyenv {RPYENV_VERSION})")
