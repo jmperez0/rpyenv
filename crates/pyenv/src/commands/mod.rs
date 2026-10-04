@@ -100,6 +100,12 @@ pub enum Listing {
     NoSh,
 }
 
+/// The command table's names as they are (`sh-*` included), for the built-in links.
+#[cfg(unix)]
+pub fn builtin_names(flavor: Flavor) -> Vec<&'static str> {
+    table(flavor).map(|&(n, _)| n).collect()
+}
+
 /// The names `pyenv commands` prints, each once, in the flavor's order.
 pub fn names(flavor: Flavor, listing: Listing) -> Vec<&'static str> {
     let mut names: Vec<&'static str> = table(flavor)
