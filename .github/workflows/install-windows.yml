@@ -30,6 +30,7 @@ jobs:
   install:
     needs: matrix
     runs-on: windows-2025
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -46,6 +47,11 @@ jobs:
         with:
           path: ${{ runner.temp }}\root\install_cache
           key: install-cache-windows-${{ matrix.version }}
+      # Pythons below 3.5 link the Visual C++ 2008 (2.6-3.2) or 2010 (3.3-3.4) runtime, which a
+      # clean runner may lack; ensurepip then can't start (final review M5).
+      - name: Visual C++ runtimes for old Pythons
+        if: startsWith(env.VERSION, '2.') || startsWith(env.VERSION, '3.4')
+        run: choco install vcredist2008 vcredist2010 -y --no-progress
       - name: Install and check
         shell: pwsh
         run: |

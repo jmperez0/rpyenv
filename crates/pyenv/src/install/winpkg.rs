@@ -359,14 +359,57 @@ fn python_command(prefix: &Path, args: &[&str], parent: &[OsString]) -> Command 
     cmd
 }
 
+/// How a Python child failed, for `vc_runtime_hint`.
+enum ChildFailure<'a> {
+    /// The process couldn't be created (a side-by-side error is one way: 14001).
+    Start,
+    Exit {
+        code: Option<i32>,
+        stderr: &'a str,
+    },
+}
+
+/// The hint appended when a Python below 3.5 fails as one does without its Visual C++ runtime
+/// (final review M5): it can't start, or exits with STATUS_DLL_NOT_FOUND (0xC0000135) or
+/// ERROR_SXS_CANT_GEN_ACTCTX (14001), or says "side-by-side" or "MSVCR". 2.6–3.2 link the 2008
+/// runtime and 3.3–3.4 the 2010 one; 3.5 and later use the Universal CRT, and 2.4–2.5 install
+/// their own msvcr71.dll.
+fn vc_runtime_hint(nums: [u64; 3], failure: &ChildFailure) -> Option<String> {
+    let runtime = match (nums[0], nums[1]) {
+        (2, 6..) | (3, 0..=2) => "2008",
+        (3, 3..=4) => "2010",
+        _ => return None,
+    };
+    let dll = match failure {
+        ChildFailure::Start => true,
+        ChildFailure::Exit { code, stderr } => {
+            let lower = stderr.to_ascii_lowercase();
+            matches!(code, Some(-1073741515 | 14001))
+                || lower.contains("side-by-side")
+                || lower.contains("msvcr")
+        }
+    };
+    dll.then(|| format!("(Python <3.5 needs the Microsoft Visual C++ {runtime} runtime)"))
+}
+
 /// Runs the version's own Python in `prefix` with the user site and PYTHON* variables shut out
-/// (measured: plain ensurepip read the user site despite `-s`).
-fn python(prefix: &Path, args: &[&str], what: &str) -> Result<(), String> {
+/// (measured: plain ensurepip read the user site despite `-s`). `nums`, when given, is the
+/// version to name a missing Visual C++ runtime for (`vc_runtime_hint`).
+fn python(prefix: &Path, args: &[&str], what: &str, nums: Option<[u64; 3]>) -> Result<(), String> {
+    let with_hint = |msg: String, failure: ChildFailure| match nums
+        .and_then(|n| vc_runtime_hint(n, &failure))
+    {
+        Some(h) => format!("{msg} {h}"),
+        None => msg,
+    };
     let parent: Vec<OsString> = std::env::vars_os().map(|(k, _)| k).collect();
-    let out = python_command(prefix, args, &parent)
+    let out = match python_command(prefix, args, &parent)
         .stdin(std::process::Stdio::null())
         .output()
-        .map_err(|e| format!("{what}: {e}"))?;
+    {
+        Ok(out) => out,
+        Err(e) => return Err(with_hint(format!("{what}: {e}"), ChildFailure::Start)),
+    };
     if out.status.success() {
         return Ok(());
     }
@@ -376,7 +419,13 @@ fn python(prefix: &Path, args: &[&str], what: &str) -> Result<(), String> {
         .rev()
         .find(|l| !l.trim().is_empty())
         .unwrap_or("");
-    Err(format!("{what} failed ({}): {last}", out.status))
+    Err(with_hint(
+        format!("{what} failed ({}): {last}", out.status),
+        ChildFailure::Exit {
+            code: out.status.code(),
+            stderr: &err,
+        },
+    ))
 }
 
 /// The steps that need the final location (Decision 7): executable copies, then pip.
@@ -414,6 +463,7 @@ pub fn finish(code: &Code, prefix: &Path, kind: Kind) -> Result<(), String> {
                     prefix,
                     &["-m", "ensurepip", "-U", "--default-pip"],
                     "ensurepip",
+                    Some(code.nums),
                 )?;
             }
         }
@@ -446,6 +496,7 @@ pub fn finish(code: &Code, prefix: &Path, kind: Kind) -> Result<(), String> {
                         &w,
                     ],
                     "pip",
+                    None,
                 )?;
             }
         }
@@ -527,7 +578,7 @@ fn install_one(job: &Job, say: &mut dyn FnMut(&str)) -> Result<Done, InstallErro
 #[cfg(test)]
 mod tests {
     use super::super::openpgp::PINNED;
-    use super::{python_command, signer_allowed, NULL_DEVICE};
+    use super::{python_command, signer_allowed, vc_runtime_hint, ChildFailure, NULL_DEVICE};
     use std::ffi::{OsStr, OsString};
     use std::path::Path;
 
@@ -587,5 +638,71 @@ mod tests {
         let other = "0000000000000000000000000000000000000000";
         assert!(!signer_allowed(true, other));
         assert!(!signer_allowed(false, other));
+    }
+
+    /// Final review M5: a Python below 3.5 whose child can't start, or exits with a missing-DLL
+    /// or side-by-side error, names the Visual C++ runtime it links.
+    #[test]
+    fn old_pythons_that_cannot_load_their_runtime_get_a_hint() {
+        let exit = |code: i32, stderr: &'static str| ChildFailure::Exit {
+            code: Some(code),
+            stderr,
+        };
+        let h2008 = Some("(Python <3.5 needs the Microsoft Visual C++ 2008 runtime)".to_string());
+        let h2010 = Some("(Python <3.5 needs the Microsoft Visual C++ 2010 runtime)".to_string());
+        // The runtime by version.
+        for (nums, want) in [
+            ([2, 6, 9], &h2008),
+            ([2, 7, 18], &h2008),
+            ([3, 0, 1], &h2008),
+            ([3, 2, 5], &h2008),
+            ([3, 3, 5], &h2010),
+            ([3, 4, 4], &h2010),
+        ] {
+            assert_eq!(
+                vc_runtime_hint(nums, &ChildFailure::Start),
+                *want,
+                "{nums:?}"
+            );
+        }
+        // No hint from 3.5 on (the Universal CRT), nor below 2.6 (bundled msvcr71).
+        for nums in [[3, 5, 0], [3, 12, 10], [2, 5, 4]] {
+            assert_eq!(
+                vc_runtime_hint(nums, &ChildFailure::Start),
+                None,
+                "{nums:?}"
+            );
+        }
+        // Which failures count.
+        let v = [2, 7, 18];
+        assert_eq!(
+            vc_runtime_hint(v, &exit(-1073741515, "")),
+            h2008,
+            "0xC0000135"
+        );
+        assert_eq!(
+            vc_runtime_hint(v, &exit(14001, "")),
+            h2008,
+            "ERROR_SXS_CANT_GEN_ACTCTX"
+        );
+        assert_eq!(
+            vc_runtime_hint(v, &exit(1, "the side-by-side configuration is incorrect")),
+            h2008
+        );
+        assert_eq!(
+            vc_runtime_hint(v, &exit(1, "MSVCR90.dll was not found")),
+            h2008
+        );
+        assert_eq!(vc_runtime_hint(v, &exit(1, "ImportError: no module")), None);
+        assert_eq!(
+            vc_runtime_hint(
+                v,
+                &ChildFailure::Exit {
+                    code: None,
+                    stderr: ""
+                }
+            ),
+            None
+        );
     }
 }
