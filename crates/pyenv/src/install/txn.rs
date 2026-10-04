@@ -92,6 +92,9 @@ impl Txn {
         if old.symlink_metadata().is_ok() {
             if target.symlink_metadata().is_err() {
                 let _ = std::fs::rename(&old, &target);
+            } else if is_link(&old) {
+                // A linked version set aside by `-f` (final review M2): never reached through.
+                let _ = remove_link(&old);
             } else if is_complete_for(&target, flavor) {
                 // Killed during or before the carry-over: finish it, and keep `.old` if
                 // it fails (`place` then refuses to overwrite it).
@@ -156,24 +159,47 @@ impl Txn {
     }
 
     /// Completes the install. The previous version's `envs/` and site-packages entries are
-    /// carried over first; if that fails, the previous tree is kept at `.old-<name>`.
+    /// carried over first; if that fails, the previous tree is kept at `.old-<name>`. A previous
+    /// version that is a link is never followed: only the link is removed.
     pub fn commit(mut self) -> std::io::Result<()> {
         std::fs::remove_file(self.target().join(MARKER))?;
         if let Some(old) = self.old.take() {
-            match carry_over(&old, &self.target()) {
-                Ok(()) => {
-                    let _ = std::fs::remove_dir_all(&old);
+            if is_link(&old) {
+                // The previous "version" was a link (a junction, or a symlink): carrying over
+                // would move files out of whatever it points at (final review M2). Only the
+                // link goes.
+                let _ = remove_link(&old);
+            } else {
+                match carry_over(&old, &self.target()) {
+                    Ok(()) => {
+                        let _ = std::fs::remove_dir_all(&old);
+                    }
+                    Err(e) => rpyenv_core::textout::write(
+                        // pyenv-win prints everything on stdout (reference, "Conventions").
+                        self.flavor == Flavor::Pyenv,
+                        &kept_message(self.flavor, &old, &e),
+                    ),
                 }
-                Err(e) => rpyenv_core::textout::write(
-                    // pyenv-win prints everything on stdout (reference, "Conventions").
-                    self.flavor == Flavor::Pyenv,
-                    &kept_message(self.flavor, &old, &e),
-                ),
             }
         }
         let _ = std::fs::remove_dir_all(&self.stage);
         self.done = true;
         Ok(())
+    }
+}
+
+/// A symlink, or on Windows a junction (Rust reports both as `is_symlink`), not followed.
+fn is_link(p: &Path) -> bool {
+    p.symlink_metadata()
+        .is_ok_and(|m| m.file_type().is_symlink())
+}
+
+/// Removes the link `p` itself: a directory link is a directory entry on Windows, a file on Unix.
+fn remove_link(p: &Path) -> std::io::Result<()> {
+    if cfg!(windows) {
+        std::fs::remove_dir(p)
+    } else {
+        std::fs::remove_file(p)
     }
 }
 

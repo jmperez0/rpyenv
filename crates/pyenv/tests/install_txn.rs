@@ -698,3 +698,103 @@ fn a_win_name_that_win32_would_normalize_is_refused_and_creates_nothing() {
     // `...` is a real folder name on Linux, where the default flavor still accepts it.
     assert!(Txn::begin(&versions, "...").is_ok());
 }
+
+/// A directory link at `link` to `target`: a junction on Windows (no privilege needed), a
+/// symlink elsewhere.
+fn link_dir(target: &Path, link: &Path) {
+    #[cfg(windows)]
+    {
+        let out = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+    }
+    #[cfg(not(windows))]
+    std::os::unix::fs::symlink(target, link).unwrap();
+}
+
+/// Every file under `dir`, with its contents, in a stable order.
+fn tree(dir: &Path) -> Vec<(String, Vec<u8>)> {
+    let mut out = Vec::new();
+    let mut todo = vec![dir.to_path_buf()];
+    while let Some(d) = todo.pop() {
+        for e in std::fs::read_dir(&d).unwrap() {
+            let p = e.unwrap().path();
+            if p.is_dir() {
+                todo.push(p);
+            } else {
+                let rel = p.strip_prefix(dir).unwrap().to_string_lossy().into_owned();
+                out.push((rel, std::fs::read(&p).unwrap()));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// An external tree a version link points at, with something in every carried-over place.
+fn external_tree(root: &Path) -> std::path::PathBuf {
+    let ext = root.join("external");
+    for (rel, body) in [
+        ("Lib/site-packages/canary/__init__.py", "canary"),
+        ("lib/python3.12/site-packages/canary.py", "canary"),
+        ("Scripts/canary.exe", "MZ"),
+        ("bin/canary", "#!"),
+        ("envs/e/pyvenv.cfg", "cfg"),
+    ] {
+        let p = ext.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, body).unwrap();
+    }
+    ext
+}
+
+/// Final review M2: `install -f` over a version that is a link (a junction on Windows) carries
+/// nothing out of the link's target and removes only the link.
+#[test]
+fn reinstalling_over_a_linked_version_leaves_the_link_target_alone() {
+    let root = tempfile::tempdir().unwrap();
+    let ext = external_tree(root.path());
+    let before = tree(&ext);
+    let versions = root.path().join("versions");
+    std::fs::create_dir_all(&versions).unwrap();
+    link_dir(&ext, &versions.join("3.12.0"));
+    let mut t = Txn::begin(&versions, "3.12.0").unwrap();
+    let staged = t.stage_dir().join("p");
+    std::fs::create_dir_all(staged.join("bin")).unwrap();
+    std::fs::write(staged.join("bin/python"), "new").unwrap();
+    t.place(&staged).unwrap();
+    t.commit().unwrap();
+    assert_eq!(tree(&ext), before, "the link's target changed");
+    assert!(versions.join(".old-3.12.0").symlink_metadata().is_err());
+    let new = versions.join("3.12.0");
+    assert!(!new.symlink_metadata().unwrap().file_type().is_symlink());
+    assert_eq!(
+        tree(&new),
+        [(
+            "bin/python".replace('/', std::path::MAIN_SEPARATOR_STR),
+            b"new".to_vec()
+        )]
+    );
+}
+
+/// The same for a killed reinstall's leftover: `begin` drops a linked `.old-<name>` beside a
+/// complete version without carrying anything out of it.
+#[test]
+fn begin_drops_a_leftover_linked_old_copy_without_reaching_through_it() {
+    let root = tempfile::tempdir().unwrap();
+    let ext = external_tree(root.path());
+    let before = tree(&ext);
+    let versions = root.path().join("versions");
+    std::fs::create_dir_all(versions.join("3.12.0/bin")).unwrap();
+    link_dir(&ext, &versions.join(".old-3.12.0"));
+    let t = Txn::begin(&versions, "3.12.0").unwrap();
+    assert_eq!(tree(&ext), before, "the link's target changed");
+    assert!(versions.join(".old-3.12.0").symlink_metadata().is_err());
+    assert!(!versions.join("3.12.0/envs").exists());
+    assert!(!versions.join("3.12.0/Lib").exists());
+    drop(t);
+}
