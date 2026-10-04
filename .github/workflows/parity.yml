@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 env:
-  PYENV_SHA: ab74141ab4bcd34aa9b11f363dd8ad4f6fc01cd2
+  PYENV_SHA: 07171d013cac53d1cc9248b4c160217f288a2965
   PYENV_WIN_SHA: 856ed5a8c107879d53374f782a4b40cc794f19e0
   BATS_VERSION: "1.11.1"
 
