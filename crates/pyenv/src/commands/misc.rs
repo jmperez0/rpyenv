@@ -16,13 +16,15 @@ pub fn root(ctx: &Ctx, _args: &[&str]) -> Output {
     o
 }
 
-/// `pyenv commands [--sh|--no-sh]`. rpyenv has no `sh-` commands yet, so `--sh` lists nothing.
+/// `pyenv commands [--sh|--no-sh]`. pyenv-win's has no options.
 pub fn commands(ctx: &Ctx, args: &[&str]) -> Output {
+    let listing = match (ctx.flavor, args.first()) {
+        (Flavor::Pyenv, Some(&"--sh")) => super::Listing::ShOnly,
+        (Flavor::Pyenv, Some(&"--no-sh")) => super::Listing::NoSh,
+        _ => super::Listing::All,
+    };
     let mut o = Output::new();
-    if ctx.flavor == Flavor::Pyenv && args.first() == Some(&"--sh") {
-        return o;
-    }
-    for name in super::names(ctx.flavor) {
+    for name in super::names(ctx.flavor, listing) {
         o.out(name);
     }
     o
