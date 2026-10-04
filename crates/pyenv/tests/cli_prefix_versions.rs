@@ -114,7 +114,7 @@ fn full_help_listing_and_commands() {
     assert_eq!(f.pyenv(&["help"]).stdout, expected);
     assert_eq!(
         f.pyenv(&["commands"]).stdout,
-        "--version\ncommands\nexec\nglobal\nhelp\ninit\ninstall\nlatest\nlocal\nprefix\nrehash\nroot\nshell\nshims\nuninstall\nversion\nversion-file\nversion-file-read\nversion-file-write\nversion-name\nversion-origin\nversions\nwhence\nwhich\n"
+        "--version\ncommands\ncompletions\nexec\nglobal\nhelp\ninit\ninstall\nlatest\nlocal\nprefix\nrehash\nroot\nshell\nshims\nuninstall\nversion\nversion-file\nversion-file-read\nversion-file-write\nversion-name\nversion-origin\nversions\nwhence\nwhich\n"
     );
     assert_eq!(f.pyenv(&["commands", "--sh"]).stdout, "rehash\nshell\n");
 }
@@ -163,7 +163,7 @@ fn win_commands_order() {
     let r = Fixture::new().pyenv(&["commands"]);
     assert_eq!(
         r.stdout,
-        "--version\r\ncommands\r\nexec\r\nglobal\r\nhelp\r\ninstall\r\nlatest\r\nlocal\r\nprefix\r\nrehash\r\nroot\r\nshims\r\nuninstall\r\nupdate\r\nversion-file-read\r\nversion-file-write\r\nversion-file\r\nversion-name\r\nversion-origin\r\nversion\r\nversions\r\nvname\r\nwhence\r\nwhich\r\n"
+        "--version\r\ncommands\r\ncompletions\r\nexec\r\nglobal\r\nhelp\r\ninstall\r\nlatest\r\nlocal\r\nprefix\r\nrehash\r\nroot\r\nshims\r\nuninstall\r\nupdate\r\nversion-file-read\r\nversion-file-write\r\nversion-file\r\nversion-name\r\nversion-origin\r\nversion\r\nversions\r\nvname\r\nwhence\r\nwhich\r\n"
     );
 }
 
