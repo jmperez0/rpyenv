@@ -100,6 +100,35 @@ pub enum Listing {
     NoSh,
 }
 
+/// The names `pyenv commands` prints: the built-ins (`names`) plus `pyenv-*` plugins on
+/// the dispatch `PATH`, with the same `sh-` handling, each once, in the flavor's order
+/// (libexec/pyenv-commands:23-47).
+pub fn command_names(ctx: &Ctx, listing: Listing) -> Vec<String> {
+    let path = crate::plugin::dispatch_path(ctx);
+    let plugins = rpyenv_core::plugins::listed_names(&path, ctx.flavor, ctx.pathext.as_deref());
+    let mut all: Vec<String> = names(ctx.flavor, listing)
+        .into_iter()
+        .map(String::from)
+        .collect();
+    for n in plugins {
+        let short = n.strip_prefix("sh-");
+        let shown = match listing {
+            Listing::All => Some(short.unwrap_or(&n).to_string()),
+            Listing::ShOnly => short.map(str::to_string),
+            Listing::NoSh => short.is_none().then(|| n.clone()),
+        };
+        if let Some(s) = shown {
+            all.push(s);
+        }
+    }
+    match ctx.flavor {
+        Flavor::Pyenv => all.sort_unstable(),
+        Flavor::PyenvWin => all.sort_by_key(|n| format!("{}.", n.to_ascii_uppercase())),
+    }
+    all.dedup();
+    all
+}
+
 /// The command table's names as they are (`sh-*` included), for the built-in links.
 #[cfg(unix)]
 pub fn builtin_names(flavor: Flavor) -> Vec<&'static str> {

@@ -4,7 +4,6 @@
 use crate::commands::{self, Listing};
 use crate::output::Output;
 use rpyenv_core::ctx::Ctx;
-use rpyenv_core::flavor::Flavor;
 use rpyenv_core::shellname;
 use std::path::{Path, PathBuf};
 
@@ -91,7 +90,7 @@ pub fn init(ctx: &Ctx, args: &[&str]) -> Output {
             print_env(&mut o, &shell);
             print_completion(&mut o, &shell);
             print_rehash(&mut o, &shell, a.no_rehash);
-            o.stdout.push_str(&shell_function(&shell));
+            o.stdout.push_str(&shell_function(ctx, &shell));
             o
         }
     }
@@ -454,8 +453,10 @@ pub(crate) fn posix_function(header: &str, routed: &[&str]) -> String {
 }
 
 /// The `pyenv` function; it routes the `sh-` commands (Decision 4, allowlist D-88).
-fn shell_function(shell: &str) -> String {
-    let routed = commands::names(Flavor::Pyenv, Listing::ShOnly);
+fn shell_function(ctx: &Ctx, shell: &str) -> String {
+    // Built-in and plugin `sh-*` commands (Decision 7 of plan M4a; allowlist D-88).
+    let names = commands::command_names(ctx, Listing::ShOnly);
+    let routed: Vec<&str> = names.iter().map(String::as_str).collect();
     match shell {
         "fish" => fish_function(&routed),
         "pwsh" => PWSH_FUNCTION.replace("@ROUTED@", &routed.join(" ")),

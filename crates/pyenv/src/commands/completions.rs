@@ -224,8 +224,9 @@ pub fn completions(ctx: &Ctx, args: &[&str]) -> Output {
     } else if commands::lookup(ctx.flavor, &sh).is_some() {
         sh.as_str()
     } else {
-        // `set -e` ends the script when neither exists: no output at all.
-        return Output::new().with_code(1);
+        // A plugin, or (`set -e` ends the script when neither exists) no output at all.
+        return plugin_completions(ctx, cmd, &args[1..])
+            .unwrap_or_else(|| Output::new().with_code(1));
     };
     let mut o = Output::new();
     o.out("--help");
@@ -246,6 +247,52 @@ pub fn completions(ctx: &Ctx, args: &[&str]) -> Output {
     o.stdout.push_str(&rest.stdout);
     o.stderr.push_str(&rest.stderr);
     o.with_code(rest.code)
+}
+
+/// `pyenv completions <plugin> [args]` (plan M4a Decision 6): `--help`, then, when the file
+/// has the marker, what the plugin prints for `--complete <args>`. `None` without a plugin.
+fn plugin_completions(ctx: &Ctx, cmd: &str, args: &[&str]) -> Option<Output> {
+    let file =
+        crate::plugin::find(ctx, cmd).or_else(|| crate::plugin::find(ctx, &format!("sh-{cmd}")))?;
+    let mut o = Output::new();
+    o.out("--help");
+    let text = std::fs::read(&file)
+        .map(|b| String::from_utf8_lossy(&b).into_owned())
+        .unwrap_or_default();
+    // `grep -iE "^([#%]|--|//) provide pyenv completions"`
+    let marked = text.lines().any(|l| {
+        let l = l.to_ascii_lowercase();
+        ["# ", "% ", "-- ", "// "].iter().any(|p| {
+            l.strip_prefix(p)
+                .is_some_and(|r| r.starts_with("provide pyenv completions"))
+        })
+    });
+    if !marked {
+        return Some(o);
+    }
+    let path = crate::plugin::dispatch_path(ctx);
+    let mut c = std::process::Command::new(&file);
+    c.arg("--complete").args(args);
+    for (k, v) in crate::plugin::env(ctx, path) {
+        if let Some(v) = v {
+            c.env(k, v);
+        }
+    }
+    match c.output() {
+        Ok(out) => {
+            o.stdout.push_str(&String::from_utf8_lossy(&out.stdout));
+            o.stderr.push_str(&String::from_utf8_lossy(&out.stderr));
+            Some(o.with_code(out.status.code().unwrap_or(1)))
+        }
+        Err(e) => {
+            o.err(format!(
+                "pyenv: {}: {}",
+                file.display(),
+                rpyenv_core::launch::io_reason(&e)
+            ));
+            Some(o.with_code(1))
+        }
+    }
 }
 
 #[cfg(test)]

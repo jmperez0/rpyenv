@@ -2,6 +2,7 @@
 
 use crate::commands;
 use crate::output::Output;
+use rpyenv_core::ctx::Ctx;
 use rpyenv_core::flavor::Flavor;
 
 struct Topic {
@@ -140,40 +141,154 @@ fn find(flavor: Flavor, name: &str) -> Option<&'static Topic> {
     win.or_else(|| PYENV.iter().find(|t| t.name == name))
 }
 
-/// Linux: upstream's list of the commands rpyenv has. Windows: pyenv-win's `pyenv help` text.
-pub fn listing(flavor: Flavor) -> String {
+/// What a command file's leading comment block documents (libexec/pyenv-help:29-90).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct Doc {
+    pub summary: String,
+    pub usage: String,
+    pub help: String,
+}
+
+/// `None` when the block has neither a Usage nor a Summary.
+pub(crate) fn parse_doc(text: &str) -> Option<Doc> {
+    let mut lines: Vec<&str> = Vec::new();
+    for l in text.lines() {
+        if !l.starts_with('#') {
+            break;
+        }
+        if l == "#" {
+            lines.push("");
+        } else if let Some(rest) = l.strip_prefix("# ") {
+            lines.push(rest);
+        }
+    }
+    let (mut summary, mut usage, mut help) = (String::new(), String::new(), String::new());
+    let mut reading_usage = false;
+    for l in lines {
+        if l.starts_with("Summary:") {
+            summary = l.get(9..).unwrap_or("").to_string();
+        } else if l.starts_with("Usage:") {
+            reading_usage = true;
+            usage.push('\n');
+            usage.push_str(l);
+        } else if reading_usage && (l.chars().all(|c| c == ' ') || l.starts_with("       ")) {
+            usage.push('\n');
+            usage.push_str(l);
+        } else {
+            reading_usage = false;
+            help.push('\n');
+            help.push_str(l);
+        }
+    }
+    let trim = |s: &str| s.trim_matches('\n').to_string();
+    (!usage.is_empty() || !summary.is_empty()).then(|| Doc {
+        summary,
+        usage: trim(&usage),
+        help: trim(&help),
+    })
+}
+
+/// A plugin's help (`pyenv-<cmd>` or `pyenv-sh-<cmd>`), `None` when no such file exists.
+fn plugin_help(ctx: &Ctx, cmd: &str, usage_only: bool) -> Option<Output> {
+    let file =
+        crate::plugin::find(ctx, cmd).or_else(|| crate::plugin::find(ctx, &format!("sh-{cmd}")))?;
+    let text = std::fs::read(&file)
+        .map(|b| String::from_utf8_lossy(&b).into_owned())
+        .unwrap_or_default();
+    let doc = parse_doc(&text);
+    let mut o = Output::new();
+    if usage_only {
+        if let Some(d) = doc.filter(|d| !d.usage.is_empty()) {
+            o.out(d.usage);
+        }
+        return Some(o);
+    }
+    let Some(d) = doc else {
+        return Some(Output::error("Sorry, this command isn't documented yet."));
+    };
+    let help = if d.help.is_empty() {
+        &d.summary
+    } else {
+        &d.help
+    };
+    o.out(if d.usage.is_empty() {
+        format!("Usage: pyenv {cmd}")
+    } else {
+        d.usage.clone()
+    });
+    if !help.is_empty() {
+        o.out("");
+        o.out(help);
+        o.out("");
+    }
+    Some(o)
+}
+
+/// Linux: upstream's list of the commands rpyenv has, plus plugins with a Summary when a
+/// context is given (libexec/pyenv-help:152-160). Windows: pyenv-win's `pyenv help` text.
+pub fn listing(flavor: Flavor, ctx: Option<&Ctx>) -> String {
     if flavor == Flavor::PyenvWin {
         return WIN_HELP_LISTING.to_string();
     }
-    let mut topics: Vec<&Topic> = PYENV
+    let mut entries: Vec<(String, String)> = PYENV
         .iter()
         .filter(|t| t.summary.is_some() && find(Flavor::Pyenv, t.name).is_some())
+        .map(|t| {
+            (
+                t.name.to_string(),
+                t.summary.unwrap_or_default().to_string(),
+            )
+        })
         .collect();
-    topics.sort_by(|a, b| a.name.cmp(b.name));
+    if let Some(ctx) = ctx {
+        let path = crate::plugin::dispatch_path(ctx);
+        for raw in rpyenv_core::plugins::listed_names(&path, ctx.flavor, ctx.pathext.as_deref()) {
+            // `pyenv-commands` strips `sh-`; `pyenv-help` then tries both names.
+            let name = raw.strip_prefix("sh-").unwrap_or(&raw).to_string();
+            if entries.iter().any(|(n, _)| *n == name) || find(Flavor::Pyenv, &name).is_some() {
+                continue;
+            }
+            let file = crate::plugin::find(ctx, &name)
+                .or_else(|| crate::plugin::find(ctx, &format!("sh-{name}")));
+            let summary = file
+                .and_then(|f| std::fs::read(f).ok())
+                .and_then(|b| parse_doc(&String::from_utf8_lossy(&b)))
+                .map(|d| d.summary)
+                .unwrap_or_default();
+            if !summary.is_empty() {
+                entries.push((name, summary));
+            }
+        }
+    }
+    entries.sort();
     let mut s =
         String::from("Usage: pyenv <command> [<args>]\n\nSome useful pyenv commands are:\n");
-    for t in topics {
-        s.push_str(&format!(
-            "   {:<9}   {}\n",
-            t.name,
-            t.summary.unwrap_or_default()
-        ));
+    for (name, summary) in entries {
+        s.push_str(&format!("   {name:<9}   {summary}\n"));
     }
     s.push_str("\nSee `pyenv help <command>' for information on a specific command.\n");
     s.push_str("For full documentation, see: https://github.com/pyenv/pyenv#readme\n");
     s
 }
 
-/// `pyenv help ...` for either flavor.
+/// `pyenv help ...` for either flavor, built-in commands only.
 pub fn help_command(flavor: Flavor, args: &[&str]) -> Output {
     match flavor {
-        Flavor::Pyenv => help_pyenv(args),
-        Flavor::PyenvWin => help_win(args),
+        Flavor::Pyenv => help_pyenv(args, None),
+        Flavor::PyenvWin => help_win(args, None),
+    }
+}
+
+/// `pyenv help ...` that also knows plugin commands (plan M4a Decision 8).
+pub fn help_ctx(ctx: &Ctx, args: &[&str]) -> Output {
+    match ctx.flavor {
+        Flavor::Pyenv => help_pyenv(args, Some(ctx)),
+        Flavor::PyenvWin => help_win(args, Some(ctx)),
     }
 }
 
 /// Upstream `pyenv help [--usage] [<command>]`.
-fn help_pyenv(args: &[&str]) -> Output {
+fn help_pyenv(args: &[&str], ctx: Option<&Ctx>) -> Output {
     let mut o = Output::new();
     let (usage_only, rest) = match args.split_first() {
         Some((&"--usage", r)) => (true, r),
@@ -188,7 +303,7 @@ fn help_pyenv(args: &[&str]) -> Output {
             o.out("Usage: pyenv <command> [<args>]");
             return o.with_code(1);
         }
-        o.stdout.push_str(&listing(Flavor::Pyenv));
+        o.stdout.push_str(&listing(Flavor::Pyenv, ctx));
         return o;
     };
     match find(Flavor::Pyenv, cmd) {
@@ -204,12 +319,14 @@ fn help_pyenv(args: &[&str]) -> Output {
             o.stdout.push_str(t.text);
             o
         }
-        None => Output::error(format!("pyenv: no such command `{cmd}'")),
+        None => ctx
+            .and_then(|c| plugin_help(c, cmd, usage_only))
+            .unwrap_or_else(|| Output::error(format!("pyenv: no such command `{cmd}'"))),
     }
 }
 
 /// pyenv-win `pyenv help [<command>]`; arguments after the command are ignored.
-fn help_win(args: &[&str]) -> Output {
+fn help_win(args: &[&str], ctx: Option<&Ctx>) -> Output {
     let mut o = Output::new();
     let cmd = args.first().map(|c| c.to_ascii_lowercase());
     match cmd.as_deref() {
@@ -228,6 +345,9 @@ fn help_win(args: &[&str]) -> Output {
                 return Output::error("Sorry, this command isn't documented yet.")
             }
             Some(t) => o.stdout.push_str(t.text),
+            None if ctx.is_some_and(|x| crate::plugin::find(x, c).is_some()) => {
+                return plugin_help(ctx.unwrap(), c, false).unwrap_or_default()
+            }
             None => {
                 o.out(format!("pyenv: no such command '{}'", args[0]));
                 return o.with_code(1);

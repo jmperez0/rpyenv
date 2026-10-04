@@ -24,12 +24,12 @@ pub fn commands(ctx: &Ctx, args: &[&str]) -> Output {
         _ => super::Listing::All,
     };
     let mut o = Output::new();
-    for name in super::names(ctx.flavor, listing) {
+    for name in super::command_names(ctx, listing) {
         o.out(name);
     }
     o
 }
 
 pub fn help(ctx: &Ctx, args: &[&str]) -> Output {
-    crate::help::help_command(ctx.flavor, args)
+    crate::help::help_ctx(ctx, args)
 }

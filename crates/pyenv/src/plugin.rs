@@ -53,7 +53,7 @@ fn builtin_links(_ctx: &Ctx) -> Option<PathBuf> {
 }
 
 /// The environment upstream's dispatcher exports (Decision 4).
-fn env(ctx: &Ctx, path: OsString) -> Vec<(OsString, Option<OsString>)> {
+pub(crate) fn env(ctx: &Ctx, path: OsString) -> Vec<(OsString, Option<OsString>)> {
     let prefix = crate::install_prefix();
     let mut v = vec![
         ("PYENV_ROOT".into(), Some(ctx.root.clone().into_os_string())),
@@ -87,7 +87,7 @@ pub(crate) fn dispatch(ctx: &Ctx, cmd: &str, args: &[&str], raw: &[OsString]) ->
             o.out(format!("pyenv help \"{cmd}\""));
             return Some(o);
         }
-        return Some(crate::help::help_command(ctx.flavor, &[cmd]));
+        return Some(crate::help::help_ctx(ctx, &[cmd]));
     }
     let plan = launch::LaunchPlan {
         program,
