@@ -16,6 +16,9 @@ chmod 755 "$work"
 # binaries go in <run>/bin: `pyenv init -` then sources <run>/completions/pyenv.<shell>,
 # the file the suite expects under `_PYENV_INSTALL_PREFIX`.
 install -d -m 755 "$work/run" "$work/run/bin" "$work/run/libexec"
+# The suite's tree has plugins/python-build/bin; "adds its own libexec and plugin bin dirs to
+# PATH" expects it on PATH. Empty here: rpyenv's install is built in.
+install -d -m 755 "$work/run/plugins/python-build/bin"
 install -m 755 "$bin/pyenv" "$bin/pyenv-shim" "$work/run/bin/"
 cp -r "$repo/completions" "$work/run/completions"
 # The suite puts `<test>/../libexec` on PATH: there, `pyenv` is rpyenv and each `pyenv-<cmd>`

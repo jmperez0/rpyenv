@@ -206,12 +206,25 @@ fn commands_completions_and_init_include_plugins() {
         .contains("\n  activate|rehash|shell)\n"));
 }
 
-/// Review focus 4.
+/// Review focus 4, corrected by probing upstream: bash's `command -v` falls back to a
+/// non-executable file, so it is listed and documented, and running it fails as an
+/// unstartable file does (allowlist D-43).
 #[test]
-fn a_non_executable_plugin_is_listed_but_not_run() {
+fn a_non_executable_plugin_is_found_but_cannot_start() {
     let f = Fixture::new();
-    let p = plugin(&f, "x", "plain", "echo no\n");
+    let p = plugin(
+        &f,
+        "x",
+        "plain",
+        "# Summary: Plain one\n# Usage: pyenv plain\necho no\n",
+    );
     std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
     assert!(run(&f, &["commands"]).0.lines().any(|l| l == "plain"));
-    assert_eq!(run(&f, &["plain"]).1, "pyenv: no such command `plain'\n");
+    assert_eq!(
+        run(&f, &["help", "plain"]).0,
+        "Usage: pyenv plain\n\nPlain one\n\n"
+    );
+    let (out, err, code) = run(&f, &["plain"]);
+    assert_eq!((out.as_str(), code), ("", 126), "{err}");
+    assert!(err.ends_with("Permission denied\n"), "{err}");
 }

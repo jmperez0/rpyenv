@@ -15,6 +15,7 @@ class Case:
     remove: tuple = ()  # paths removed after the fixture is built
     readonly: tuple = ()  # paths made read-only after the fixture is built
     compare: tuple = ()  # paths whose bytes are compared after the run
+    executable: tuple = ()  # paths made executable after the fixture is built
     allow: tuple = ()  # allowlist rows explaining a difference
 
 
@@ -228,7 +229,7 @@ CASES = (
     Case("init --path sh", ("init", "--path", "sh"), os="Linux"),
     Case("init --install for an unsupported shell", ("init", "--install", "nu"), os="Linux"),
     Case("init - ksh with a plugin sh- command", ("init", "-", "ksh"), os="Linux",
-         files=(("root/plugins/fake/bin/pyenv-sh-activate", "#!/bin/sh\n"),), allow=("D-88",)),
+         files=(("root/plugins/fake/bin/pyenv-sh-activate", "#!/bin/sh\n"),)),
     Case("sh-shell --unset in fish", ("sh-shell", "--unset"), os="Linux", env=(("PYENV_SHELL", "fish"),)),
     Case("sh-shell - in bash", ("sh-shell", "-"), os="Linux", env=(("PYENV_SHELL", "bash"),)),
     Case("sh-shell sets a version in pwsh", ("sh-shell", "{v1}"), os="Linux", env=(("PYENV_SHELL", "pwsh"),)),
@@ -248,4 +249,20 @@ CASES = (
     Case("shell with no version set", ("shell",), os="Windows"),
     Case("shell with a version not installed", ("shell", "9.9"), os="Windows"),
     Case("shell sets a version", ("shell", "{v1}"), os="Windows", allow=("D-89",)),
+    # M4a: plugin dispatch (Linux).
+    Case("a plugin command", ("hello", "a b"), os="Linux",
+         files=(("root/plugins/hello/bin/pyenv-hello",
+                 "#!/bin/sh\n# Usage: pyenv hello <who>\n# Summary: Says hello\n# Greets.\nprintf '%s|' \"$@\"; echo \"$PYENV_ROOT|$PYENV_DIR\"\n"),),
+         executable=("root/plugins/hello/bin/pyenv-hello",)),
+    Case("help for a plugin command", ("help", "hello"), os="Linux",
+         files=(("root/plugins/hello/bin/pyenv-hello", "#!/bin/sh\n# Usage: pyenv hello <who>\n# Summary: Says hello\n# Greets.\n"),),
+         executable=("root/plugins/hello/bin/pyenv-hello",)),
+    Case("help --usage for a plugin command", ("help", "--usage", "hello"), os="Linux",
+         files=(("root/plugins/hello/bin/pyenv-hello", "#!/bin/sh\n# Usage: pyenv hello <who>\n# Summary: Says hello\n"),),
+         executable=("root/plugins/hello/bin/pyenv-hello",)),
+    Case("completions for a plugin with the marker", ("completions", "hello", "x"), os="Linux",
+         files=(("root/plugins/hello/bin/pyenv-hello", "#!/bin/sh\n# Provide pyenv completions\n[ \"$1\" = --complete ] && shift && echo \"$@\"\n"),),
+         executable=("root/plugins/hello/bin/pyenv-hello",)),
+    Case("a plugin command on Windows", ("hello",), os="Windows",
+         files=(("root/plugins/hello/bin/pyenv-hello.bat", "@echo hello\r\n"),), allow=("D-93",)),
 )
