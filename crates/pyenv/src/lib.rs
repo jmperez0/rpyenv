@@ -31,7 +31,9 @@ pub(crate) fn shim_exe() -> Option<PathBuf> {
 /// `pyenv --version`: the upstream version rpyenv matches, then rpyenv's own (allowlist D-01).
 pub fn version_line(flavor: Flavor) -> String {
     let upstream = match flavor {
-        Flavor::Pyenv => "2.8.8",
+        // The pyenv release the vendored python-build comes from (python-build/UPSTREAM),
+        // so a definitions sync moves both together.
+        Flavor::Pyenv => install::defs::UPSTREAM_VERSION,
         Flavor::PyenvWin => "3.1.1",
     };
     format!("pyenv {upstream} (rpyenv {RPYENV_VERSION})")

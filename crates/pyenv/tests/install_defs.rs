@@ -18,10 +18,16 @@ fn parse_builtin(name: &str) -> defs::Definition {
 
 #[test]
 fn every_vendored_definition_parses() {
-    // Mechanical: all 299 (pyenv 2.8.8), so a construct the interpreter misses fails here, by name.
+    // Mechanical: every vendored definition, counted from the folder itself so a sync
+    // keeps the check, and a construct the interpreter misses fails here, by name.
     let root = Path::new("/nonexistent-root");
     let names = defs::names(root, &no_env);
-    assert_eq!(names.len(), 299);
+    let share = Path::new(env!("CARGO_MANIFEST_DIR")).join("python-build/share");
+    let files = std::fs::read_dir(&share)
+        .unwrap()
+        .filter(|e| e.as_ref().unwrap().file_type().unwrap().is_file())
+        .count();
+    assert_eq!(names.len(), files);
     let mut failures = Vec::new();
     for n in &names {
         let found = defs::find(root, n, &no_env).unwrap();
