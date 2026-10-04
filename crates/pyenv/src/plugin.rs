@@ -11,6 +11,13 @@ use std::path::PathBuf;
 pub(crate) fn dispatch_path(ctx: &Ctx) -> OsString {
     let prefix = crate::install_prefix();
     let mut front = plugins::front_dirs(&ctx.root, prefix.as_deref());
+    // `<prefix>\libexec` is upstream pyenv's slot; in a pyenv-win root it holds pyenv-win's
+    // own scripts, which aren't plugins (Decision 5).
+    if ctx.flavor == Flavor::PyenvWin {
+        if let Some(libexec) = prefix.as_ref().map(|p| p.join("libexec")) {
+            front.retain(|d| *d != libexec);
+        }
+    }
     if let Some(links) = builtin_links(ctx) {
         front.push(links);
     }
