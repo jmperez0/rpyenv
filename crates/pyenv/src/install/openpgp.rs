@@ -112,15 +112,14 @@ enum Signer<'a> {
     Sub(&'a SignedPublicKey, &'a SignedPublicSubKey),
 }
 
-/// Verify `asc` (an armored detached signature) over the file `data`, against the keys in
-/// `keys_armored` (one or more armored public keys). Returns the PRIMARY key fingerprint
-/// (uppercase hex) of the signer.
-/// Digests a signature may not use: MD5 is never accepted (spec §9.3), nor RIPEMD-160. None of
-/// the pinned keys signs with either (SHA-1 for Löwis and Baxter, SHA-256 for Dower).
+/// Digests a signature may not use: MD5 (never accepted, spec §9.3) and RIPEMD-160.
 fn weak_hash(alg: HashAlgorithm) -> bool {
     matches!(alg, HashAlgorithm::Md5 | HashAlgorithm::Ripemd160)
 }
 
+/// Verify `asc` (an armored detached signature) over the file `data`, against the keys in
+/// `keys_armored` (one or more armored public keys). Returns the PRIMARY key fingerprint
+/// (uppercase hex) of the signer.
 pub fn verify_detached(data: &Path, asc: &[u8], keys_armored: &str) -> Result<String, String> {
     let (sig, _headers) = DetachedSignature::from_armor_single(asc)
         .map_err(|e| format!("bad signature armor: {e}"))?;

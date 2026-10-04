@@ -798,3 +798,33 @@ fn begin_drops_a_leftover_linked_old_copy_without_reaching_through_it() {
     assert!(!versions.join("3.12.0/Lib").exists());
     drop(t);
 }
+
+/// A reinstall over a linked version killed after the final rename leaves the new, unfinished
+/// tree (with the marker) and the link at `.old-<name>`: `begin` drops the unfinished tree and
+/// puts the link back, without reaching through it.
+#[test]
+fn begin_restores_a_linked_old_copy_over_an_incomplete_target() {
+    let root = tempfile::tempdir().unwrap();
+    let ext = external_tree(root.path());
+    let before = tree(&ext);
+    let versions = root.path().join("versions");
+    std::fs::create_dir_all(versions.join("3.12.0/bin")).unwrap();
+    std::fs::write(versions.join("3.12.0/bin/python"), "new").unwrap();
+    std::fs::write(versions.join("3.12.0").join(MARKER), "").unwrap();
+    link_dir(&ext, &versions.join(".old-3.12.0"));
+    let t = Txn::begin(&versions, "3.12.0").unwrap();
+    let v = versions.join("3.12.0");
+    assert!(
+        v.symlink_metadata().unwrap().file_type().is_symlink(),
+        "the link is back"
+    );
+    assert_eq!(
+        std::fs::read_to_string(v.join("Scripts/canary.exe")).unwrap(),
+        "MZ"
+    );
+    assert!(versions.join(".old-3.12.0").symlink_metadata().is_err());
+    assert_eq!(tree(&ext), before, "the link's target changed");
+    drop(t);
+    assert!(v.symlink_metadata().unwrap().file_type().is_symlink());
+    assert_eq!(tree(&ext), before);
+}

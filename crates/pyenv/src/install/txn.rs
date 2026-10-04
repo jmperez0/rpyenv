@@ -92,18 +92,19 @@ impl Txn {
         if old.symlink_metadata().is_ok() {
             if target.symlink_metadata().is_err() {
                 let _ = std::fs::rename(&old, &target);
-            } else if is_link(&old) {
-                // A linked version set aside by `-f` (final review M2): never reached through.
-                let _ = remove_link(&old);
             } else if is_complete_for(&target, flavor) {
-                // Killed during or before the carry-over: finish it, and keep `.old` if
-                // it fails (`place` then refuses to overwrite it).
-                if carry_over(&old, &target).is_ok() {
+                if is_link(&old) {
+                    // A linked version set aside by `-f` (final review M2): never reached
+                    // through, only the link goes.
+                    let _ = remove_link(&old);
+                } else if carry_over(&old, &target).is_ok() {
+                    // Killed during or before the carry-over: finish it, and keep `.old` if
+                    // it fails (`place` then refuses to overwrite it).
                     let _ = std::fs::remove_dir_all(&old);
                 }
             } else {
                 // Killed after the final rename: the target is the new, unfinished tree
-                // and `.old` is the only good copy.
+                // and `.old` (a folder or a link, renamed back as it is) is the only good copy.
                 let _ = std::fs::remove_dir_all(&target);
                 let _ = std::fs::rename(&old, &target);
             }
