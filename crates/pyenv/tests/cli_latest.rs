@@ -55,10 +55,12 @@ fn known_mode_reads_the_vendored_definitions() {
         .into_iter()
         .rfind(|n| n.starts_with("3.") && n.ends_with('t') && !n.contains('-'))
         .unwrap();
+    let newest_312 = newest_release("3.12.", "");
+    let newest_314t = newest_release("3.14.", "t");
     for (prefix, want) in [
-        ("3.12", "3.12.14"),
+        ("3.12", newest_312.as_str()),
         ("3.1", "3.1.5"),
-        ("3.14t", "3.14.7t"),
+        ("3.14t", newest_314t.as_str()),
         ("3t", newest_3t.as_str()),
         ("2", "2.7.18"),
         ("3.12-dev", "3.12-dev"),
@@ -103,7 +105,23 @@ fn standalone_known_mode_does_not_see_plugin_definitions() {
         &f.root.join("plugins/fake/share/python-build/3.12.99"),
         "x\n",
     );
-    assert_eq!(f.pyenv(&["latest", "-k", "3.12"]).stdout, "3.12.14\n");
+    assert_eq!(
+        f.pyenv(&["latest", "-k", "3.12"]).stdout,
+        format!("{}\n", newest_release("3.12.", ""))
+    );
+}
+
+/// The newest final release `<series><n><suffix>` among the vendored definitions, in
+/// python-build's order, so a python-build sync keeps the expectations valid.
+fn newest_release(series: &str, suffix: &str) -> String {
+    pyenv::install::defs::known(&|_| None)
+        .into_iter()
+        .rfind(|n| {
+            n.strip_prefix(series)
+                .and_then(|rest| rest.strip_suffix(suffix))
+                .is_some_and(|num| !num.is_empty() && num.bytes().all(|b| b.is_ascii_digit()))
+        })
+        .unwrap()
 }
 
 #[test]
