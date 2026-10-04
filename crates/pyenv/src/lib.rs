@@ -14,6 +14,14 @@ use std::path::PathBuf;
 /// rpyenv's own version.
 pub const RPYENV_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// The folder above the one holding this `pyenv` binary: upstream's
+/// `_PYENV_INSTALL_PREFIX`, which its dispatcher derives the same way and overwrites any
+/// inherited value with (libexec/pyenv:79-82; Decision 3).
+pub(crate) fn install_prefix() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    Some(exe.parent()?.parent()?.to_path_buf())
+}
+
 /// The shim binary installed next to this `pyenv` binary. It may not exist.
 pub(crate) fn shim_exe() -> Option<PathBuf> {
     let name = format!("pyenv-shim{}", std::env::consts::EXE_SUFFIX);

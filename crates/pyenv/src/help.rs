@@ -28,6 +28,8 @@ const fn topic(
     }
 }
 
+const INIT_USAGE: &str = "Usage: eval \"$(pyenv init [-|--path] [--no-push-path] [--no-rehash] [<shell>])\"\n       pyenv init --install [<shell>]\n       pyenv init --detect-shell [<shell>]";
+
 const SHELL_USAGE: &str =
     "Usage: pyenv shell <version>...\n       pyenv shell -\n       pyenv shell --unset";
 
@@ -48,6 +50,8 @@ const PYENV: &[Topic] = &[
     #[cfg(unix)]
     topic("install", Some("Install a Python version using python-build"), Some(commands::install::USAGE),
         commands::install::HELP),
+    topic("init", Some("Configure the shell environment for pyenv"), Some(INIT_USAGE),
+        "Usage: eval \"$(pyenv init [-|--path] [--no-push-path] [--no-rehash] [<shell>])\"\n       pyenv init --install [<shell>]\n       pyenv init --detect-shell [<shell>]\n\nConfigure the shell environment for pyenv\n\n"),
     topic("latest", Some("Print the latest installed or known version with the given prefix"), Some("Usage: pyenv latest [-k|--known] <prefix>"),
         "Usage: pyenv latest [-k|--known] <prefix>\n\n  -k/--known      Select from all known versions instead of installed\n  -b/--bypass     (internal) On a resolution failure, do not print an error message\n                  but rather print the argument unchanged\n  -f/--force      (internal) Same as -b but also do not return a failure exit code\n\n"),
     topic("local", Some("Set or show the local application-specific Python version(s)"), Some("Usage: pyenv local [-f|--force] [<version> [...]]\n       pyenv local --unset"),

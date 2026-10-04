@@ -1,6 +1,7 @@
 //! The command table.
 
 pub mod exec;
+pub mod init;
 #[cfg(unix)]
 pub mod install;
 pub mod install_win;
@@ -62,6 +63,7 @@ const LINUX_ONLY: &[(&str, Command)] = &[
     ("install", install::install),
     #[cfg(unix)]
     ("uninstall", uninstall::uninstall),
+    ("init", init::init),
     ("sh-rehash", shell::sh_rehash),
     ("sh-shell", shell::sh_shell),
 ];
