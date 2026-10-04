@@ -54,7 +54,10 @@ impl Txn {
 
     pub fn begin_for(versions: &Path, name: &str, flavor: Flavor) -> Result<Txn, String> {
         // Every path below is `versions/<prefix><name>` and some are deleted (review I2).
-        if !super::is_plain_name(name) {
+        // Win32 strips trailing dots and spaces, so `...` would name `versions` itself.
+        if !super::is_plain_name(name)
+            || (flavor == Flavor::PyenvWin && !super::is_safe_win_segment(name))
+        {
             return Err(format!("pyenv: invalid version name: {name}"));
         }
         std::fs::create_dir_all(versions)

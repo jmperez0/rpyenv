@@ -126,6 +126,7 @@ fn escaping_names_remove_nothing() {
     }
     std::fs::create_dir_all(root.join("versions").join("3.12.1")).unwrap();
     std::fs::create_dir_all(root.join("versions").join(".tmp-3.12.2")).unwrap();
+    std::fs::create_dir_all(root.join("versions").join(".old-3.12.1")).unwrap();
     let pyenv = std::path::Path::new(env!("CARGO_BIN_EXE_pyenv"));
     for arg in [
         "..",
@@ -137,6 +138,14 @@ fn escaping_names_remove_nothing() {
         ".old-3.12.1",
         "versions",
         "..\\versions",
+        "...",
+        "....",
+        "3.12.1.",
+        "3.12.1 ",
+        "con",
+        "CON.txt",
+        ".TMP-3.12.2",
+        ".Old-3.12.1",
     ] {
         let out = std::process::Command::new(pyenv)
             .args(["uninstall", "-f", arg])
@@ -150,11 +159,16 @@ fn escaping_names_remove_nothing() {
             .unwrap();
         let text = common::decode(&out.stdout);
         assert!(!text.contains("Successfully"), "{arg}: {text}");
+        assert!(
+            text.contains("not installed") || text.contains("Unrecognized python version"),
+            "{arg}: {text}"
+        );
         for c in &canaries {
             assert!(c.is_file(), "{arg} removed {}", c.display());
         }
         assert!(root.join("versions").join("3.12.1").is_dir(), "{arg}");
         assert!(root.join("versions").join(".tmp-3.12.2").is_dir(), "{arg}");
+        assert!(root.join("versions").join(".old-3.12.1").is_dir(), "{arg}");
     }
 }
 

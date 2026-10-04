@@ -685,3 +685,15 @@ fn the_kept_message_ends_in_the_flavors_line_ending() {
     );
     assert!(kept_message(Flavor::PyenvWin, p, &e).ends_with(": busy\r\n"));
 }
+
+#[test]
+fn a_win_name_that_win32_would_normalize_is_refused_and_creates_nothing() {
+    let t = tempfile::tempdir().unwrap();
+    let versions = t.path().join("versions");
+    let err = Txn::begin_for(&versions, "...", rpyenv_core::flavor::Flavor::PyenvWin).err();
+    assert!(err.unwrap().contains("invalid version name"));
+    assert!(!versions.exists());
+    assert!(!t.path().join(".locks").exists());
+    // `...` is a real folder name on Linux, where the default flavor still accepts it.
+    assert!(Txn::begin(&versions, "...").is_ok());
+}

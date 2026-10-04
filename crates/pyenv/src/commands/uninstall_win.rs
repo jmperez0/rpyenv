@@ -27,7 +27,10 @@ fn is_version(s: &str) -> bool {
 /// `versions\<name>` for a name that can only be a version folder: one plain component, not
 /// `.`/`..`, not an installer staging name.
 fn target(versions: &Path, name: &str) -> Option<PathBuf> {
-    if !is_plain_name(name) || installed::is_staging_name(name) {
+    if !is_plain_name(name)
+        || !crate::install::is_safe_win_segment(name)
+        || installed::is_staging_name(&name.to_ascii_lowercase())
+    {
         return None;
     }
     child_of(versions, name)
