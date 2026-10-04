@@ -28,6 +28,11 @@ const fn topic(
     }
 }
 
+const SHELL_USAGE: &str =
+    "Usage: pyenv shell <version>...\n       pyenv shell -\n       pyenv shell --unset";
+
+const SHELL_HELP: &str = "Usage: pyenv shell <version>...\n       pyenv shell -\n       pyenv shell --unset\n\nSets a shell-specific Python version by setting the `PYENV_VERSION'\nenvironment variable in your shell. This version overrides local\napplication-specific versions and the global version.\n\n<version> should be a string matching a Python version known to pyenv.\nThe special version string `system' will use your default system Python.\nRun `pyenv versions' for a list of available Python versions.\n\nWhen `-` is passed instead of the version string, the previously set\nversion will be restored. With `--unset`, the `PYENV_VERSION`\nenvironment variable gets unset, restoring the environment to the\nstate before the first `pyenv shell` call.\n\n";
+
 /// Upstream pyenv 2.8.8 (docs/parity/pyenv-m1-reference.md; `exec -N` is from 2.8.8).
 const PYENV: &[Topic] = &[
     topic("--version", Some("Display the version of pyenv"), None,
@@ -53,6 +58,9 @@ const PYENV: &[Topic] = &[
         "Usage: pyenv rehash\n\nRehash pyenv shims (run this after installing executables)\n\n"),
     topic("root", Some("Display the root directory where versions and shims are kept"), None,
         "Usage: pyenv root\n\nDisplay the root directory where versions and shims are kept\n\n"),
+    topic("sh-rehash", None, None, ""),
+    topic("sh-shell", None, Some(SHELL_USAGE), SHELL_HELP),
+    topic("shell", Some("Set or show the shell-specific Python version"), Some(SHELL_USAGE), SHELL_HELP),
     topic("shims", Some("List existing pyenv shims"), Some("Usage: pyenv shims [--short]"),
         "Usage: pyenv shims [--short]\n\nList existing pyenv shims\n\n"),
     #[cfg(unix)]
@@ -116,7 +124,7 @@ const WIN_SHOW_HELP: &str = "Usage: pyenv <command> [<args>]\n\nSome useful pyen
 /// The help topic for a command rpyenv has. On Windows, commands pyenv-win lacks
 /// use upstream's text (allowlist D-12).
 fn find(flavor: Flavor, name: &str) -> Option<&'static Topic> {
-    commands::lookup(flavor, name)?;
+    commands::lookup(flavor, name).or_else(|| commands::lookup(flavor, &format!("sh-{name}")))?;
     let win = match flavor {
         Flavor::PyenvWin => PYENV_WIN.iter().find(|t| t.name == name),
         Flavor::Pyenv => None,
@@ -131,7 +139,7 @@ pub fn listing(flavor: Flavor) -> String {
     }
     let mut topics: Vec<&Topic> = PYENV
         .iter()
-        .filter(|t| t.summary.is_some() && commands::lookup(Flavor::Pyenv, t.name).is_some())
+        .filter(|t| t.summary.is_some() && find(Flavor::Pyenv, t.name).is_some())
         .collect();
     topics.sort_by(|a, b| a.name.cmp(b.name));
     let mut s =
@@ -182,6 +190,8 @@ fn help_pyenv(args: &[&str]) -> Output {
             }
             o
         }
+        // `pyenv-sh-rehash` has no Summary or Usage block (M3L).
+        Some(t) if t.text.is_empty() => Output::error("Sorry, this command isn't documented yet."),
         Some(t) => {
             o.stdout.push_str(t.text);
             o

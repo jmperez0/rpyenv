@@ -9,6 +9,7 @@ pub mod local_global;
 pub mod misc;
 pub mod prefix;
 pub mod rehash;
+pub mod shell;
 #[cfg(unix)]
 pub mod uninstall;
 pub mod uninstall_win;
@@ -61,6 +62,8 @@ const LINUX_ONLY: &[(&str, Command)] = &[
     ("install", install::install),
     #[cfg(unix)]
     ("uninstall", uninstall::uninstall),
+    ("sh-rehash", shell::sh_rehash),
+    ("sh-shell", shell::sh_shell),
 ];
 
 fn table(flavor: Flavor) -> impl Iterator<Item = &'static (&'static str, Command)> {
@@ -76,14 +79,35 @@ pub fn lookup(flavor: Flavor, name: &str) -> Option<Command> {
     table(flavor).find(|(n, _)| *n == name).map(|(_, c)| *c)
 }
 
-/// The names `pyenv commands` prints, in the flavor's order.
-pub fn names(flavor: Flavor) -> Vec<&'static str> {
-    let mut names: Vec<&'static str> = table(flavor).map(|(n, _)| *n).collect();
+/// Which commands `pyenv commands` lists (libexec/pyenv-commands:15-47).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Listing {
+    /// Every command, `sh-` stripped, so `sh-shell` lists as `shell`.
+    All,
+    /// `--sh`: only the `sh-` commands, stripped.
+    ShOnly,
+    /// `--no-sh`: every command but the `sh-` ones.
+    NoSh,
+}
+
+/// The names `pyenv commands` prints, each once, in the flavor's order.
+pub fn names(flavor: Flavor, listing: Listing) -> Vec<&'static str> {
+    let mut names: Vec<&'static str> = table(flavor)
+        .filter_map(|&(n, _)| {
+            let short = n.strip_prefix("sh-");
+            match listing {
+                Listing::All => Some(short.unwrap_or(n)),
+                Listing::ShOnly => short,
+                Listing::NoSh => short.is_none().then_some(n),
+            }
+        })
+        .collect();
     match flavor {
         // `sort -u` in the C locale.
         Flavor::Pyenv => names.sort_unstable(),
         // pyenv-win lists `libexec\pyenv-<name>.<ext>` in NTFS order (allowlist D-16).
         Flavor::PyenvWin => names.sort_by_key(|n| format!("{}.", n.to_ascii_uppercase())),
     }
+    names.dedup();
     names
 }

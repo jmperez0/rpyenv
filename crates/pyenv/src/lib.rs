@@ -66,6 +66,13 @@ fn run_pyenv(args: &[&str], raw: &[OsString], ctx: &Ctx) -> Output {
         _ => {}
     }
     match commands::lookup(Flavor::Pyenv, cmd) {
+        // `pyenv sh-<cmd> --help` prints the help command for the shell function to
+        // evaluate (libexec/pyenv:133-136).
+        Some(_) if rest.first() == Some(&"--help") && cmd.starts_with("sh-") => {
+            let mut o = Output::new();
+            o.out(format!("pyenv help \"{cmd}\""));
+            o
+        }
         Some(_) if rest.first() == Some(&"--help") => help::help_command(Flavor::Pyenv, &[cmd]),
         Some(command) => command(ctx, rest),
         None => Output::error(format!("pyenv: no such command `{cmd}'")),
