@@ -102,7 +102,14 @@ pub fn lock(shims: &Path, wait: Wait) -> Result<Lock, RehashError> {
                     continue;
                 }
             }
-            Err(e) if e.kind() == io::ErrorKind::PermissionDenied => return Err(not_writable()),
+            // Access denied with the name still taken is a lock its holder deleted while
+            // another handle kept it open (Windows "delete pending"): busy, so wait. With
+            // the name free, the folder isn't writable.
+            Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
+                if fs::symlink_metadata(&path).is_err_and(|m| m.kind() == io::ErrorKind::NotFound) {
+                    return Err(not_writable());
+                }
+            }
             Err(e) => return Err(RehashError::Io(e)),
         }
         match wait {
@@ -732,6 +739,55 @@ mod tests {
             "the check didn't rehash: {outcome:?} (Ok(false) = not needed)"
         );
         assert!(shims.join("black.exe").exists());
+    }
+
+    /// A lock its holder deleted while another handle is still open (a scanner, say)
+    /// stays "delete pending", and creating it again fails with access denied: that is a
+    /// busy lock, not an unwritable folder (windows-2022 CI, run 37220358651). The legacy
+    /// delete is set through a handle, since newer Windows deletes with POSIX semantics,
+    /// which free the name at once.
+    #[cfg(windows)]
+    #[test]
+    fn a_delete_pending_lock_is_busy_not_unwritable() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FileDispositionInfo, SetFileInformationByHandle, FILE_DISPOSITION_INFO,
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let shims = tmp.path().join("shims");
+        fs::create_dir_all(&shims).unwrap();
+        let path = shims.join(LOCK_NAME);
+        fs::write(&path, "").unwrap();
+        // DELETE access, sharing everything, as a scanner's handle would.
+        let holder = fs::OpenOptions::new()
+            .access_mode(0x0001_0000 | 0x8000_0000)
+            .share_mode(7)
+            .open(&path)
+            .unwrap();
+        let info = FILE_DISPOSITION_INFO { DeleteFile: true };
+        // SAFETY: a valid handle and a FILE_DISPOSITION_INFO of the stated size.
+        let ok = unsafe {
+            SetFileInformationByHandle(
+                holder.as_raw_handle() as _,
+                FileDispositionInfo,
+                &info as *const _ as *const _,
+                std::mem::size_of::<FILE_DISPOSITION_INFO>() as u32,
+            )
+        };
+        assert_ne!(ok, 0, "{}", io::Error::last_os_error());
+        assert!(
+            matches!(lock(&shims, Wait::No), Err(RehashError::Busy)),
+            "{:?}",
+            lock(&shims, Wait::No)
+        );
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            drop(holder);
+        });
+        let got = lock(&shims, Wait::Upto(Duration::from_secs(5)));
+        release.join().unwrap();
+        assert!(got.is_ok(), "{got:?}");
     }
 
     #[test]
