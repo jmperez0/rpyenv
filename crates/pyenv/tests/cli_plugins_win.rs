@@ -1,0 +1,39 @@
+//! Windows plugin dispatch (plan M4a Decision 5; allowlist D-93).
+#![cfg(windows)]
+
+mod common;
+use common::Fixture;
+
+fn run(f: &Fixture, args: &[&str]) -> (String, String, i32) {
+    let r = f.pyenv_env(args, &[("PATHEXT", ".COM;.EXE;.BAT;.CMD")]);
+    (r.stdout, r.stderr, r.code)
+}
+
+/// allowlist D-93
+#[test]
+fn a_batch_plugin_runs_with_the_dispatcher_s_environment() {
+    let f = Fixture::new();
+    f.file(
+        &f.root.join("plugins/x/bin/pyenv-hello.bat"),
+        "@echo off\r\necho [%1][%2][%PYENV_ROOT%]\r\nexit /b 3\r\n",
+    );
+    let (out, err, code) = run(&f, &["hello", "a", "b"]);
+    assert_eq!(
+        (out, code),
+        (format!("[a][b][{}]\r\n", f.root.display()), 3),
+        "{err}"
+    );
+    assert!(run(&f, &["commands"]).0.lines().any(|l| l == "hello"));
+    assert_eq!(
+        run(&f, &["help", "hello"]),
+        (
+            String::new(),
+            "Sorry, this command isn't documented yet.\r\n".to_string(),
+            1
+        )
+    );
+    assert_eq!(
+        run(&f, &["nosuch"]).0,
+        "pyenv: no such command 'nosuch'\r\n"
+    );
+}

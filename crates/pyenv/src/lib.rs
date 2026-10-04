@@ -137,11 +137,12 @@ fn run_pyenv_win(args: &[&str], raw: &[OsString], ctx: &Ctx) -> Output {
             commands::shell_win::lf(command(ctx, rest))
         }
         Some(command) => command(ctx, rest),
-        None => {
+        // A plugin (allowlist D-93), else pyenv-win's message.
+        None => plugin::dispatch(ctx, &cmd, rest, &raw[1..]).unwrap_or_else(|| {
             let mut o = Output::new();
             o.out(format!("pyenv: no such command '{typed}'"));
             o.with_code(1)
-        }
+        }),
     }
 }
 
