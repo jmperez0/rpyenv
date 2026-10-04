@@ -76,9 +76,19 @@ pub fn hook_path(inherited: Option<&str>, root: &Path, prefix: Option<&Path>) ->
 }
 
 /// `command -v pyenv-<name>` on the dispatch `PATH`: the first executable file, or on
-/// Windows the first `PATHEXT` match.
+/// Windows the first `PATHEXT` match. On Linux, with no executable one, the first file of
+/// that name, as bash's `command -v` falls back to it (running it then fails).
 pub fn find(name: &str, path: &OsStr, flavor: Flavor, pathext: Option<&OsStr>) -> Option<PathBuf> {
-    pathsearch::find_first(&format!("pyenv-{name}"), Some(path), None, flavor, pathext)
+    let file = format!("pyenv-{name}");
+    pathsearch::find_first(&file, Some(path), None, flavor, pathext).or_else(|| {
+        (flavor == Flavor::Pyenv)
+            .then(|| {
+                std::env::split_paths(path)
+                    .map(|d| d.join(&file))
+                    .find(|p| p.is_file())
+            })
+            .flatten()
+    })
 }
 
 /// The names `pyenv-*` files on the dispatch `PATH` give, `pyenv-` removed, each once
@@ -200,7 +210,11 @@ mod tests {
             find("hello", &path, Flavor::Pyenv, None),
             Some(bin.join("pyenv-hello"))
         );
-        assert_eq!(find("plain", &path, Flavor::Pyenv, None), None);
+        // No executable `pyenv-plain`: bash's `command -v` falls back to the file anyway.
+        assert_eq!(
+            find("plain", &path, Flavor::Pyenv, None),
+            Some(bin.join("pyenv-plain"))
+        );
         let mut names = listed_names(&path, Flavor::Pyenv, None);
         names.sort();
         assert_eq!(names, ["hello", "plain", "sh-hi"]);

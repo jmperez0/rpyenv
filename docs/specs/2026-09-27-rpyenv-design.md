@@ -237,10 +237,18 @@ Upstream's command set:
 | Setup (rpyenv-only, Windows) | `setup` (prepare one user's environment), `migrate` / `migrate --restore` (take over pyenv-win or undo it); see §9.4 |
 | Virtualenvs | `virtualenv`, `virtualenvs`, `virtualenv-delete`, `virtualenv-prefix`, `activate`, `deactivate` |
 
-Plugin dispatch: for an unknown command `foo`, run `pyenv-foo` from
-`$PYENV_ROOT/plugins/*/bin` or from `PATH`, with `PYENV_ROOT` exported. On
-Linux, existing bash plugins work unchanged. On Windows, a plugin must be an
-executable.
+Plugin dispatch: for a command rpyenv doesn't have, run `pyenv-<cmd>` from
+`<prefix>/libexec`, `$PYENV_ROOT/plugins/*/bin`, `<prefix>/plugins/*/bin` or
+`PATH`, in that order, with the environment upstream's dispatcher exports
+(`PYENV_ROOT`, `PYENV_DIR`, `_PYENV_INSTALL_PREFIX`, that `PATH`, and on Linux
+`PYENV_HOOK_PATH`). A plugin can't shadow a built-in. On Linux, existing bash
+plugins work unchanged: rpyenv keeps a `pyenv-<cmd>` symlink to itself for
+each built-in in `$PYENV_ROOT/.rpyenv/libexec` (on the plugin's `PATH`), and
+run under such a name it acts as `pyenv <cmd>`. On Windows, a plugin must be
+an executable that `PATHEXT` finds (`.exe`, `.bat`, `.cmd`). Plugins appear
+in `pyenv commands`, `pyenv help` (from their leading `#` comment block) and
+`pyenv completions`, and plugin `sh-*` commands join the shell function's
+routed set (§7).
 
 ## 7. Shell integration
 

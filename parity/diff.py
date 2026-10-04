@@ -155,6 +155,8 @@ def build(upstream, case):
         os.makedirs(os.path.dirname(p), exist_ok=True)
         with open(p, "w", encoding="utf-8", newline="") as f:
             f.write(expand(content))
+    for rel in case.executable:
+        os.chmod(resolve(places, rel), 0o755)
     for rel in case.remove:
         p = resolve(places, rel)
         if os.path.isdir(p):
