@@ -14,6 +14,7 @@ pub mod pe;
 pub mod prefix;
 pub mod rehash;
 pub mod select;
+pub mod shellname;
 pub mod shim;
 pub mod shimset;
 pub mod textout;

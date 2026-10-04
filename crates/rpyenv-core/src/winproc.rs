@@ -249,3 +249,83 @@ pub fn message_box(text: &str) {
         );
     }
 }
+
+/// The parent process's executable file name (`cmd.exe`, `pwsh.exe`, …), when the parent
+/// was created before this process. A parent that exited may have had its process ID
+/// reused by a later process; the creation-time check rejects that (spec §7).
+pub fn parent_image_name() -> Option<String> {
+    use windows_sys::Win32::Foundation::FILETIME;
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
+    use windows_sys::Win32::System::Threading::{
+        GetCurrentProcess, GetCurrentProcessId, GetProcessTimes, OpenProcess,
+        PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    fn created(process: HANDLE) -> Option<u64> {
+        let zero = FILETIME {
+            dwLowDateTime: 0,
+            dwHighDateTime: 0,
+        };
+        let (mut c, mut e, mut k, mut u) = (zero, zero, zero, zero);
+        // SAFETY: four valid FILETIME out-pointers and a process handle.
+        let ok = unsafe { GetProcessTimes(process, &mut c, &mut e, &mut k, &mut u) };
+        (ok != 0).then(|| (u64::from(c.dwHighDateTime) << 32) | u64::from(c.dwLowDateTime))
+    }
+
+    // SAFETY: plain Win32 calls; the snapshot handle is closed on every path below.
+    unsafe {
+        let me = GetCurrentProcessId();
+        let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snap == INVALID_HANDLE_VALUE {
+            return None;
+        }
+        let mut entry: PROCESSENTRY32W = std::mem::zeroed();
+        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        let mut ppid = None;
+        let mut names: Vec<(u32, String)> = Vec::new();
+        let mut more = Process32FirstW(snap, &mut entry) != 0;
+        while more {
+            let len = entry
+                .szExeFile
+                .iter()
+                .position(|&c| c == 0)
+                .unwrap_or(entry.szExeFile.len());
+            names.push((
+                entry.th32ProcessID,
+                String::from_utf16_lossy(&entry.szExeFile[..len]),
+            ));
+            if entry.th32ProcessID == me {
+                ppid = Some(entry.th32ParentProcessID);
+            }
+            more = Process32NextW(snap, &mut entry) != 0;
+        }
+        CloseHandle(snap);
+        let ppid = ppid?;
+        let name = names.into_iter().find(|(p, _)| *p == ppid)?.1;
+        let mine = created(GetCurrentProcess())?;
+        let parent = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, ppid);
+        if parent.is_null() {
+            return None;
+        }
+        let theirs = created(parent);
+        CloseHandle(parent);
+        (theirs? < mine).then_some(name)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Under `cargo test` the parent (cargo, or the shell that ran the test binary) is
+    /// alive and older than this process. Tasks 6 and 7 check the name under cmd and
+    /// PowerShell.
+    #[test]
+    fn a_test_process_has_a_trusted_parent() {
+        let name = parent_image_name().expect("a trusted parent");
+        assert!(name.to_ascii_lowercase().ends_with(".exe"), "{name}");
+    }
+}
