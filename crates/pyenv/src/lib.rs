@@ -106,6 +106,15 @@ fn run_pyenv_win(args: &[&str], raw: &[OsString], ctx: &Ctx) -> Output {
     if cmd == "exec" && rest.first() != Some(&"--help") {
         return commands::exec::exec(ctx, &raw[1..]);
     }
+    // As upstream's dispatcher does for the POSIX function to evaluate (libexec/pyenv:133-136).
+    if cmd.starts_with("sh-")
+        && rest.first() == Some(&"--help")
+        && commands::lookup(Flavor::PyenvWin, &cmd).is_some()
+    {
+        let mut o = Output::new();
+        o.out(format!("pyenv help \"{cmd}\""));
+        return o;
+    }
     match commands::lookup(Flavor::PyenvWin, &cmd) {
         Some(_) if rest.first() == Some(&"--help") => {
             help::help_command(Flavor::PyenvWin, &[cmd.as_str()])

@@ -12,6 +12,7 @@ pub mod misc;
 pub mod prefix;
 pub mod rehash;
 pub mod shell;
+pub mod shell_win;
 #[cfg(unix)]
 pub mod uninstall;
 pub mod uninstall_win;
@@ -57,6 +58,9 @@ const WIN_ONLY: &[(&str, Command)] = &[
     ("uninstall", uninstall_win::uninstall),
     ("update", update::update),
     ("vname", version::version_name),
+    ("sh-rehash", shell_win::sh_rehash),
+    ("sh-shell", shell_win::sh_shell),
+    ("shell", shell_win::shell),
 ];
 
 /// pyenv (Linux) only, until M2b brings pyenv-win's installer commands.

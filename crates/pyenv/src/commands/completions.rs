@@ -150,6 +150,7 @@ pub(crate) const TABLE_WIN: &[Entry] = &[
     e("prefix", true, Words(&[], VersionsBare)),
     e("sh-rehash", true, Words(&[], Nothing)),
     e("sh-shell", true, Words(&["--unset"], VersionsBare)),
+    e("shell", true, Words(&["--unset"], VersionsBare)),
     e("shims", true, Words(&["--short"], Nothing)),
     e(
         "uninstall",
@@ -247,13 +248,12 @@ pub fn completions(ctx: &Ctx, args: &[&str]) -> Output {
     o.with_code(rest.code)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
     /// Every Linux entry names a Linux command. Unix only: Linux `install` and
     /// `uninstall` exist only in Unix builds.
-    #[cfg(unix)]
     #[test]
     fn every_linux_entry_names_a_command() {
         for e in TABLE_PYENV {

@@ -106,6 +106,8 @@ const PYENV_WIN: &[Topic] = &[
         "Usage: pyenv local <version> <version2> <..>\n       pyenv local --unset\n\nSets the local application-specific Python version by writing the\nversion name to a file named `.python-version'.\n\nWhen you run a Python command, pyenv will look for a `.python-version'\nfile in the current directory and each parent directory. If no such\nfile is found in the tree, pyenv will use the global Python version\nspecified with `pyenv global'. A version specified with the\n`PYENV_VERSION' environment variable takes precedence over local\nand global versions.\n\n<version> can be specified multiple times and should be a version\ntag known to pyenv.  The special version string `system' will use\nyour default system Python.  Run `pyenv versions' for a list of\navailable Python versions.\n\nExample: To enable the python2.7 and python3.7 shims to find their\n         respective executables you could set both versions with:\n\n'pyenv local 3.7.0 2.7.15'\n"),
     topic("rehash", None, None,
         "Usage: pyenv rehash\n\nRehash pyenv shims (run this after installing executables)\n\n"),
+    topic("sh-shell", None, None, commands::shell_win::HELP),
+    topic("shell", None, None, commands::shell_win::HELP),
     topic("shims", None, None,
         "Usage: pyenv shims\n       pyenv shims --short\n\nList the existing pyenv shims\n\n"),
     topic("uninstall", None, None, commands::uninstall_win::HELP),
