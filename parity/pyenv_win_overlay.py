@@ -28,7 +28,9 @@ def run_args(shell):
         return ["cmd", "/d", "/c", "call"]
     # PowerShell loads rpyenv's integration first, as the profile line would (allowlist
     # D-90, plan M3 Decision 9c). --no-rehash: a test's shims are its own business.
-    return [shell, "-Command", 'iex ((pyenv init - pwsh --no-rehash) -join "`n");']
+    # -NoProfile: the user's own profile must not run inside the suite, where it could point
+    # PYENV back at a real install (plan M3 Global Constraints; final review #5).
+    return [shell, "-NoProfile", "-Command", 'iex ((pyenv init - pwsh --no-rehash) -join "`n");']
 
 
 @pytest.fixture(autouse=True)

@@ -119,6 +119,14 @@ fn run_pyenv_win(args: &[&str], raw: &[OsString], ctx: &Ctx) -> Output {
         Some(_) if rest.first() == Some(&"--help") => {
             help::help_command(Flavor::PyenvWin, &[cmd.as_str()])
         }
+        // The completion scripts read `commands` and `completions` with `$(…)`; in an
+        // integrated bash, zsh or fish (PYENV_SHELL, set by `pyenv init`), they get `\n`
+        // line ends, which `$(…)` doesn't strip inside the text (final review #4).
+        Some(command)
+            if matches!(cmd.as_str(), "commands" | "completions") && evaluating_shell() =>
+        {
+            commands::shell_win::lf(command(ctx, rest))
+        }
         Some(command) => command(ctx, rest),
         None => {
             let mut o = Output::new();
@@ -126,4 +134,19 @@ fn run_pyenv_win(args: &[&str], raw: &[OsString], ctx: &Ctx) -> Output {
             o.with_code(1)
         }
     }
+}
+
+/// True when `PYENV_SHELL` names a bash, zsh or fish on Windows.
+fn evaluating_shell() -> bool {
+    std::env::var("PYENV_SHELL")
+        .ok()
+        .and_then(|s| rpyenv_core::shellname::windows_name(&s))
+        .is_some_and(|n| {
+            matches!(
+                rpyenv_core::shellname::family(&n, Flavor::PyenvWin),
+                rpyenv_core::shellname::Family::Posix
+                    | rpyenv_core::shellname::Family::Ksh
+                    | rpyenv_core::shellname::Family::Fish
+            )
+        })
 }
