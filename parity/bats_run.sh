@@ -9,24 +9,29 @@ for a in "$1" "$2" "$3"; do
   [ -e "$a" ] || { echo "bats_run.sh: no such file or directory: $a" >&2; exit 2; }
 done
 bin=$(realpath "$1") up=$(realpath "$2") bats=$(realpath "$3") out=$(realpath -m "$4")
+repo=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d /tmp/rpyenv-bats.XXXXXX)
 chmod 755 "$work"
-install -d -m 755 "$work/bin"
-install -m 755 "$bin/pyenv" "$bin/pyenv-shim" "$work/bin/"
+# rpyenv's install prefix is the parent of its binary's folder (plan M3 Decision 3), so the
+# binaries go in <run>/bin: `pyenv init -` then sources <run>/completions/pyenv.<shell>,
+# the file the suite expects under `_PYENV_INSTALL_PREFIX`.
+install -d -m 755 "$work/run" "$work/run/bin" "$work/run/libexec"
+install -m 755 "$bin/pyenv" "$bin/pyenv-shim" "$work/run/bin/"
+cp -r "$repo/completions" "$work/run/completions"
 # The suite puts `<test>/../libexec` on PATH: there, `pyenv` is rpyenv and each `pyenv-<cmd>`
 # the suite calls directly is a wrapper for `pyenv <cmd>`. The wrappers use the absolute path: a
 # test may stub `pyenv` on PATH, and upstream's `pyenv-<cmd>` scripts never go through it.
-mkdir -p "$work/run/libexec"
 cp -r "$up/test" "$work/run/test"
 cp -r "$up/pyenv.d" "$work/run/pyenv.d"
-ln -s "$work/bin/pyenv" "$work/run/libexec/pyenv"
-# When a milestone delivers a command (latest, init, shell, completions, sh-*), add it to this
-# list (latest: M2a), or its upstream tests keep failing through the missing wrapper.
+ln -s "$work/run/bin/pyenv" "$work/run/libexec/pyenv"
+# When a milestone delivers a command, add it to this list, or its upstream tests keep
+# failing through the missing wrapper. `shell` has none: upstream has no `pyenv-shell` either.
 for c in root prefix version version-name version-origin version-file version-file-read \
-         version-file-write versions which whence exec rehash shims commands help global local latest; do
-  printf '#!/bin/sh\nexec "%s" %s "$@"\n' "$work/bin/pyenv" "$c" > "$work/run/libexec/pyenv-$c"
+         version-file-write versions which whence exec rehash shims commands help global local latest \
+         init sh-shell sh-rehash completions; do
+  printf '#!/bin/sh\nexec "%s" %s "$@"\n' "$work/run/bin/pyenv" "$c" > "$work/run/libexec/pyenv-$c"
 done
-printf '#!/bin/sh\nexec "%s" --version "$@"\n' "$work/bin/pyenv" > "$work/run/libexec/pyenv---version"
+printf '#!/bin/sh\nexec "%s" --version "$@"\n' "$work/run/bin/pyenv" > "$work/run/libexec/pyenv---version"
 chmod 755 "$work/run/libexec/"pyenv-*
 id tester >/dev/null 2>&1 || useradd --create-home tester
 chown -R tester "$work/run/test" "$work/run/pyenv.d"
