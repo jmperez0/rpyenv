@@ -539,7 +539,15 @@ offers:
 | `RPYENV_LIVE_REHASH` checkbox | User environment | Machine environment |
 
 **`pyenv setup`** (rpyenv-only) prepares one user's environment: it creates
-`PYENV_ROOT`, puts `shims` at the front of the user `PATH`, and runs rehash.
+`PYENV_ROOT`, puts `shims` at the front of the user `PATH`, runs rehash, and
+adds the PowerShell profile line (``iex ((pyenv init - pwsh) -join "`n")``,
+§7) to the user's Windows PowerShell 5.1 and PowerShell 7 profiles. It finds
+them where PowerShell does, including a OneDrive-redirected Documents folder,
+and leaves alone a profile that already mentions pyenv, as `pyenv init
+--install` does on Linux. Until M6, `pyenv init --install` refuses on Windows
+and the line is added by hand (`pyenv init pwsh` prints it); without it,
+`pyenv shell` in PowerShell prints the command to run and exits 1 (allowlist
+D-90). (Added 2026-10-04.)
 It runs:
 
 - for a per-user install, at the end of installation;
@@ -554,7 +562,10 @@ is needed because pyenv-win's `bin\pyenv.ps1` would otherwise win over
 - removes pyenv-win's `bin` from the user `PATH`,
 - moves `bin\pyenv.ps1`, `bin\pyenv.bat`, and `bin\pyenv` into a backup
   folder inside `PYENV_ROOT`,
-- runs rehash, which replaces the `.bat` and extensionless shims.
+- runs rehash, which replaces the `.bat` and extensionless shims,
+- adds the PowerShell profile line, as `pyenv setup` does: removing
+  `pyenv.ps1` would otherwise leave PowerShell's `pyenv shell` printing the
+  command instead of applying it.
 
 `pyenv migrate --restore` undoes it. The per-user MSI offers to run
 `migrate` when it finds pyenv-win. For an all-users install, `pyenv setup`
