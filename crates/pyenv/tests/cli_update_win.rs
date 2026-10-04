@@ -134,3 +134,39 @@ fn update_help_prints_the_banner_and_usage() {
         format!("{BANNER}Usage: pyenv update [--ignore]\r\n\r\n  --ignore  Ignores any HTTP/VBScript errors that occur during downloads.\r\n\r\nUpdates the internal database of python installer URL's.\r\n\r\n")
     );
 }
+
+#[test]
+fn a_failed_index_page_writes_nothing_and_exits_1_or_0_with_ignore() {
+    for (args, code) in [(&["update"][..], 1), (&["update", "--ignore"][..], 0)] {
+        let f = Fixture::new();
+        let s = start_with(|_| {
+            vec![
+                ("/ftp/python/".into(), vec![ok_listing()]),
+                ("/ftp/python/2.7.18/".into(), vec![ok_27()]),
+                (
+                    "/ftp/python/3.10.0/".into(),
+                    vec![Reply::Body(listing(&["amd64/"]))],
+                ),
+                (
+                    "/ftp/python/3.13.0/".into(),
+                    vec![Reply::Body(listing(&["amd64/"]))],
+                ),
+                (
+                    "/ftp/python/index-windows.json".into(),
+                    vec![Reply::Status(503)],
+                ),
+            ]
+        });
+        let base = s.url("/ftp/python");
+        let r = run(&f, &base, args);
+        assert_eq!(r.code, code, "{args:?}: {}", r.stdout);
+        assert!(
+            r.stdout.contains(&format!(
+                "HTTP Error downloading from mirror \"{base}/index-windows.json\"\r\nError(503): HTTP 503\r\n"
+            )),
+            "{}",
+            r.stdout
+        );
+        assert!(!f.root.join(".versions_cache.xml").exists());
+    }
+}

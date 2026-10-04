@@ -205,7 +205,17 @@ pub fn index_page(
         let Some(rest) = url.strip_prefix(base).and_then(|r| r.strip_prefix('/')) else {
             continue;
         };
-        let file = rest.rsplit('/').next().unwrap_or("");
+        // Exactly `<numeric folder>/<file>`: no way out of the base path.
+        let Some((folder, file)) = rest.split_once('/') else {
+            continue;
+        };
+        let folder_ok = !folder.is_empty()
+            && !folder.contains("..")
+            && folder.bytes().all(|b| b.is_ascii_digit() || b == b'.');
+        let bad = |t: &str| t.contains(['/', '?', '#', '%', '\\']);
+        if !folder_ok || file.is_empty() || bad(file) || bad(folder) {
+            continue;
+        }
         let Some(stem) = file
             .strip_prefix("python-")
             .and_then(|s| s.strip_suffix(".zip"))
@@ -222,7 +232,10 @@ pub fn index_page(
             Some(v) if v.ends_with(|c: char| c.is_ascii_digit()) => (v, true),
             _ => (ver, false),
         };
-        if ver != sort || parse_code(ver).is_none() {
+        if ver != sort || ver.contains('-') {
+            continue;
+        }
+        if !parse_code(ver).is_some_and(|c| c.arch == Arch::Amd64 && !c.ft) {
             continue;
         }
         zips.push(IndexZip {
@@ -242,6 +255,11 @@ pub fn index_page(
             format!("{dir}/{n}")
         }
     });
+    if let Some(n) = &next {
+        if !n.starts_with(&format!("{base}/")) {
+            return Err(format!("index page links outside {base}: {n}"));
+        }
+    }
     Ok((zips, next))
 }
 
@@ -467,6 +485,60 @@ mod tests {
         );
         assert_eq!(zips[0].file, "python-3.12.1-amd64.zip");
         assert!(index_page("not json", "u", b).is_err());
+    }
+
+    #[test]
+    fn an_off_base_next_page_is_an_error_and_a_relative_one_resolves() {
+        let b = "https://www.python.org/ftp/python";
+        let page = format!("{b}/index-windows.json");
+        for bad in [
+            "https://evil.example/x.json",
+            "https://www.python.org/ftp/pythonx/i.json",
+        ] {
+            let e = index_page(&index(Some(bad), &[]), &page, b).unwrap_err();
+            assert!(e.starts_with("index page links outside "), "{bad}: {e}");
+        }
+        let (_, next) =
+            index_page(&index(Some("index-windows-legacy.json"), &[]), &page, b).unwrap();
+        assert_eq!(
+            next.as_deref(),
+            Some("https://www.python.org/ftp/python/index-windows-legacy.json")
+        );
+    }
+
+    #[test]
+    fn zip_urls_that_leave_the_folder_shape_or_smuggle_an_arch_are_skipped() {
+        let b = "https://www.python.org/ftp/python";
+        let ok = format!("{b}/3.12.1/python-3.12.1-amd64.zip");
+        let urls = [
+            format!("{b}/../../x/python-3.12.1-amd64.zip"),
+            format!("{b}/3.12.1/python-3.12.1-amd64.zip?x"),
+            format!("{b}/3.12.1/python-3.12.1-amd64.zip#x"),
+            format!("{b}/%2e%2e/3.12.1/python-3.12.1-amd64.zip"),
+            format!("{b}/3.12.1/%2e%2e/python-3.12.1-amd64.zip"),
+            format!("{b}/3.12.1/sub/python-3.12.1-amd64.zip"),
+            format!("{b}/%2e%2e/python-3.12.1-amd64.zip"),
+            format!("{b}/../python-3.12.1-amd64.zip"),
+            format!("{b}/3.12.1?x/python-3.12.1-amd64.zip"),
+            format!("{b}/python-3.12.1-amd64.zip"),
+            format!("{b}/3.12.1@@python-3.12.1-amd64.zip"),
+            format!("{b}/3.12.1/python-3.12.1-win32-amd64.zip"),
+        ];
+        let mut entries: Vec<(&str, &str, &str)> = urls
+            .iter()
+            .map(|u| ("PythonCore", u.as_str(), SHA))
+            .collect();
+        entries.push(("PythonCore", ok.as_str(), SHA));
+        // `@@` stands for a JSON-escaped backslash.
+        let json = index(None, &entries).replace("@@", "\\\\");
+        let (zips, _) = index_page(&json, &format!("{b}/index-windows.json"), b).unwrap();
+        assert_eq!(
+            zips.iter().map(|z| z.url.as_str()).collect::<Vec<_>>(),
+            [ok.as_str()]
+        );
+        // A sort-version that smuggles an arch is refused even for a plausible file name.
+        let json = format!("{{\"versions\":[{{\"company\":\"PythonCore\",\"url\":\"{ok}\",\"sort-version\":\"3.12.1-win32\",\"hash\":{{\"sha256\":\"{SHA}\"}}}}]}}");
+        assert!(index_page(&json, "u/i.json", b).unwrap().0.is_empty());
     }
 
     #[test]
