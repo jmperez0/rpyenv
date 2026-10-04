@@ -228,3 +228,103 @@ fn a_non_executable_plugin_is_found_but_cannot_start() {
     assert_eq!((out.as_str(), code), ("", 126), "{err}");
     assert!(err.ends_with("Permission denied\n"), "{err}");
 }
+
+/// Final review #1: parallel first runs, as when several shells start, each find every
+/// built-in link (setup is atomic per link and never drops the folder).
+#[test]
+fn parallel_first_runs_all_find_the_built_in_links() {
+    for _round in 0..5 {
+        let f = Fixture::new();
+        plugin(&f, "x", "where", "pyenv-root\n");
+        let outs: Vec<String> = std::thread::scope(|s| {
+            let runs: Vec<_> = (0..10).map(|_| s.spawn(|| run(&f, &["where"]))).collect();
+            runs.into_iter()
+                .map(|h| {
+                    let (out, err, code) = h.join().unwrap();
+                    format!("{code}|{out}|{err}")
+                })
+                .collect()
+        });
+        let want = format!("0|{}\n|", f.root.display());
+        for o in outs {
+            assert_eq!(o, want);
+        }
+    }
+}
+
+/// Final review #2: pyenv-virtualenv's pattern, `set -e` and a hooks list read by name,
+/// works; `pyenv hooks` lists `<hook path>/<cmd>/*.bash`, resolved (rpyenv runs none).
+#[test]
+fn a_plugin_can_list_hooks_by_name() {
+    let f = Fixture::new();
+    plugin(
+        &f,
+        "venv",
+        "sh-activate",
+        "set -e\nIFS='\n' scripts=(`pyenv-hooks activate`)\necho ok\n",
+    );
+    // bash arrays: run the plugin under bash, as pyenv-virtualenv does.
+    let p = f.root.join("plugins/venv/bin/pyenv-sh-activate");
+    let body = std::fs::read_to_string(&p)
+        .unwrap()
+        .replacen("#!/bin/sh", "#!/bin/bash", 1);
+    std::fs::write(&p, body).unwrap();
+    assert_eq!(
+        run(&f, &["sh-activate"]),
+        ("ok\n".to_string(), String::new(), 0)
+    );
+    let hooks = f.base.join("my hooks");
+    f.file(&hooks.join("exec/b.bash"), "")
+        .file(&hooks.join("exec/a.bash"), "")
+        .file(&hooks.join("exec/c.sh"), "");
+    let h = hooks.display().to_string();
+    let r = f.pyenv_env(&["hooks", "exec"], &[("PYENV_HOOK_PATH", h.as_str())]);
+    assert_eq!(r.stdout, format!("{h}/exec/a.bash\n{h}/exec/b.bash\n"));
+    assert_eq!(
+        run(&f, &["hooks"]),
+        (
+            String::new(),
+            "Usage: pyenv hooks <command>\n".to_string(),
+            1
+        )
+    );
+}
+
+/// Final review #3: rpyenv's own `pyenv-shim` beside `pyenv` on PATH isn't a command.
+#[test]
+fn rpyenv_s_own_shim_is_not_a_plugin() {
+    let f = Fixture::new();
+    let exe = f.syspath.join("pyenv");
+    std::fs::copy(env!("CARGO_BIN_EXE_pyenv"), &exe).unwrap();
+    let shim = Path::new(env!("CARGO_BIN_EXE_pyenv")).with_file_name("pyenv-shim");
+    std::fs::copy(&shim, f.syspath.join("pyenv-shim")).unwrap();
+    let go = |args: &[&str]| {
+        for _ in 0..100 {
+            match f.command(&exe, &f.work, &[]).args(args).output() {
+                Ok(o) => {
+                    return (
+                        String::from_utf8_lossy(&o.stdout).into_owned(),
+                        String::from_utf8_lossy(&o.stderr).into_owned(),
+                    )
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                    std::thread::sleep(std::time::Duration::from_millis(20))
+                }
+                Err(e) => panic!("{e}"),
+            }
+        }
+        panic!("busy");
+    };
+    assert!(!go(&["commands"]).0.lines().any(|l| l == "shim"));
+    assert_eq!(go(&["shim"]).1, "pyenv: no such command `shim'\n");
+}
+
+/// A plugin gets the full `PYENV_HOOK_PATH` already; its `pyenv-hooks` lists each hook once.
+#[test]
+fn a_plugin_s_hooks_are_listed_once() {
+    let f = Fixture::new();
+    f.file(&f.root.join("pyenv.d/activate/x.bash"), "");
+    plugin(&f, "venv", "list", "pyenv-hooks activate\n");
+    let x = f.root.join("pyenv.d/activate/x.bash");
+    assert_eq!(run(&f, &["list"]).0, format!("{}\n", x.display()));
+}

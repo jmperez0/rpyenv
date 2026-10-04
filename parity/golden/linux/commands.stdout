@@ -4,6 +4,7 @@ completions
 exec
 global
 help
+hooks
 init
 install
 latest

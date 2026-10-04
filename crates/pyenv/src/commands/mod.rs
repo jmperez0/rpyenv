@@ -71,6 +71,7 @@ const LINUX_ONLY: &[(&str, Command)] = &[
     ("install", install::install),
     #[cfg(unix)]
     ("uninstall", uninstall::uninstall),
+    ("hooks", misc::hooks),
     ("init", init::init),
     ("sh-rehash", shell::sh_rehash),
     ("sh-shell", shell::sh_shell),
@@ -105,7 +106,7 @@ pub enum Listing {
 /// (libexec/pyenv-commands:23-47).
 pub fn command_names(ctx: &Ctx, listing: Listing) -> Vec<String> {
     let path = crate::plugin::dispatch_path(ctx);
-    let plugins = rpyenv_core::plugins::listed_names(&path, ctx.flavor, ctx.pathext.as_deref());
+    let plugins = crate::plugin::listed(ctx, &path);
     let mut all: Vec<String> = names(ctx.flavor, listing)
         .into_iter()
         .map(String::from)

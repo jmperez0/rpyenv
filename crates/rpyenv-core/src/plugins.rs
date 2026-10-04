@@ -79,6 +79,15 @@ pub fn hook_path(inherited: Option<&str>, root: &Path, prefix: Option<&Path>) ->
 /// Windows the first `PATHEXT` match. On Linux, with no executable one, the first file of
 /// that name, as bash's `command -v` falls back to it (running it then fails).
 pub fn find(name: &str, path: &OsStr, flavor: Flavor, pathext: Option<&OsStr>) -> Option<PathBuf> {
+    // One file name: a separator would reach outside the folders (Win32 collapses
+    // `pyenv-x\..` even when `pyenv-x` doesn't exist).
+    let seps: &[char] = match flavor {
+        Flavor::Pyenv => &['/'],
+        Flavor::PyenvWin => &['/', '\\', ':'],
+    };
+    if name.contains(seps) {
+        return None;
+    }
     let file = format!("pyenv-{name}");
     pathsearch::find_first(&file, Some(path), None, flavor, pathext).or_else(|| {
         (flavor == Flavor::Pyenv)
