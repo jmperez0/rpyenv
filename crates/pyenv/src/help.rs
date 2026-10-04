@@ -28,14 +28,14 @@ const fn topic(
     }
 }
 
-/// Upstream pyenv 2.8.6 (docs/parity/pyenv-m1-reference.md).
+/// Upstream pyenv 2.8.8 (docs/parity/pyenv-m1-reference.md; `exec -N` is from 2.8.8).
 const PYENV: &[Topic] = &[
     topic("--version", Some("Display the version of pyenv"), None,
         "Usage: pyenv --version\n\nDisplays the version number of this pyenv release, including the\ncurrent revision from git, if available.\n\nThe format of the git revision is:\n  <version>-<num_commits>-<git_sha>\nwhere `num_commits` is the number of commits since `version` was\ntagged.\n\n"),
     topic("commands", Some("List all available pyenv commands"), Some("Usage: pyenv commands [--sh|--no-sh]"),
         "Usage: pyenv commands [--sh|--no-sh]\n\nList all available pyenv commands\n\n"),
-    topic("exec", Some("Run an executable with the selected Python version"), Some("Usage: pyenv exec <command> [arg1 arg2...]"),
-        "Usage: pyenv exec <command> [arg1 arg2...]\n\nRuns an executable by first preparing PATH so that the selected Python\nversion's `bin' directory is at the front.\n\nFor example, if the currently selected Python version is 2.7.6:\n  pyenv exec pip install -r requirements.txt\n\nis equivalent to:\n  PATH=\"$PYENV_ROOT/versions/2.7.6/bin:$PATH\" pip install -r requirements.txt\n\n"),
+    topic("exec", Some("Run an executable with the selected Python version"), Some(commands::exec::USAGE_PYENV),
+        "Usage: pyenv exec [-N|--environment] <command> [arg1 arg2...]\n\n   -N/--environment   Set PYTHONHOME and LD_LIBRARY_PATH (DYLD_LIBRARY_PATH in macOS)\n                  envvars for the running command.\n                  This allows to run programs that embed Python without using rpath or\n                  exact library path to libpython.\n                  WARNING: For the running command and its child processes, this will\n                  break linkage for programs that expect to be linked to a different\n                  libpython instance with the same name!\n                  WARNING: In macOS, DYLD_LIBRARY_PATH will be unset by the system for\n                  processes covered by System Integrity Protection.\n\nRuns an executable by first preparing PATH so that the selected Python\nversion's `bin' directory is at the front.\n\nFor example, if the currently selected Python version is 2.7.6:\n  pyenv exec pip install -r requirements.txt\n\nis equivalent to:\n  PATH=\"$PYENV_ROOT/versions/2.7.6/bin:$PATH\" pip install -r requirements.txt\n\n"),
     topic("global", Some("Set or show the global Python version(s)"), Some("Usage: pyenv global <version> <version2> <..>"),
         "Usage: pyenv global <version> <version2> <..>\n\nSets the global Python version(s). You can override the global version at\nany time by setting a directory-specific version with `pyenv local'\nor by setting the `PYENV_VERSION' environment variable.\n\n<version> can be specified multiple times and should be a version\ntag known to pyenv.  The special version string `system' will use\nyour default system Python.  Run `pyenv versions' for a list of\navailable Python versions.\n\nExample: To enable the python2.7 and python3.7 shims to find their\n         respective executables you could set both versions with:\n\n'pyenv global 3.7.0 2.7.15'\n\n"),
     topic("help", Some("Display help for a command"), Some("Usage: pyenv help [--usage] COMMAND"),

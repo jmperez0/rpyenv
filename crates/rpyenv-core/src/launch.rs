@@ -5,7 +5,7 @@ use crate::ctx::Ctx;
 use crate::flavor::Flavor;
 use crate::lookup::{self, Report, Skip};
 use crate::paths::win_path_key;
-use crate::{pathsearch, rehash, select};
+use crate::{pathsearch, prefix, rehash, select};
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
@@ -174,6 +174,77 @@ fn starts_with(s: &OsStr, prefix: &OsStr) -> bool {
 #[cfg(not(unix))]
 fn starts_with(s: &OsStr, prefix: &OsStr) -> bool {
     s.to_string_lossy().starts_with(&*prefix.to_string_lossy())
+}
+
+/// The library search variable `exec -N` sets: upstream picks it by `uname -s`, run from
+/// `PATH`, so a `uname` that prints `Darwin` gives macOS's (libexec/pyenv-exec:88-95).
+pub fn library_path_var() -> &'static str {
+    let darwin = Command::new("uname")
+        .arg("-s")
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim_end_matches('\n') == "Darwin")
+        .unwrap_or(false);
+    if darwin {
+        "DYLD_LIBRARY_PATH"
+    } else {
+        "LD_LIBRARY_PATH"
+    }
+}
+
+/// `exec -N` (libexec/pyenv-exec:74-96): `PYTHONHOME` is the first selected version's
+/// prefix, as `pyenv-prefix` gives it, and `<prefix>/lib` goes first on `lib_var`, whose
+/// value is `current`. Upstream splits `pyenv-prefix`'s output at the first `:` and warns
+/// that several versions are selected. `Err` is `pyenv-prefix`'s failure, after the
+/// warnings already gathered.
+pub fn add_python_home(
+    ctx: &Ctx,
+    plan: &mut LaunchPlan,
+    lib_var: &str,
+    current: Option<OsString>,
+) -> Result<(), Report> {
+    let version = plan
+        .env
+        .iter()
+        .find(|(k, _)| k == "PYENV_VERSION")
+        .and_then(|(_, v)| v.as_ref())
+        .map(|v| v.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let mut prefixes: Vec<String> = Vec::new();
+    for name in select::split_colon(&version) {
+        match prefix::prefix_of(ctx, &name) {
+            Ok(dir) => prefixes.push(dir.to_string_lossy().into_owned()),
+            Err(e) => {
+                let mut lines = plan.warnings.clone();
+                lines.push(e.message());
+                return Err(Report {
+                    lines,
+                    stderr: true,
+                    code: 1,
+                });
+            }
+        }
+    }
+    let joined = prefixes.join(":");
+    let home = match joined.split_once(':') {
+        Some((first, _)) => {
+            let root = ctx.root.to_string_lossy();
+            let shown = first.strip_prefix(&*root).unwrap_or(first);
+            plan.warnings.push(format!(
+                "pyenv: Warning: multiple Python versions are selected. Setting environment variables for the first one, ({shown})"
+            ));
+            first.to_string()
+        }
+        None => joined,
+    };
+    let mut lib = OsString::from(format!("{home}/lib"));
+    if let Some(c) = current.filter(|c| !c.is_empty()) {
+        lib.push(":");
+        lib.push(c);
+    }
+    plan.env
+        .push((OsString::from("PYTHONHOME"), Some(OsString::from(home))));
+    plan.env.push((OsString::from(lib_var), Some(lib)));
+    Ok(())
 }
 
 /// pyenv-win `exec` (pyenv.bat:21-129) and rpyenv's Windows shims.
@@ -643,6 +714,91 @@ mod tests {
         assert_eq!(var(&p, "PATH"), Some(&Some(path)));
         assert!(!p.wait);
         assert!(p.warnings.is_empty());
+    }
+
+    /// A plan whose selected versions are `version`, as `plan` leaves it.
+    fn plan_for(version: &str) -> LaunchPlan {
+        LaunchPlan {
+            program: PathBuf::from("python"),
+            args: Vec::new(),
+            raw_tail: None,
+            env: vec![(
+                OsString::from("PYENV_VERSION"),
+                Some(OsString::from(version)),
+            )],
+            warnings: vec!["earlier".to_string()],
+            wait: false,
+        }
+    }
+
+    // A Windows temp path has a drive `:`, which upstream's split reads as a separator.
+    #[cfg(unix)]
+    #[test]
+    fn python_home_is_the_prefix_and_lib_goes_first() {
+        let (_tmp, ctx) = pyenv_ctx();
+        let prefix = ctx.versions_dir().join("3.12.10");
+        fs::create_dir_all(&prefix).unwrap();
+        let home = prefix.to_string_lossy().into_owned();
+        // `3.12` resolves as `pyenv-prefix` resolves it.
+        let mut p = plan_for("3.12");
+        add_python_home(&ctx, &mut p, "LD_LIBRARY_PATH", None).unwrap();
+        assert_eq!(var(&p, "PYTHONHOME"), Some(&Some(OsString::from(&home))));
+        assert_eq!(
+            var(&p, "LD_LIBRARY_PATH"),
+            Some(&Some(OsString::from(format!("{home}/lib"))))
+        );
+        assert_eq!(p.warnings, ["earlier"]);
+        // An empty value counts as unset, as `${LD_LIBRARY_PATH:+...}` does.
+        let mut p = plan_for("3.12.10");
+        add_python_home(&ctx, &mut p, "LD_LIBRARY_PATH", Some("".into())).unwrap();
+        assert_eq!(
+            var(&p, "LD_LIBRARY_PATH"),
+            Some(&Some(OsString::from(format!("{home}/lib"))))
+        );
+        let mut p = plan_for("3.12.10");
+        add_python_home(&ctx, &mut p, "DYLD_LIBRARY_PATH", Some("/foo/bar".into())).unwrap();
+        assert_eq!(
+            var(&p, "DYLD_LIBRARY_PATH"),
+            Some(&Some(OsString::from(format!("{home}/lib:/foo/bar"))))
+        );
+        assert_eq!(var(&p, "LD_LIBRARY_PATH"), None);
+    }
+
+    // A Windows temp path has a drive `:`, which upstream's split reads as a separator.
+    #[cfg(unix)]
+    #[test]
+    fn python_home_takes_the_first_of_several_versions_and_warns() {
+        let (_tmp, ctx) = pyenv_ctx();
+        for v in ["3.12.10", "3.11.9"] {
+            fs::create_dir_all(ctx.versions_dir().join(v)).unwrap();
+        }
+        let mut p = plan_for("3.12.10:3.11.9");
+        add_python_home(&ctx, &mut p, "LD_LIBRARY_PATH", None).unwrap();
+        let first = ctx.versions_dir().join("3.12.10");
+        assert_eq!(
+            var(&p, "PYTHONHOME"),
+            Some(&Some(first.clone().into_os_string()))
+        );
+        // Upstream prints the prefix with PYENV_ROOT removed from its front.
+        let shown = first.to_string_lossy()[ctx.root.to_string_lossy().len()..].to_string();
+        assert_eq!(
+            p.warnings,
+            [
+                "earlier".to_string(),
+                format!("pyenv: Warning: multiple Python versions are selected. Setting environment variables for the first one, ({shown})")
+            ]
+        );
+    }
+
+    #[test]
+    fn python_home_fails_as_pyenv_prefix_does() {
+        let (_tmp, ctx) = pyenv_ctx();
+        fs::create_dir_all(ctx.versions_dir().join("3.12.10")).unwrap();
+        let mut p = plan_for("3.12.10:9.9");
+        let r = add_python_home(&ctx, &mut p, "LD_LIBRARY_PATH", None).unwrap_err();
+        assert_eq!(r.lines, ["earlier", "pyenv: version `9.9' not installed"]);
+        assert_eq!(r.code, 1);
+        assert_eq!(var(&p, "PYTHONHOME"), None);
     }
 
     #[test]

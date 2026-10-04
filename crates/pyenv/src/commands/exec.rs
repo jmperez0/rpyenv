@@ -7,12 +7,23 @@ use rpyenv_core::launch::{self, ExecEnv, Mode};
 use rpyenv_core::select;
 use std::ffi::OsString;
 
+/// pyenv-win's usage line.
 const USAGE: &str = "Usage: pyenv exec <command> [arg1 arg2...]";
+/// Upstream pyenv's usage line, with `-N` since 2.8.8.
+pub const USAGE_PYENV: &str = "Usage: pyenv exec [-N|--environment] <command> [arg1 arg2...]";
 
-/// `pyenv exec <command> [args...]`. On Linux this process becomes the command, except
-/// for pip commands; otherwise the command's exit code comes back in the `Output`.
+/// `pyenv exec [-N|--environment] <command> [args...]`. On Linux this process becomes the
+/// command, except for pip commands; otherwise the command's exit code comes back in the
+/// `Output`. `-N` is upstream pyenv's only (pyenv-win has none) and only as the first
+/// argument (libexec/pyenv-exec:35-39).
 pub fn exec(ctx: &Ctx, args: &[OsString]) -> Output {
     rpyenv_core::debuglog::set_source("pyenv exec");
+    let environment = ctx.flavor == Flavor::Pyenv
+        && matches!(
+            args.first().and_then(|a| a.to_str()),
+            Some("-N" | "--environment")
+        );
+    let args = if environment { &args[1..] } else { args };
     let command = args
         .first()
         .map(|a| a.to_string_lossy().into_owned())
@@ -28,7 +39,17 @@ pub fn exec(ctx: &Ctx, args: &[OsString]) -> Output {
             }
             report.into()
         }
-        Ok(plan) => {
+        Ok(mut plan) => {
+            if environment {
+                let lib_var = launch::library_path_var();
+                let current = std::env::var_os(lib_var);
+                if let Err(report) = launch::add_python_home(ctx, &mut plan, lib_var, current) {
+                    for line in &report.lines {
+                        rpyenv_core::debuglog::append(line);
+                    }
+                    return report.into();
+                }
+            }
             #[cfg(windows)]
             let plan = launch::LaunchPlan {
                 raw_tail: rpyenv_core::wincmd::own_tail(3),
@@ -66,7 +87,7 @@ fn usage(ctx: &Ctx) -> Output {
             for w in select::version_name(ctx, true).stderr {
                 o.err(w);
             }
-            o.err(USAGE);
+            o.err(USAGE_PYENV);
         }
         Flavor::PyenvWin => {
             let names: Vec<String> = select::win_select(ctx)
