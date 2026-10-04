@@ -1,0 +1,64 @@
+name: install (Windows, tier 2)
+
+# Real installs of python.org packages (spec §12.5 tier 2; plan M2b Task 11). Every PR: one
+# component-MSI version and one index-zip version. Nightly and on demand: every package kind.
+on:
+  pull_request:
+  schedule:
+    - cron: "41 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      versions: ${{ steps.m.outputs.versions }}
+    steps:
+      - id: m
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" = "pull_request" ]; then
+            echo 'versions=["3.10.11","3.12.10"]' >> "$GITHUB_OUTPUT"
+          else
+            echo 'versions=["2.7.18","3.4.4","3.5.2","3.10.11","3.12.5","3.12.10","3.13.0t","3.14.0"]' >> "$GITHUB_OUTPUT"
+          fi
+
+  install:
+    needs: matrix
+    runs-on: windows-2025
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ${{ fromJSON(needs.matrix.outputs.versions) }}
+    env:
+      VERSION: ${{ matrix.version }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, 2026-10-02
+        with:
+          toolchain: "1.96"
+      - run: cargo build --release --workspace
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}\root\install_cache
+          key: install-cache-windows-${{ matrix.version }}
+      - name: Install and check
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'root'
+          $env:PYENV_ROOT = $root; $env:PYENV = $root; $env:PYENV_HOME = $root
+          $pyenv = 'target\release\pyenv.exe'
+          & $pyenv update
+          if ($LASTEXITCODE) { exit 1 }
+          $start = Get-Date
+          & $pyenv install $env:VERSION
+          $code = $LASTEXITCODE
+          $secs = [int]((Get-Date) - $start).TotalSeconds
+          "| version | seconds | exit |`n|---|---|---|`n| $env:VERSION | $secs | $code |" >> $env:GITHUB_STEP_SUMMARY
+          if ($code) { exit $code }
+          python ci/check_install_win.py $root $env:VERSION
+          if ($LASTEXITCODE) { exit 1 }
