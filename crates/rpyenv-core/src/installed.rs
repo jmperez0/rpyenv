@@ -35,10 +35,10 @@ pub fn is_staging_name(name: &str) -> bool {
 /// in the order the flavor lists them. Envs are not included.
 pub fn top_level(versions_dir: &Path, flavor: Flavor) -> Vec<VersionEntry> {
     let mut names = subdirs(versions_dir);
+    // The installer's staging names, for both flavors (plan M2a Decision 4, M2b Decision 9).
+    // Upstream lists other dot entries too, so only these are hidden (allowlist row, Task 10).
+    names.retain(|n| !is_staging_name(n));
     if flavor == Flavor::Pyenv {
-        // The installer's staging names (plan Decision 4). Upstream lists other dot entries
-        // (`dotglob`), so only these are hidden (allowlist row).
-        names.retain(|n| !is_staging_name(n));
         sort_version_names(&mut names, &versions_dir.to_string_lossy());
     }
     names
@@ -124,6 +124,23 @@ mod tests {
             names_of(&top_level(&v, Flavor::Pyenv)),
             [".venv", "3.12.9", "3.12.10", "empty"]
         );
+    }
+
+    #[test]
+    fn staging_names_are_hidden_for_pyenv_win_too() {
+        let d = std::env::temp_dir().join(format!(
+            "rpyenv-installed-{}-staging_win",
+            std::process::id()
+        ));
+        for n in ["3.12.1", ".tmp-3.12.2", ".old-3.12.1", ".hidden"] {
+            fs::create_dir_all(d.join(n)).unwrap();
+        }
+        let got = names(&d, Flavor::PyenvWin);
+        assert!(got.contains(&"3.12.1".to_string()) && got.contains(&".hidden".to_string()));
+        assert!(!got
+            .iter()
+            .any(|n| n.starts_with(".tmp-") || n.starts_with(".old-")));
+        fs::remove_dir_all(&d).unwrap();
     }
 
     #[test]

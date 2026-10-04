@@ -2,20 +2,41 @@
 //! inside `versions/`, a swap that keeps the previous version until commit, and rollback on
 //! drop.
 
+use rpyenv_core::flavor::Flavor;
 use std::path::{Path, PathBuf};
 
 /// Present in `versions/<name>` from the move until commit: a version that still has it
 /// was interrupted and isn't complete.
 pub const MARKER: &str = ".rpyenv-incomplete";
 
-/// "Installed" for `pyenv install`: upstream's `bin/` test, minus interrupted installs.
+/// "Installed" for `pyenv install`, minus interrupted installs (plan M2b Decision 9): upstream
+/// pyenv's `bin/` test, or pyenv-win's "the folder exists".
+pub fn is_complete_for(dir: &Path, flavor: Flavor) -> bool {
+    let present = match flavor {
+        Flavor::Pyenv => dir.join("bin").is_dir(),
+        Flavor::PyenvWin => dir.is_dir(),
+    };
+    present && !dir.join(MARKER).exists()
+}
+
+/// The Linux flavor's test (M2a's callers).
 pub fn is_complete(dir: &Path) -> bool {
-    dir.join("bin").is_dir() && !dir.join(MARKER).exists()
+    is_complete_for(dir, Flavor::Pyenv)
+}
+
+/// Why a reinstall kept `.old-<name>`, in the flavor's line ending.
+pub fn kept_message(flavor: Flavor, old: &Path, e: &std::io::Error) -> String {
+    format!(
+        "pyenv: kept the previous installation at {}: {e}{}",
+        old.display(),
+        flavor.eol()
+    )
 }
 
 pub struct Txn {
     versions: PathBuf,
     name: String,
+    flavor: Flavor,
     /// Held for the transaction's life; the OS releases it on drop or crash. The file is
     /// never deleted: deleting a lock file reintroduces the takeover race.
     _lock: std::fs::File,
@@ -26,7 +47,12 @@ pub struct Txn {
 }
 
 impl Txn {
+    /// The Linux flavor's transaction (M2a's callers).
     pub fn begin(versions: &Path, name: &str) -> Result<Txn, String> {
+        Txn::begin_for(versions, name, Flavor::Pyenv)
+    }
+
+    pub fn begin_for(versions: &Path, name: &str, flavor: Flavor) -> Result<Txn, String> {
         // Every path below is `versions/<prefix><name>` and some are deleted (review I2).
         if !super::is_plain_name(name) {
             return Err(format!("pyenv: invalid version name: {name}"));
@@ -63,7 +89,7 @@ impl Txn {
         if old.symlink_metadata().is_ok() {
             if target.symlink_metadata().is_err() {
                 let _ = std::fs::rename(&old, &target);
-            } else if is_complete(&target) {
+            } else if is_complete_for(&target, flavor) {
                 // Killed during or before the carry-over: finish it, and keep `.old` if
                 // it fails (`place` then refuses to overwrite it).
                 if carry_over(&old, &target).is_ok() {
@@ -83,6 +109,7 @@ impl Txn {
         Ok(Txn {
             versions: versions.to_path_buf(),
             name: name.to_string(),
+            flavor,
             _lock: lock,
             stage,
             old: None,
@@ -135,11 +162,9 @@ impl Txn {
                     let _ = std::fs::remove_dir_all(&old);
                 }
                 Err(e) => rpyenv_core::textout::write(
-                    true,
-                    &format!(
-                        "pyenv: kept the previous installation at {}: {e}\n",
-                        old.display()
-                    ),
+                    // pyenv-win prints everything on stdout (reference, "Conventions").
+                    self.flavor == Flavor::Pyenv,
+                    &kept_message(self.flavor, &old, &e),
                 ),
             }
         }
@@ -151,7 +176,7 @@ impl Txn {
 
 /// Moves what upstream's build over the old tree would have kept from `old` into the new
 /// tree `new`: `envs/` (pyenv-virtualenv) when `new` has none, and each entry that `new`
-/// lacks in `bin/` (scripts pip installed) and in site-packages (`lib/python*/site-packages`,
+/// lacks in `bin/` and `Scripts\` (scripts pip installed) and in site-packages (`lib/python*/site-packages`,
 /// and `Lib/site-packages` for Windows). Entries in both keep `new`'s copy. Everything moves
 /// by rename, which moves a symlink as a link, so a failure part way loses nothing: what has
 /// not moved is still in `old`.
@@ -160,7 +185,8 @@ fn carry_over(old: &Path, new: &Path) -> std::io::Result<()> {
     if envs.symlink_metadata().is_ok() && new.join("envs").symlink_metadata().is_err() {
         std::fs::rename(&envs, new.join("envs"))?;
     }
-    let mut dirs: Vec<PathBuf> = vec![PathBuf::from("bin")];
+    // `bin/` (pyenv) and `Scripts\` (pyenv-win): console scripts pip installed.
+    let mut dirs: Vec<PathBuf> = vec![PathBuf::from("bin"), PathBuf::from("Scripts")];
     if let Ok(rd) = std::fs::read_dir(old.join("lib")) {
         for e in rd.filter_map(Result::ok) {
             let name = e.file_name();

@@ -603,3 +603,85 @@ fn setuid_and_setgid_bits_are_not_extracted() {
         .mode();
     assert_eq!(mode & 0o7777, 0o755);
 }
+
+use pyenv::install::txn::{is_complete_for, kept_message};
+use rpyenv_core::flavor::Flavor;
+
+#[test]
+fn a_pyenv_win_version_is_complete_when_its_folder_exists_without_the_marker() {
+    let d = tempfile::tempdir().unwrap();
+    let v = d.path().join("3.12.1");
+    assert!(!is_complete_for(&v, Flavor::PyenvWin));
+    std::fs::create_dir_all(&v).unwrap();
+    assert!(
+        is_complete_for(&v, Flavor::PyenvWin),
+        "no bin\\ needed on Windows"
+    );
+    assert!(
+        !is_complete_for(&v, Flavor::Pyenv),
+        "Linux still needs bin/"
+    );
+    std::fs::write(v.join(".rpyenv-incomplete"), "").unwrap();
+    assert!(!is_complete_for(&v, Flavor::PyenvWin));
+}
+
+#[test]
+fn a_pyenv_win_reinstall_carries_scripts_and_site_packages_and_recovers() {
+    let d = tempfile::tempdir().unwrap();
+    let versions = d.path().join("versions");
+    let old = versions.join("3.12.1");
+    std::fs::create_dir_all(old.join("Scripts")).unwrap();
+    std::fs::write(old.join("Scripts").join("black.exe"), "b").unwrap();
+    std::fs::create_dir_all(old.join("Lib").join("site-packages").join("userpkg")).unwrap();
+    std::fs::write(old.join("python.exe"), "old").unwrap();
+    let mut t = pyenv::install::txn::Txn::begin_for(&versions, "3.12.1", Flavor::PyenvWin).unwrap();
+    let stage = t.stage_dir().to_path_buf();
+    std::fs::write(stage.join("python.exe"), "new").unwrap();
+    t.place(&stage).unwrap();
+    t.commit().unwrap();
+    assert_eq!(
+        std::fs::read_to_string(old.join("python.exe")).unwrap(),
+        "new"
+    );
+    assert!(old.join("Scripts").join("black.exe").is_file());
+    assert!(old
+        .join("Lib")
+        .join("site-packages")
+        .join("userpkg")
+        .is_dir());
+    assert!(!versions.join(".old-3.12.1").exists() && !versions.join(".tmp-3.12.1").exists());
+}
+
+#[test]
+fn begin_for_pyenv_win_finishes_a_carry_over_left_by_a_killed_install() {
+    let d = tempfile::tempdir().unwrap();
+    let versions = d.path().join("versions");
+    std::fs::create_dir_all(versions.join("3.12.1")).unwrap();
+    std::fs::create_dir_all(versions.join(".old-3.12.1").join("Scripts")).unwrap();
+    std::fs::write(
+        versions.join(".old-3.12.1").join("Scripts").join("x.exe"),
+        "",
+    )
+    .unwrap();
+    let _t = pyenv::install::txn::Txn::begin_for(&versions, "3.12.1", Flavor::PyenvWin).unwrap();
+    assert!(versions
+        .join("3.12.1")
+        .join("Scripts")
+        .join("x.exe")
+        .is_file());
+    assert!(!versions.join(".old-3.12.1").exists());
+}
+
+#[test]
+fn the_kept_message_ends_in_the_flavors_line_ending() {
+    let e = std::io::Error::other("busy");
+    let p = std::path::Path::new("v/.old-x");
+    assert_eq!(
+        kept_message(Flavor::Pyenv, p, &e),
+        format!(
+            "pyenv: kept the previous installation at {}: busy\n",
+            p.display()
+        )
+    );
+    assert!(kept_message(Flavor::PyenvWin, p, &e).ends_with(": busy\r\n"));
+}
