@@ -13,12 +13,22 @@ use std::time::{Duration, Instant};
 const MAX_DOWNLOAD: u64 = 4 << 30;
 const DEFAULT_MIRROR: &str = "https://pyenv.github.io/pythons";
 
+/// How a download is checked before it is used (spec §9.3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Check {
+    /// A SHA-256 its publisher published (python-build, python.org's index).
+    Sha256(String),
+    /// The caller verifies the file (a python.org `.asc`) before using it. No cache, no mirror.
+    Caller,
+}
+
 pub struct FetchRequest {
     /// `<package name><extension>`, as python-build names the file.
     pub file_name: String,
     /// Without the `#` fragment.
     pub url: String,
-    pub sha256: String,
+    /// What makes the bytes trustworthy.
+    pub check: Check,
     pub dest_dir: PathBuf,
 }
 
@@ -37,6 +47,15 @@ pub struct Fetcher {
     pub retry_delay: Duration,
     /// An attempt with no new bytes for this long is abandoned and retried.
     pub stall_timeout: Duration,
+    /// Whole-request deadline for `get_text`.
+    pub text_timeout: Duration,
+}
+
+/// Why `get_text` failed: the HTTP status, when there was one, and a reason.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextError {
+    pub status: Option<u16>,
+    pub message: String,
 }
 
 enum Attempt {
@@ -44,6 +63,19 @@ enum Attempt {
     /// Worth another try: connection errors, timeouts, HTTP 5xx, short bodies.
     Transient(String),
     Final(String),
+}
+
+fn agent() -> ureq::Agent {
+    let tls = ureq::tls::TlsConfig::builder()
+        .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+        .build();
+    ureq::Agent::config_builder()
+        .tls_config(tls)
+        .proxy(ureq::Proxy::try_from_env())
+        .timeout_connect(Some(Duration::from_secs(30)))
+        .timeout_recv_response(Some(Duration::from_secs(60)))
+        .build()
+        .into()
 }
 
 impl Fetcher {
@@ -67,23 +99,89 @@ impl Fetcher {
                 },
             })
         };
-        let tls = ureq::tls::TlsConfig::builder()
-            .root_certs(ureq::tls::RootCerts::PlatformVerifier)
-            .build();
-        let agent: ureq::Agent = ureq::Agent::config_builder()
-            .tls_config(tls)
-            .proxy(ureq::Proxy::try_from_env())
-            .timeout_connect(Some(Duration::from_secs(30)))
-            .timeout_recv_response(Some(Duration::from_secs(60)))
-            .build()
-            .into();
         Fetcher {
-            agent,
+            agent: agent(),
             mirror,
             cache,
             retry_delay: Duration::from_secs(1),
             stall_timeout: Duration::from_secs(60),
+            text_timeout: Duration::from_secs(60),
         }
+    }
+
+    /// No mirror and no python-build cache: pyenv-win's installs fetch from python.org only,
+    /// and keep their own `install_cache` (plan M2b Decisions 8 and the base-URL constraint).
+    pub fn direct() -> Fetcher {
+        Fetcher {
+            agent: agent(),
+            mirror: None,
+            cache: None,
+            retry_delay: Duration::from_secs(1),
+            stall_timeout: Duration::from_secs(60),
+            text_timeout: Duration::from_secs(60),
+        }
+    }
+
+    /// A small text resource (a folder listing, an index page): up to 3 attempts for transient
+    /// failures (including a body that stalls or breaks), each bounded by `text_timeout` as a
+    /// whole, at most 16 MiB, decoded as UTF-8.
+    pub fn get_text(&self, url: &str) -> Result<String, TextError> {
+        let mut last = TextError {
+            status: None,
+            message: String::new(),
+        };
+        for attempt in 1..=3u32 {
+            if attempt > 1 {
+                std::thread::sleep(self.retry_delay * (attempt - 1));
+            }
+            if interrupted() {
+                return Err(TextError {
+                    status: None,
+                    message: "interrupted".into(),
+                });
+            }
+            let called = self
+                .agent
+                .get(url)
+                .config()
+                .timeout_global(Some(self.text_timeout))
+                .build()
+                .call();
+            let err = match called {
+                Ok(mut r) => match r.body_mut().with_config().limit(16 << 20).read_to_string() {
+                    Ok(text) => return Ok(text),
+                    Err(e) => e,
+                },
+                Err(e) => e,
+            };
+            match err {
+                ureq::Error::StatusCode(code) if code < 500 => {
+                    return Err(TextError {
+                        status: Some(code),
+                        message: format!("HTTP {code}"),
+                    })
+                }
+                ureq::Error::StatusCode(code) => {
+                    last = TextError {
+                        status: Some(code),
+                        message: format!("HTTP {code}"),
+                    }
+                }
+                e if is_transient(&e) => {
+                    last = TextError {
+                        status: None,
+                        message: e.to_string(),
+                    }
+                }
+                e => {
+                    return Err(TextError {
+                        status: None,
+                        message: e.to_string(),
+                    })
+                }
+            }
+        }
+        Err(last)
     }
 
     /// The mirror URL for `url`, if any (reference "Download", step 1).
@@ -107,16 +205,13 @@ impl Fetcher {
         log: &mut dyn Write,
         say: &mut dyn FnMut(&str),
     ) -> Result<PathBuf, InstallError> {
-        if req.sha256.len() != 64
-            || !req
-                .sha256
-                .bytes()
-                .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
-        {
-            return Err(InstallError::Message(format!(
-                "pyenv: invalid SHA-256 for {}: {}",
-                req.file_name, req.sha256
-            )));
+        if let Check::Sha256(h) = &req.check {
+            if h.len() != 64 || !h.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+                return Err(InstallError::Message(format!(
+                    "pyenv: invalid SHA-256 for {}: {h}",
+                    req.file_name
+                )));
+            }
         }
         let Some(dest) = super::child_of(&req.dest_dir, &req.file_name) else {
             return Err(InstallError::Message(format!(
@@ -124,9 +219,9 @@ impl Fetcher {
                 req.file_name
             )));
         };
-        if let Some(cache) = &self.cache {
+        if let (Some(cache), Check::Sha256(h)) = (&self.cache, &req.check) {
             let cached = cache.join(&req.file_name);
-            if sha256_file(&cached).ok().as_deref() == Some(req.sha256.as_str()) {
+            if sha256_file(&cached).ok().as_deref() == Some(h.as_str()) {
                 let part = dest.with_file_name(format!("{}.part", req.file_name));
                 let placed =
                     std::fs::copy(&cached, &part).and_then(|_| std::fs::rename(&part, &dest));
@@ -141,7 +236,11 @@ impl Fetcher {
         }
         say(&format!("Downloading {}...", req.file_name));
         let mut fetched = false;
-        if let Some(m) = self.mirror_url(&req.url, &req.sha256) {
+        let mirror = match &req.check {
+            Check::Sha256(h) => self.mirror_url(&req.url, h),
+            Check::Caller => None,
+        };
+        if let Some(m) = mirror {
             if self.agent.head(&m).call().is_ok() {
                 let _ = writeln!(log, "mirror HEAD ok: {m}");
                 say(&format!("-> {m}"));
@@ -156,7 +255,7 @@ impl Fetcher {
                 return Err(InstallError::Failed);
             }
         }
-        if let Some(cache) = &self.cache {
+        if let (Some(cache), Check::Sha256(_)) = (&self.cache, &req.check) {
             // The temporary name is checked like `dest` (review I2).
             let tmp_name = format!("{}.tmp-{}", req.file_name, std::process::id());
             let tmp = super::child_of(cache, &tmp_name).filter(|_| cache != &req.dest_dir);
@@ -182,7 +281,6 @@ impl Fetcher {
         say: &mut dyn FnMut(&str),
     ) -> Result<Outcome, InstallError> {
         let file_name = &req.file_name;
-        let sha256 = &req.sha256;
         for attempt in 1..=3u32 {
             if attempt > 1 {
                 std::thread::sleep(self.retry_delay * (attempt - 1));
@@ -197,23 +295,25 @@ impl Fetcher {
             }
             match outcome {
                 Attempt::Ok => {
-                    let got = sha256_file(&part).unwrap_or_default();
-                    if &got == sha256 {
-                        if let Err(e) = std::fs::rename(&part, dest) {
+                    if let Check::Sha256(sha256) = &req.check {
+                        let got = sha256_file(&part).unwrap_or_default();
+                        if &got != sha256 {
                             let _ = std::fs::remove_file(&part);
-                            return Err(InstallError::Message(format!(
-                                "pyenv: cannot write {}: {e}",
-                                dest.display()
-                            )));
+                            let _ = write!(
+                                log,
+                                "\nchecksum mismatch: {file_name} (file is corrupt)\nexpected {sha256}, got {got}\n\n"
+                            );
+                            return Ok(Outcome::Mismatch);
                         }
-                        return Ok(Outcome::Done);
                     }
-                    let _ = std::fs::remove_file(&part);
-                    let _ = write!(
-                        log,
-                        "\nchecksum mismatch: {file_name} (file is corrupt)\nexpected {sha256}, got {got}\n\n"
-                    );
-                    return Ok(Outcome::Mismatch);
+                    if let Err(e) = std::fs::rename(&part, dest) {
+                        let _ = std::fs::remove_file(&part);
+                        return Err(InstallError::Message(format!(
+                            "pyenv: cannot write {}: {e}",
+                            dest.display()
+                        )));
+                    }
+                    return Ok(Outcome::Done);
                 }
                 Attempt::Transient(e) => {
                     let _ = std::fs::remove_file(&part);
@@ -234,10 +334,13 @@ impl Fetcher {
     /// The GET and the body copy run on a worker thread, so that Ctrl+C and a stalled
     /// connection are noticed here even while a read blocks.
     fn attempt(&self, url: &str, part: &Path) -> Attempt {
-        if let Some(path) = url.strip_prefix("file://") {
-            return match std::fs::copy(path, part) {
-                Ok(_) => Attempt::Ok,
-                Err(e) => Attempt::Final(e.to_string()),
+        if url.starts_with("file:") {
+            return match file_url_path(url) {
+                Some(path) => match std::fs::copy(&path, part) {
+                    Ok(_) => Attempt::Ok,
+                    Err(e) => Attempt::Final(format!("{}: {e}", path.display())),
+                },
+                None => Attempt::Final(format!("unsupported file URL: {url}")),
             };
         }
         let shared = Arc::new(Shared::default());
@@ -286,6 +389,51 @@ impl Fetcher {
             }
         }
     }
+}
+
+/// The local path of a `file:` URL: `file:///p`, `file://localhost/p`, and on Windows
+/// `file:///C:/p` (the leading `/` before the drive dropped), percent-decoded. Other hosts and
+/// invalid escapes give `None`. Escaped separators (`%2F`, `%5C`) and NUL (`%00`) are refused,
+/// and so is a raw `\` anywhere in the path, a decoded path starting `//` (UNC) or containing NUL. On Linux, `file:` URLs
+/// are now percent-decoded and other hosts refused (intended); the drive-letter strip is
+/// Windows-only.
+pub fn file_url_path(url: &str) -> Option<PathBuf> {
+    let rest = url.strip_prefix("file://")?;
+    let rest = rest.strip_prefix("localhost").unwrap_or(rest);
+    if !rest.starts_with('/') || rest.contains('\\') {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(rest.len());
+    let b = rest.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' {
+            let hex = std::str::from_utf8(b.get(i + 1..i + 3)?).ok()?;
+            let v = u8::from_str_radix(hex, 16).ok()?;
+            if matches!(v, b'/' | b'\\' | 0) {
+                return None;
+            }
+            bytes.push(v);
+            i += 3;
+        } else {
+            bytes.push(b[i]);
+            i += 1;
+        }
+    }
+    let s = String::from_utf8(bytes).ok()?;
+    if s.starts_with("//") || s.contains('\0') {
+        return None;
+    }
+    #[cfg(windows)]
+    let s = {
+        let d = s.as_bytes();
+        if d.len() >= 3 && d[0] == b'/' && d[1].is_ascii_alphabetic() && d[2] == b':' {
+            s[1..].to_string()
+        } else {
+            s
+        }
+    };
+    Some(PathBuf::from(s))
 }
 
 /// State shared between an attempt and its worker thread.
@@ -383,6 +531,119 @@ mod tests {
             &|k| vars.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone()),
             None,
         )
+    }
+
+    #[test]
+    fn file_urls_are_percent_decoded_and_drive_letters_kept() {
+        assert_eq!(
+            file_url_path("file:///tmp/a%20b"),
+            Some(PathBuf::from("/tmp/a b"))
+        );
+        assert_eq!(
+            file_url_path("file://localhost/x"),
+            Some(PathBuf::from("/x"))
+        );
+        #[cfg(windows)]
+        assert_eq!(
+            file_url_path("file:///C:/py%C3%B1/x.zip"),
+            Some(PathBuf::from("C:/pyñ/x.zip"))
+        );
+        #[cfg(not(windows))]
+        assert_eq!(
+            file_url_path("file:///C:/py%C3%B1/x.zip"),
+            Some(PathBuf::from("/C:/pyñ/x.zip"))
+        );
+        assert_eq!(file_url_path("file://host/x"), None);
+        assert_eq!(file_url_path("file:///bad%zz"), None);
+    }
+
+    #[test]
+    fn file_urls_cannot_name_unc_paths_or_smuggle_separators() {
+        for bad in [
+            "file:////h/s",
+            "file:///%5C%5Ch%5Cs",
+            "file:///a%2F..%2Fb",
+            "file:///a%2f..%2fb",
+            "file:///a%5cb",
+            r"file:///\h\s",
+            r"file:///\\?\C:\x",
+            r"file:///C:\x",
+            "file:///a%00b",
+        ] {
+            assert_eq!(file_url_path(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn direct_has_no_mirror() {
+        assert_eq!(
+            Fetcher::direct().mirror_url("https://ftpmirror.gnu.org/x", "ab"),
+            None
+        );
+    }
+
+    #[test]
+    fn a_caller_checked_request_neither_reads_nor_writes_the_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("cache");
+        std::fs::create_dir(&cache).unwrap();
+        std::fs::write(cache.join("out.bin"), b"stale").unwrap();
+        std::fs::write(cache.join("other.bin"), b"x").unwrap();
+        let src = dir.path().join("src.bin");
+        std::fs::write(&src, b"fresh").unwrap();
+        let f = Fetcher::from_env(
+            &|k| (k == "PYTHON_BUILD_SKIP_MIRROR").then(|| "1".to_string()),
+            Some(cache.clone()),
+        );
+        let dest = dir.path().join("dest");
+        std::fs::create_dir(&dest).unwrap();
+        let url = format!(
+            "file:///{}",
+            src.display()
+                .to_string()
+                .replace('\\', "/")
+                .trim_start_matches('/')
+        );
+        let req = FetchRequest {
+            file_name: "out.bin".into(),
+            url,
+            check: Check::Caller,
+            dest_dir: dest,
+        };
+        let got = f.fetch(&req, &mut Vec::new(), &mut |_| {}).unwrap();
+        assert_eq!(std::fs::read(got).unwrap(), b"fresh");
+        assert_eq!(std::fs::read(cache.join("out.bin")).unwrap(), b"stale");
+        let mut names: Vec<_> = std::fs::read_dir(&cache)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["other.bin", "out.bin"]);
+    }
+
+    #[test]
+    fn a_caller_checked_request_never_uses_the_mirror() {
+        let f = with(&[("PYTHON_BUILD_MIRROR_URL", "https://m.example")]);
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src.bin");
+        std::fs::write(&src, b"payload").unwrap();
+        let url = format!(
+            "file:///{}",
+            src.display()
+                .to_string()
+                .replace('\\', "/")
+                .trim_start_matches('/')
+        );
+        let req = FetchRequest {
+            file_name: "out.bin".into(),
+            url,
+            check: Check::Caller,
+            dest_dir: dir.path().to_path_buf(),
+        };
+        let mut log = Vec::new();
+        let got = f.fetch(&req, &mut log, &mut |_| {}).unwrap();
+        assert_eq!(std::fs::read(got).unwrap(), b"payload");
+        assert!(!String::from_utf8_lossy(&log).contains("mirror"));
     }
 
     #[test]

@@ -603,3 +603,228 @@ fn setuid_and_setgid_bits_are_not_extracted() {
         .mode();
     assert_eq!(mode & 0o7777, 0o755);
 }
+
+use pyenv::install::txn::{is_complete_for, kept_message};
+use rpyenv_core::flavor::Flavor;
+
+#[test]
+fn a_pyenv_win_version_is_complete_when_its_folder_exists_without_the_marker() {
+    let d = tempfile::tempdir().unwrap();
+    let v = d.path().join("3.12.1");
+    assert!(!is_complete_for(&v, Flavor::PyenvWin));
+    std::fs::create_dir_all(&v).unwrap();
+    assert!(
+        is_complete_for(&v, Flavor::PyenvWin),
+        "no bin\\ needed on Windows"
+    );
+    assert!(
+        !is_complete_for(&v, Flavor::Pyenv),
+        "Linux still needs bin/"
+    );
+    std::fs::write(v.join(".rpyenv-incomplete"), "").unwrap();
+    assert!(!is_complete_for(&v, Flavor::PyenvWin));
+}
+
+// allowlist D-75
+#[test]
+fn a_pyenv_win_reinstall_carries_scripts_and_site_packages_and_recovers() {
+    let d = tempfile::tempdir().unwrap();
+    let versions = d.path().join("versions");
+    let old = versions.join("3.12.1");
+    std::fs::create_dir_all(old.join("Scripts")).unwrap();
+    std::fs::write(old.join("Scripts").join("black.exe"), "b").unwrap();
+    std::fs::create_dir_all(old.join("Lib").join("site-packages").join("userpkg")).unwrap();
+    std::fs::write(old.join("python.exe"), "old").unwrap();
+    let mut t = pyenv::install::txn::Txn::begin_for(&versions, "3.12.1", Flavor::PyenvWin).unwrap();
+    let stage = t.stage_dir().to_path_buf();
+    std::fs::write(stage.join("python.exe"), "new").unwrap();
+    t.place(&stage).unwrap();
+    t.commit().unwrap();
+    assert_eq!(
+        std::fs::read_to_string(old.join("python.exe")).unwrap(),
+        "new"
+    );
+    assert!(old.join("Scripts").join("black.exe").is_file());
+    assert!(old
+        .join("Lib")
+        .join("site-packages")
+        .join("userpkg")
+        .is_dir());
+    assert!(!versions.join(".old-3.12.1").exists() && !versions.join(".tmp-3.12.1").exists());
+}
+
+#[test]
+fn begin_for_pyenv_win_finishes_a_carry_over_left_by_a_killed_install() {
+    let d = tempfile::tempdir().unwrap();
+    let versions = d.path().join("versions");
+    std::fs::create_dir_all(versions.join("3.12.1")).unwrap();
+    std::fs::create_dir_all(versions.join(".old-3.12.1").join("Scripts")).unwrap();
+    std::fs::write(
+        versions.join(".old-3.12.1").join("Scripts").join("x.exe"),
+        "",
+    )
+    .unwrap();
+    let _t = pyenv::install::txn::Txn::begin_for(&versions, "3.12.1", Flavor::PyenvWin).unwrap();
+    assert!(versions
+        .join("3.12.1")
+        .join("Scripts")
+        .join("x.exe")
+        .is_file());
+    assert!(!versions.join(".old-3.12.1").exists());
+}
+
+#[test]
+fn the_kept_message_ends_in_the_flavors_line_ending() {
+    let e = std::io::Error::other("busy");
+    let p = std::path::Path::new("v/.old-x");
+    assert_eq!(
+        kept_message(Flavor::Pyenv, p, &e),
+        format!(
+            "pyenv: kept the previous installation at {}: busy\n",
+            p.display()
+        )
+    );
+    assert!(kept_message(Flavor::PyenvWin, p, &e).ends_with(": busy\r\n"));
+}
+
+#[test]
+fn a_win_name_that_win32_would_normalize_is_refused_and_creates_nothing() {
+    let t = tempfile::tempdir().unwrap();
+    let versions = t.path().join("versions");
+    let err = Txn::begin_for(&versions, "...", rpyenv_core::flavor::Flavor::PyenvWin).err();
+    assert!(err.unwrap().contains("invalid version name"));
+    assert!(!versions.exists());
+    assert!(!t.path().join(".locks").exists());
+    // `...` is a real folder name on Linux, where the default flavor still accepts it.
+    assert!(Txn::begin(&versions, "...").is_ok());
+}
+
+/// A directory link at `link` to `target`: a junction on Windows (no privilege needed), a
+/// symlink elsewhere.
+fn link_dir(target: &Path, link: &Path) {
+    #[cfg(windows)]
+    {
+        let out = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+    }
+    #[cfg(not(windows))]
+    std::os::unix::fs::symlink(target, link).unwrap();
+}
+
+/// Every file under `dir`, with its contents, in a stable order.
+fn tree(dir: &Path) -> Vec<(String, Vec<u8>)> {
+    let mut out = Vec::new();
+    let mut todo = vec![dir.to_path_buf()];
+    while let Some(d) = todo.pop() {
+        for e in std::fs::read_dir(&d).unwrap() {
+            let p = e.unwrap().path();
+            if p.is_dir() {
+                todo.push(p);
+            } else {
+                let rel = p.strip_prefix(dir).unwrap().to_string_lossy().into_owned();
+                out.push((rel, std::fs::read(&p).unwrap()));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// An external tree a version link points at, with something in every carried-over place.
+fn external_tree(root: &Path) -> std::path::PathBuf {
+    let ext = root.join("external");
+    for (rel, body) in [
+        ("Lib/site-packages/canary/__init__.py", "canary"),
+        ("lib/python3.12/site-packages/canary.py", "canary"),
+        ("Scripts/canary.exe", "MZ"),
+        ("bin/canary", "#!"),
+        ("envs/e/pyvenv.cfg", "cfg"),
+    ] {
+        let p = ext.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, body).unwrap();
+    }
+    ext
+}
+
+/// Final review M2: `install -f` over a version that is a link (a junction on Windows) carries
+/// nothing out of the link's target and removes only the link.
+#[test]
+fn reinstalling_over_a_linked_version_leaves_the_link_target_alone() {
+    let root = tempfile::tempdir().unwrap();
+    let ext = external_tree(root.path());
+    let before = tree(&ext);
+    let versions = root.path().join("versions");
+    std::fs::create_dir_all(&versions).unwrap();
+    link_dir(&ext, &versions.join("3.12.0"));
+    let mut t = Txn::begin(&versions, "3.12.0").unwrap();
+    let staged = t.stage_dir().join("p");
+    std::fs::create_dir_all(staged.join("bin")).unwrap();
+    std::fs::write(staged.join("bin/python"), "new").unwrap();
+    t.place(&staged).unwrap();
+    t.commit().unwrap();
+    assert_eq!(tree(&ext), before, "the link's target changed");
+    assert!(versions.join(".old-3.12.0").symlink_metadata().is_err());
+    let new = versions.join("3.12.0");
+    assert!(!new.symlink_metadata().unwrap().file_type().is_symlink());
+    assert_eq!(
+        tree(&new),
+        [(
+            "bin/python".replace('/', std::path::MAIN_SEPARATOR_STR),
+            b"new".to_vec()
+        )]
+    );
+}
+
+/// The same for a killed reinstall's leftover: `begin` drops a linked `.old-<name>` beside a
+/// complete version without carrying anything out of it.
+#[test]
+fn begin_drops_a_leftover_linked_old_copy_without_reaching_through_it() {
+    let root = tempfile::tempdir().unwrap();
+    let ext = external_tree(root.path());
+    let before = tree(&ext);
+    let versions = root.path().join("versions");
+    std::fs::create_dir_all(versions.join("3.12.0/bin")).unwrap();
+    link_dir(&ext, &versions.join(".old-3.12.0"));
+    let t = Txn::begin(&versions, "3.12.0").unwrap();
+    assert_eq!(tree(&ext), before, "the link's target changed");
+    assert!(versions.join(".old-3.12.0").symlink_metadata().is_err());
+    assert!(!versions.join("3.12.0/envs").exists());
+    assert!(!versions.join("3.12.0/Lib").exists());
+    drop(t);
+}
+
+/// A reinstall over a linked version killed after the final rename leaves the new, unfinished
+/// tree (with the marker) and the link at `.old-<name>`: `begin` drops the unfinished tree and
+/// puts the link back, without reaching through it.
+#[test]
+fn begin_restores_a_linked_old_copy_over_an_incomplete_target() {
+    let root = tempfile::tempdir().unwrap();
+    let ext = external_tree(root.path());
+    let before = tree(&ext);
+    let versions = root.path().join("versions");
+    std::fs::create_dir_all(versions.join("3.12.0/bin")).unwrap();
+    std::fs::write(versions.join("3.12.0/bin/python"), "new").unwrap();
+    std::fs::write(versions.join("3.12.0").join(MARKER), "").unwrap();
+    link_dir(&ext, &versions.join(".old-3.12.0"));
+    let t = Txn::begin(&versions, "3.12.0").unwrap();
+    let v = versions.join("3.12.0");
+    assert!(
+        v.symlink_metadata().unwrap().file_type().is_symlink(),
+        "the link is back"
+    );
+    assert_eq!(
+        std::fs::read_to_string(v.join("Scripts/canary.exe")).unwrap(),
+        "MZ"
+    );
+    assert!(versions.join(".old-3.12.0").symlink_metadata().is_err());
+    assert_eq!(tree(&ext), before, "the link's target changed");
+    drop(t);
+    assert!(v.symlink_metadata().unwrap().file_type().is_symlink());
+    assert_eq!(tree(&ext), before);
+}

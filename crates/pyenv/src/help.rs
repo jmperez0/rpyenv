@@ -87,12 +87,14 @@ const PYENV_WIN: &[Topic] = &[
         "Usage: pyenv exec <command> [arg1 arg2...]\n\nRuns an executable by first preparing PATH so that the selected Python\nversion's `bin' directory is at the front.\n \nFor example, if the currently selected Python version is 3.5.3:\n  pyenv exec pip install -r requirements.txt\n \nis equivalent to:\n  PATH=\"$PYENV_ROOT/versions/3.5.3/bin:$PATH\" pip install -r requirements.txt\n\n"),
     topic("global", None, None,
         "Usage: pyenv global <version>\n       pyenv global --unset\n\nSets the global Python version. You can override the global version at\nany time by setting a directory-specific version with `pyenv local'\nor by setting the `PYENV_VERSION' environment variable.\n\n"),
+    topic("latest", None, None, commands::latest::WIN_HELP),
     topic("local", None, None,
         "Usage: pyenv local <version> <version2> <..>\n       pyenv local --unset\n\nSets the local application-specific Python version by writing the\nversion name to a file named `.python-version'.\n\nWhen you run a Python command, pyenv will look for a `.python-version'\nfile in the current directory and each parent directory. If no such\nfile is found in the tree, pyenv will use the global Python version\nspecified with `pyenv global'. A version specified with the\n`PYENV_VERSION' environment variable takes precedence over local\nand global versions.\n\n<version> can be specified multiple times and should be a version\ntag known to pyenv.  The special version string `system' will use\nyour default system Python.  Run `pyenv versions' for a list of\navailable Python versions.\n\nExample: To enable the python2.7 and python3.7 shims to find their\n         respective executables you could set both versions with:\n\n'pyenv local 3.7.0 2.7.15'\n"),
     topic("rehash", None, None,
         "Usage: pyenv rehash\n\nRehash pyenv shims (run this after installing executables)\n\n"),
     topic("shims", None, None,
         "Usage: pyenv shims\n       pyenv shims --short\n\nList the existing pyenv shims\n\n"),
+    topic("uninstall", None, None, commands::uninstall_win::HELP),
     topic("version", None, None,
         "Usage: pyenv version\n\nShows the currently selected Python version and how it was selected.\nTo obtain only the version string, use `pyenv vname' or `pyenv version-name`.\n"),
     topic("version-name", None, None, "Usage: pyenv version-name\n\nShows the currently selected Python version.\n"),
@@ -194,6 +196,14 @@ fn help_win(args: &[&str]) -> Output {
     let cmd = args.first().map(|c| c.to_ascii_lowercase());
     match cmd.as_deref() {
         None | Some("help" | "--help") => o.stdout.push_str(WIN_HELP_LISTING),
+        Some("install") => {
+            o.stdout.push_str(&crate::install::winsource::banner());
+            o.stdout.push_str(crate::commands::install_win::HELP);
+        }
+        Some("update") => {
+            o.stdout.push_str(&crate::install::winsource::banner());
+            o.stdout.push_str(crate::commands::update::HELP);
+        }
         Some(c) => match find(Flavor::PyenvWin, c) {
             Some(t) => o.stdout.push_str(t.text),
             None => {

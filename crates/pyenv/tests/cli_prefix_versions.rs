@@ -163,7 +163,7 @@ fn win_commands_order() {
     let r = Fixture::new().pyenv(&["commands"]);
     assert_eq!(
         r.stdout,
-        "--version\r\ncommands\r\nexec\r\nglobal\r\nhelp\r\nlocal\r\nprefix\r\nrehash\r\nroot\r\nshims\r\nversion-file-read\r\nversion-file-write\r\nversion-file\r\nversion-name\r\nversion-origin\r\nversion\r\nversions\r\nvname\r\nwhence\r\nwhich\r\n"
+        "--version\r\ncommands\r\nexec\r\nglobal\r\nhelp\r\ninstall\r\nlatest\r\nlocal\r\nprefix\r\nrehash\r\nroot\r\nshims\r\nuninstall\r\nupdate\r\nversion-file-read\r\nversion-file-write\r\nversion-file\r\nversion-name\r\nversion-origin\r\nversion\r\nversions\r\nvname\r\nwhence\r\nwhich\r\n"
     );
 }
 

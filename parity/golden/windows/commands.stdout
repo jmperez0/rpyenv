@@ -3,11 +3,15 @@ commands
 exec
 global
 help
+install
+latest
 local
 prefix
 rehash
 root
 shims
+uninstall
+update
 version-file-read
 version-file-write
 version-file

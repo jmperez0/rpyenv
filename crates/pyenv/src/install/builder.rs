@@ -4,7 +4,7 @@
 use super::archive::{extract, Kind};
 use super::checksum::sha256_of_fragment;
 use super::defs::{patches_for, Definition, Fetch, Found, Origin, Package};
-use super::fetch::{FetchRequest, Fetcher};
+use super::fetch::{Check, FetchRequest, Fetcher};
 use super::log::{failed_block, spawn, BuildLog};
 use super::txn::Txn;
 use super::verify::plan as verify_plan;
@@ -694,7 +694,7 @@ fn fetch_package(
             let req = FetchRequest {
                 file_name,
                 url: url.clone(),
-                sha256: sha,
+                check: Check::Sha256(sha),
                 dest_dir: build_path.to_path_buf(),
             };
             let mut w: &BuildLog = log;

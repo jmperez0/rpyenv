@@ -19,7 +19,61 @@ fn shown(prefix: &str) -> &str {
     }
 }
 
+/// pyenv-win's `pyenv-latest.vbs` help (M2 reference, "latest").
+pub const WIN_HELP: &str = "Usage: pyenv latest [-k|--known] [-q|--quiet] <prefix>\n\n  -k/--known      Select from all known versions instead of installed\n  -q/--quiet      Do not print an error message on resolution failure\n\n";
+
+/// pyenv-win's `pyenv latest` (M1 reference, "latest"): the last non-option argument is the
+/// prefix; `--help` wins wherever it is; no arguments at all is the help with exit 1.
+fn latest_win(ctx: &Ctx, args: &[&str]) -> Output {
+    let mut o = Output::new();
+    let (mut known, mut quiet, mut prefix) = (false, false, "");
+    for a in args {
+        match *a {
+            "--help" => {
+                o.stdout.push_str(WIN_HELP);
+                return o;
+            }
+            "-k" | "--known" => known = true,
+            "-q" | "--quiet" => quiet = true,
+            p => prefix = p,
+        }
+    }
+    if args.is_empty() {
+        o.stdout.push_str(WIN_HELP);
+        return o.with_code(1);
+    }
+    if prefix.is_empty() {
+        if !quiet {
+            o.out("pyenv-latest: missing <prefix> argument");
+        }
+        return o.with_code(1);
+    }
+    let candidates: Vec<String> = if known {
+        crate::install::wincatalog::read_db(&ctx.root)
+            .map(|rows| rows.into_iter().map(|r| r.code).collect())
+            .unwrap_or_default()
+    } else {
+        installed::names(&ctx.versions_dir(), ctx.flavor)
+    };
+    match rpyenv_core::winresolve::find_latest(prefix, &candidates, ctx.arch_suffix) {
+        Some(v) => o.out(v),
+        None => {
+            if !quiet {
+                let kind = if known { "known" } else { "installed" };
+                o.out(format!(
+                    "pyenv-latest: no {kind} versions match the prefix '{prefix}'."
+                ));
+            }
+            o.code = 1;
+        }
+    }
+    o
+}
+
 pub fn latest(ctx: &Ctx, args: &[&str]) -> Output {
+    if ctx.flavor == rpyenv_core::flavor::Flavor::PyenvWin {
+        return latest_win(ctx, args);
+    }
     let (mut known, mut bypass, mut force) = (false, false, false);
     let mut i = 0;
     while let Some(a) = args.get(i) {

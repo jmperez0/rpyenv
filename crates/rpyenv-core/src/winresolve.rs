@@ -62,6 +62,12 @@ fn parse(s: &str) -> Option<Parsed> {
 /// The resolved name, or `prefix` unchanged when nothing qualifies. `installed` is in
 /// directory order; on a numeric tie the first one wins (allowlist D-05).
 pub fn resolve(prefix: &str, installed: &[String], arch: &str) -> String {
+    find_latest(prefix, installed, arch).unwrap_or_else(|| prefix.to_string())
+}
+
+/// pyenv-win's `FindLatestVersion`: the newest qualifying candidate, or `None`; `latest` has
+/// no fall-back to the argument (M1 reference, *latest*).
+pub fn find_latest(prefix: &str, installed: &[String], arch: &str) -> Option<String> {
     let mut best: Option<(&String, (u64, u64, u64))> = None;
     for c in installed {
         let Some(rest) = c.strip_prefix(prefix) else {
@@ -81,7 +87,7 @@ pub fn resolve(prefix: &str, installed: &[String], arch: &str) -> String {
             best = Some((c, key));
         }
     }
-    best.map_or_else(|| prefix.to_string(), |(c, _)| c.clone())
+    best.map(|(c, _)| c.clone())
 }
 
 #[cfg(test)]
@@ -90,6 +96,15 @@ mod tests {
 
     fn v(names: &[&str]) -> Vec<String> {
         names.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn find_latest_distinguishes_a_match_from_no_match() {
+        let i = v(&["3.12.1", "3.12.10"]);
+        assert_eq!(find_latest("3.12.1", &i, ""), Some("3.12.1".to_string()));
+        assert_eq!(find_latest("3.12", &i, ""), Some("3.12.10".to_string()));
+        assert_eq!(find_latest("9", &i, ""), None);
+        assert_eq!(resolve("9", &i, ""), "9");
     }
 
     #[test]
