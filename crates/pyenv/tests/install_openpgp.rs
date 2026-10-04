@@ -124,3 +124,23 @@ fn verify_python_org_refuses_a_key_that_is_not_pinned() {
     let e = verify_python_org(&fx("openpgp/data.bin"), &asc).unwrap_err();
     assert!(e.starts_with("no key in the keyring matches"), "{e}");
 }
+
+/// MD5 is never accepted (spec §9.3), nor RIPEMD-160: the same throwaway key's SHA-256
+/// signature over the same data verifies, so the digest is what is refused.
+#[test]
+fn md5_and_ripemd160_signatures_are_refused() {
+    assert_eq!(
+        synthetic("weak_sha256_sig.asc", "weak_pubkey.asc").as_deref(),
+        Ok("81F2F91477F7DD054DF2FB594005416B22E72380")
+    );
+    for (sig, alg) in [
+        ("weak_md5_sig.asc", "MD5"),
+        ("weak_ripemd160_sig.asc", "RIPEMD160"),
+    ] {
+        assert_eq!(
+            synthetic(sig, "weak_pubkey.asc"),
+            Err(format!("signature uses a weak hash: {alg}")),
+            "{sig}"
+        );
+    }
+}

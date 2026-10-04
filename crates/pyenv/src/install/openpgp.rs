@@ -11,6 +11,7 @@
 //!   ignored; `verify_bindings` is not used because it fails on them), and a signing subkey a
 //!   valid binding with the sign flag;
 //! * only binary-document signatures (type 0x00) are accepted;
+//! * a signature over an MD5 or RIPEMD-160 digest is refused;
 //! * the signature must predate the key's (and subkey's) expiry, if any: a signature made while
 //!   the key was valid stays valid after it expires;
 //! * a key with a valid self-revocation is rejected.
@@ -18,6 +19,7 @@
 //! SHA-1 and DSA are accepted: they are what the Löwis and Baxter keys sign 2.4–3.4 with.
 
 use pgp::composed::{Deserializable, DetachedSignature, SignedPublicKey, SignedPublicSubKey};
+use pgp::crypto::hash::HashAlgorithm;
 use pgp::packet::{Signature, SignatureType};
 use pgp::types::KeyDetails;
 use pgp::types::Tag;
@@ -113,6 +115,12 @@ enum Signer<'a> {
 /// Verify `asc` (an armored detached signature) over the file `data`, against the keys in
 /// `keys_armored` (one or more armored public keys). Returns the PRIMARY key fingerprint
 /// (uppercase hex) of the signer.
+/// Digests a signature may not use: MD5 is never accepted (spec §9.3), nor RIPEMD-160. None of
+/// the pinned keys signs with either (SHA-1 for Löwis and Baxter, SHA-256 for Dower).
+fn weak_hash(alg: HashAlgorithm) -> bool {
+    matches!(alg, HashAlgorithm::Md5 | HashAlgorithm::Ripemd160)
+}
+
 pub fn verify_detached(data: &Path, asc: &[u8], keys_armored: &str) -> Result<String, String> {
     let (sig, _headers) = DetachedSignature::from_armor_single(asc)
         .map_err(|e| format!("bad signature armor: {e}"))?;
@@ -120,6 +128,9 @@ pub fn verify_detached(data: &Path, asc: &[u8], keys_armored: &str) -> Result<St
     match sig.typ() {
         Some(SignatureType::Binary) => {}
         other => return Err(format!("not a binary-document signature: {other:?}")),
+    }
+    if let Some(alg) = sig.hash_alg().filter(|a| weak_hash(*a)) {
+        return Err(format!("signature uses a weak hash: {alg}"));
     }
     let sig_time = sig
         .created()
@@ -246,4 +257,26 @@ pub fn verify_detached(data: &Path, asc: &[u8], keys_armored: &str) -> Result<St
         return Ok(fpr_hex(primary));
     }
     Err(last_err)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::weak_hash;
+    use pgp::crypto::hash::HashAlgorithm;
+
+    /// MD5 is never accepted (spec §9.3), nor RIPEMD-160; SHA-1 is, for the Löwis and Baxter keys
+    /// (Decision 5), and SHA-2 for Dower's.
+    #[test]
+    fn md5_and_ripemd160_signatures_are_weak() {
+        assert!(weak_hash(HashAlgorithm::Md5));
+        assert!(weak_hash(HashAlgorithm::Ripemd160));
+        for ok in [
+            HashAlgorithm::Sha1,
+            HashAlgorithm::Sha256,
+            HashAlgorithm::Sha384,
+            HashAlgorithm::Sha512,
+        ] {
+            assert!(!weak_hash(ok), "{ok:?}");
+        }
+    }
 }
