@@ -38,13 +38,27 @@ impl Server {
 
 pub fn start(routes: Vec<(&str, Vec<Reply>)>) -> Server {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let queues: Arc<Mutex<HashMap<String, Vec<Reply>>>> = Arc::new(Mutex::new(
+    serve(
+        listener,
         routes
             .into_iter()
             .map(|(p, r)| (p.to_string(), r))
             .collect(),
-    ));
+    )
+}
+
+/// Like `start`, but the routes are built from the server's own base URL (for bodies that
+/// link back to the server, such as python.org's index).
+pub fn start_with(make: impl FnOnce(&str) -> Vec<(String, Vec<Reply>)>) -> Server {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let routes = make(&format!("http://127.0.0.1:{port}"));
+    serve(listener, routes.into_iter().collect())
+}
+
+fn serve(listener: TcpListener, routes: HashMap<String, Vec<Reply>>) -> Server {
+    let port = listener.local_addr().unwrap().port();
+    let queues: Arc<Mutex<HashMap<String, Vec<Reply>>>> = Arc::new(Mutex::new(routes));
     let hits = Arc::new(Mutex::new(HashMap::new()));
     let hits2 = hits.clone();
     std::thread::spawn(move || {

@@ -5,6 +5,7 @@
 pub mod buildharness;
 pub mod fakebuild;
 pub mod server;
+pub mod winfake;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

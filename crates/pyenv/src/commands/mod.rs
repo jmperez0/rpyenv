@@ -10,6 +10,7 @@ pub mod prefix;
 pub mod rehash;
 #[cfg(unix)]
 pub mod uninstall;
+pub mod update;
 pub mod version;
 pub mod versions;
 pub mod which;
@@ -44,7 +45,8 @@ const COMMANDS: &[(&str, Command)] = &[
 ];
 
 /// pyenv-win only.
-const WIN_ONLY: &[(&str, Command)] = &[("vname", version::version_name)];
+const WIN_ONLY: &[(&str, Command)] =
+    &[("update", update::update), ("vname", version::version_name)];
 
 /// pyenv (Linux) only, until M2b brings pyenv-win's installer commands.
 const LINUX_ONLY: &[(&str, Command)] = &[

@@ -31,6 +31,8 @@ cab = "=0.6.0"
 md-5 = "0.11.0"
 # python.org's Install Manager zips (deflate only; flate2 is already linked).
 zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2"] }
+# python.org's Install Manager index (JSON).
+serde_json = "1"
 
 [build-dependencies]
 flate2 = "1.1.10"
