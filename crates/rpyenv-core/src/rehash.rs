@@ -196,13 +196,20 @@ pub enum Caller {
 /// done the work) before rehashing. Failures are ignored; the next check catches up. True
 /// when it rehashed.
 pub fn check(ctx: &Ctx, shim_exe: &Path) -> bool {
+    matches!(check_outcome(ctx, shim_exe), Ok(true))
+}
+
+/// `check` with its reason kept: `Ok(false)` when nothing needed doing (before or after
+/// the wait), `Ok(true)` when it rehashed, `Err` when the lock or the rehash failed.
+fn check_outcome(ctx: &Ctx, shim_exe: &Path) -> Result<bool, RehashError> {
     if !needed(ctx) {
-        return false;
+        return Ok(false);
     }
-    let Ok(_lock) = lock(&ctx.shims_dir(), Wait::Upto(CHECK_WAIT)) else {
-        return false;
-    };
-    needed(ctx) && rehash_locked(ctx, shim_exe, Caller::ExitCheck).is_ok()
+    let _lock = lock(&ctx.shims_dir(), Wait::Upto(CHECK_WAIT))?;
+    if !needed(ctx) {
+        return Ok(false);
+    }
+    rehash_locked(ctx, shim_exe, Caller::ExitCheck).map(|_| true)
 }
 
 /// `pyenv rehash`: brings `shims` in line with the installed versions.
@@ -716,8 +723,14 @@ mod tests {
             drop(held);
         });
         exe(&v.join("3.9.1").join("Scripts").join("black.exe"));
-        check(&ctx, &shim);
+        // `check` ignores failures by design; its outcome says why it didn't rehash (this
+        // flaked once on windows-2022, run 37186273681, with no reason visible).
+        let outcome = check_outcome(&ctx, &shim);
         holder.join().unwrap();
+        assert!(
+            matches!(outcome, Ok(true)),
+            "the check didn't rehash: {outcome:?} (Ok(false) = not needed)"
+        );
         assert!(shims.join("black.exe").exists());
     }
 
