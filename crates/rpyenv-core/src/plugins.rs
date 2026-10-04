@@ -192,7 +192,7 @@ mod tests {
             fs::set_permissions(bin.join(name), fs::Permissions::from_mode(mode)).unwrap();
         }
         let path = dispatch_path(
-            &[bin.clone()],
+            std::slice::from_ref(&bin),
             Some(OsStr::new("/nonexistent")),
             Flavor::Pyenv,
         );

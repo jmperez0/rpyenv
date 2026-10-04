@@ -4,6 +4,7 @@ mod commands;
 mod help;
 pub mod install;
 mod output;
+mod plugin;
 
 pub use output::Output;
 use rpyenv_core::ctx::Ctx;
@@ -37,6 +38,11 @@ pub fn version_line(flavor: Flavor) -> String {
         Flavor::PyenvWin => "3.1.1",
     };
     format!("pyenv {upstream} (rpyenv {RPYENV_VERSION})")
+}
+
+/// True when `name` is a built-in command of `flavor` (multicall, Decision 3).
+pub fn is_builtin(flavor: Flavor, name: &str) -> bool {
+    commands::lookup(flavor, name).is_some()
 }
 
 /// Runs one invocation. `args` excludes the program name. They stay `OsString`s so that
@@ -73,7 +79,8 @@ fn run_pyenv(args: &[&str], raw: &[OsString], ctx: &Ctx) -> Output {
     match cmd {
         "-v" | "--version" => return commands::misc::version_cmd(ctx, rest),
         "-h" | "--help" => return help::help_command(Flavor::Pyenv, &[]),
-        "shell" => {
+        // Only when no `pyenv-shell` is on the dispatch PATH (libexec/pyenv:127-128).
+        "shell" if plugin::find(ctx, "shell").is_none() => {
             return Output::error(
                 "pyenv: shell integration not enabled. Run `pyenv init' for instructions.",
             )
@@ -91,7 +98,8 @@ fn run_pyenv(args: &[&str], raw: &[OsString], ctx: &Ctx) -> Output {
         }
         Some(_) if rest.first() == Some(&"--help") => help::help_command(Flavor::Pyenv, &[cmd]),
         Some(command) => command(ctx, rest),
-        None => Output::error(format!("pyenv: no such command `{cmd}'")),
+        None => plugin::dispatch(ctx, cmd, rest, &raw[1..])
+            .unwrap_or_else(|| Output::error(format!("pyenv: no such command `{cmd}'"))),
     }
 }
 
