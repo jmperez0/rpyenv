@@ -127,6 +127,7 @@ fn escaping_names_remove_nothing() {
     std::fs::create_dir_all(root.join("versions").join("3.12.1")).unwrap();
     std::fs::create_dir_all(root.join("versions").join(".tmp-3.12.2")).unwrap();
     std::fs::create_dir_all(root.join("versions").join(".old-3.12.1")).unwrap();
+    std::fs::create_dir_all(root.join("versions").join(".del-3.12.1-7")).unwrap();
     let pyenv = std::path::Path::new(env!("CARGO_BIN_EXE_pyenv"));
     for arg in [
         "..",
@@ -146,6 +147,8 @@ fn escaping_names_remove_nothing() {
         "CON.txt",
         ".TMP-3.12.2",
         ".Old-3.12.1",
+        ".del-3.12.1-7",
+        ".DEL-3.12.1-7",
     ] {
         let out = std::process::Command::new(pyenv)
             .args(["uninstall", "-f", arg])
@@ -169,6 +172,10 @@ fn escaping_names_remove_nothing() {
         assert!(root.join("versions").join("3.12.1").is_dir(), "{arg}");
         assert!(root.join("versions").join(".tmp-3.12.2").is_dir(), "{arg}");
         assert!(root.join("versions").join(".old-3.12.1").is_dir(), "{arg}");
+        assert!(
+            root.join("versions").join(".del-3.12.1-7").is_dir(),
+            "{arg}"
+        );
     }
 }
 
@@ -237,4 +244,110 @@ fn a_read_only_file_does_not_stop_the_removal() {
         (r.code, r.stdout),
         (0, "pyenv: Successfully uninstalled 3.12.1\r\n".to_string())
     );
+}
+
+/// `.del-*` names left in `versions\` by uninstall's rename-then-delete.
+fn del_dirs(f: &Fixture) -> Vec<String> {
+    std::fs::read_dir(f.root.join("versions"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with(".del-"))
+        .collect()
+}
+
+#[test]
+fn a_normal_uninstall_leaves_no_renamed_folder() {
+    let f = with(&["3.12.1", "3.12.2"]);
+    let r = f.pyenv(&["uninstall", "3.12.1"]);
+    assert_eq!(
+        (r.code, r.stdout),
+        (0, "pyenv: Successfully uninstalled 3.12.1\r\n".to_string())
+    );
+    assert!(!f.root.join("versions").join("3.12.1").exists());
+    assert_eq!(del_dirs(&f), Vec::<String>::new());
+}
+
+/// Final review M1: a running `python.exe` maps its image, which blocks deleting the file but
+/// not renaming its folder (measured: an open file handle, in any share mode, blocks the folder
+/// rename too, so a running program is what reproduces the reviewer's case). The version is
+/// renamed away first, so it is gone from pyenv even though a file stays behind.
+// allowlist D-80
+#[test]
+fn a_running_python_blocks_the_delete_but_not_the_uninstall() {
+    let f = with(&["3.12.1", "3.12.2"]);
+    let v = f.root.join("versions").join("3.12.1");
+    let exe = v.join("python.exe");
+    let cmd = std::path::Path::new(&std::env::var_os("SystemRoot").unwrap())
+        .join("System32")
+        .join("cmd.exe");
+    std::fs::copy(cmd, &exe).unwrap();
+    std::fs::write(v.join("other.txt"), "x").unwrap();
+    // cmd reads commands from the piped stdin, so it runs until the pipe closes. Its working
+    // directory is outside the version: a working directory is an open handle.
+    let mut child = std::process::Command::new(&exe)
+        .current_dir(&f.work)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let r = f.pyenv(&["uninstall", "3.12.1"]);
+    let left = del_dirs(&f);
+    let _ = child.kill();
+    let _ = child.wait();
+    assert_eq!(r.code, 0, "{}", r.stdout);
+    assert_eq!(left.len(), 1, "{left:?}");
+    assert!(left[0].starts_with(".del-3.12.1-"), "{left:?}");
+    let leftover = f.root.join("versions").join(&left[0]);
+    assert_eq!(
+        r.stdout,
+        format!(
+            "pyenv: Successfully uninstalled 3.12.1\r\npyenv: could not remove every file of 3.12.1; leftover at {}\r\n",
+            leftover.display()
+        )
+    );
+    assert!(!v.exists());
+    let listed = f.pyenv(&["versions"]);
+    assert!(!listed.stdout.contains("3.12.1"), "{}", listed.stdout);
+    assert!(listed.stdout.contains("3.12.2"), "{}", listed.stdout);
+    // The program has exited: the leftover can go now.
+    let mut gone = false;
+    for _ in 0..50 {
+        if std::fs::remove_dir_all(&leftover).is_ok() {
+            gone = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert!(gone, "{}", leftover.display());
+}
+
+/// A file held open blocks the rename: nothing is deleted and the version stays installed
+/// (before the rename-first fix, part of the tree was deleted).
+// allowlist D-80
+#[test]
+fn a_held_file_stops_the_uninstall_before_anything_is_deleted() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let f = with(&["3.12.1"]);
+    let v = f.root.join("versions").join("3.12.1");
+    std::fs::write(v.join("a.txt"), "a").unwrap();
+    std::fs::write(v.join("z.txt"), "z").unwrap();
+    let held = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(v.join("z.txt"))
+        .unwrap();
+    let r = f.pyenv(&["uninstall", "3.12.1"]);
+    drop(held);
+    assert_eq!(r.code, 1, "{}", r.stdout);
+    assert!(
+        r.stdout
+            .starts_with("pyenv: Error uninstalling version 3.12.1: "),
+        "{}",
+        r.stdout
+    );
+    for n in ["python.exe", "a.txt", "z.txt"] {
+        assert!(v.join(n).is_file(), "{n}");
+    }
+    assert_eq!(del_dirs(&f), Vec::<String>::new());
 }

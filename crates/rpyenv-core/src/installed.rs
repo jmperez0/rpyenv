@@ -26,9 +26,10 @@ fn subdirs(dir: &Path) -> Vec<String> {
         .collect()
 }
 
-/// `versions/.tmp-<name>` and `versions/.old-<name>`: the installer's staging (plan M2a, Decision 4).
+/// `versions/.tmp-<name>` and `versions/.old-<name>`: the installer's staging (plan M2a, Decision 4);
+/// `versions\.del-<name>-<pid>`: a version pyenv-win's `uninstall` renamed away before deleting it.
 pub fn is_staging_name(name: &str) -> bool {
-    name.starts_with(".tmp-") || name.starts_with(".old-")
+    name.starts_with(".tmp-") || name.starts_with(".old-") || name.starts_with(".del-")
 }
 
 /// Top-level entries of `versions/` that are directories (following links),
@@ -132,14 +133,20 @@ mod tests {
             "rpyenv-installed-{}-staging_win",
             std::process::id()
         ));
-        for n in ["3.12.1", ".tmp-3.12.2", ".old-3.12.1", ".hidden"] {
+        for n in [
+            "3.12.1",
+            ".tmp-3.12.2",
+            ".old-3.12.1",
+            ".del-3.12.3-77",
+            ".hidden",
+        ] {
             fs::create_dir_all(d.join(n)).unwrap();
         }
         let got = names(&d, Flavor::PyenvWin);
         assert!(got.contains(&"3.12.1".to_string()) && got.contains(&".hidden".to_string()));
         assert!(!got
             .iter()
-            .any(|n| n.starts_with(".tmp-") || n.starts_with(".old-")));
+            .any(|n| n.starts_with(".tmp-") || n.starts_with(".old-") || n.starts_with(".del-")));
         fs::remove_dir_all(&d).unwrap();
     }
 

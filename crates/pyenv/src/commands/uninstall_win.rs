@@ -25,7 +25,7 @@ fn is_version(s: &str) -> bool {
 }
 
 /// `versions\<name>` for a name that can only be a version folder: one plain component, not
-/// `.`/`..`, not an installer staging name.
+/// `.`/`..`, not an installer or uninstall staging name (`.tmp-`, `.old-`, `.del-`).
 fn target(versions: &Path, name: &str) -> Option<PathBuf> {
     if !is_plain_name(name)
         || !crate::install::is_safe_win_segment(name)
@@ -63,6 +63,24 @@ fn locked(root: &Path, name: &str) -> bool {
         .write(true)
         .open(p)
         .is_ok_and(|l| matches!(l.try_lock(), Err(std::fs::TryLockError::WouldBlock)))
+}
+
+/// Removes the version folder `p` (`versions\<n>`). A link is removed itself, never followed.
+/// A folder is first renamed to `versions\.del-<n>-<pid>`, a staging name every listing hides,
+/// and then deleted: a running `python.exe` blocks deleting its file but not renaming its
+/// folder (final review M1, measured), so a delete that fails part way still leaves the version
+/// uninstalled, with `Ok(Some(leftover))`. A failed rename deletes nothing.
+fn remove(versions: &Path, p: &Path, n: &str) -> std::io::Result<Option<PathBuf>> {
+    let is_link = p
+        .symlink_metadata()
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false);
+    if is_link {
+        return std::fs::remove_dir(p).map(|()| None);
+    }
+    let del = versions.join(format!(".del-{n}-{}", std::process::id()));
+    std::fs::rename(p, &del)?;
+    Ok(std::fs::remove_dir_all(&del).err().map(|_| del))
 }
 
 pub fn uninstall(ctx: &Ctx, args: &[&str]) -> Output {
@@ -136,17 +154,16 @@ pub fn uninstall(ctx: &Ctx, args: &[&str]) -> Output {
             status = 1;
             continue;
         }
-        let is_link = p
-            .symlink_metadata()
-            .map(|m| m.file_type().is_symlink())
-            .unwrap_or(false);
-        let gone = if is_link {
-            std::fs::remove_dir(&p)
-        } else {
-            std::fs::remove_dir_all(&p)
-        };
-        match gone {
-            Ok(()) => say(&format!("pyenv: Successfully uninstalled {n}")),
+        match remove(&versions, &p, n) {
+            Ok(leftover) => {
+                say(&format!("pyenv: Successfully uninstalled {n}"));
+                if let Some(left) = leftover {
+                    say(&format!(
+                        "pyenv: could not remove every file of {n}; leftover at {}",
+                        left.display()
+                    ));
+                }
+            }
             Err(e) => {
                 say(&format!("pyenv: Error uninstalling version {n}: {e}"));
                 status = 1;
