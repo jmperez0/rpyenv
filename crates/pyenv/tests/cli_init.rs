@@ -202,13 +202,24 @@ fn completion_line_next_to_an_installed_binary() {
     for s in ["bash", "pwsh"] {
         f.file(&inst.join("completions").join(format!("pyenv.{s}")), "");
     }
+    // A binary written just now can be "busy" for a moment: another test thread may have
+    // forked while the copy's write handle was open, and its child holds that handle until
+    // it execs (ETXTBSY; ubuntu-24.04-arm CI, run 37220358651). Retry while that lasts.
     let run = |shell: &str| {
-        let o = f
-            .command(&exe, &f.work, &[])
-            .args(["init", "-", shell])
-            .output()
-            .unwrap();
-        String::from_utf8_lossy(&o.stdout).into_owned()
+        for _ in 0..100 {
+            match f
+                .command(&exe, &f.work, &[])
+                .args(["init", "-", shell])
+                .output()
+            {
+                Ok(o) => return String::from_utf8_lossy(&o.stdout).into_owned(),
+                Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                    std::thread::sleep(std::time::Duration::from_millis(20))
+                }
+                Err(e) => panic!("{e}"),
+            }
+        }
+        panic!("{} stayed busy for 2 s", exe.display())
     };
     let i = inst.display();
     assert!(run("bash").contains(&format!("\nsource '{i}/completions/pyenv.bash'\n")));
