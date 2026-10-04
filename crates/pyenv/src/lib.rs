@@ -113,7 +113,8 @@ fn run_pyenv_win(args: &[&str], raw: &[OsString], ctx: &Ctx) -> Output {
     {
         let mut o = Output::new();
         o.out(format!("pyenv help \"{cmd}\""));
-        return o;
+        // bash evaluates it: `\n`, which `eval "$(…)"` doesn't keep as `\r`.
+        return commands::shell_win::lf(o);
     }
     match commands::lookup(Flavor::PyenvWin, &cmd) {
         Some(_) if rest.first() == Some(&"--help") => {

@@ -212,7 +212,7 @@ fn sh_rehash_listing_help_and_completions() {
     assert!(!commands.contains("sh-"));
     assert_eq!(
         run(&f, &["sh-shell", "--help"], &[]).0,
-        "pyenv help \"sh-shell\"\r\n"
+        "pyenv help \"sh-shell\"\n"
     );
     assert_eq!(run(&f, &["help", "sh-shell"], &[]).0, HELP);
     assert_eq!(
@@ -264,5 +264,58 @@ fn powershell_without_the_profile_line_prints_the_command_and_the_setup() {
     assert!(
         err.contains("to enable it, see `pyenv init powershell`."),
         "{err}"
+    );
+}
+
+/// `help sh-rehash` says what upstream says: the script has no help block (D-12).
+#[test]
+fn help_for_sh_rehash_says_it_is_undocumented() {
+    let f = Fixture::new();
+    assert_eq!(
+        run(&f, &["help", "sh-rehash"], &[]),
+        (
+            String::new(),
+            "Sorry, this command isn't documented yet.\r\n".to_string(),
+            1
+        )
+    );
+}
+
+/// Windows PowerShell 5.1 drops an empty argument, so the function's `sh-shell` gets
+/// none: the "no version" line comes back as text to print, not code to run.
+#[test]
+fn powershell_function_with_an_empty_argument_prints_the_state() {
+    let f = Fixture::new();
+    winshell::install_pyenv(&f);
+    let mut c = host(&f, &winshell::powershell(), &[], &[]);
+    c.args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "iex ((pyenv init - powershell --no-rehash) -join \"`n\"); pyenv shell ''",
+    ]);
+    let (out, err, _) = output(c);
+    assert_eq!(out, "no shell-specific version configured\r\n", "{err}");
+}
+
+/// A `%` would be expanded by cmd when the user runs the printed `set` line, so a name
+/// with one isn't accepted (no Python version name has one).
+#[test]
+fn a_name_with_a_percent_sign_is_not_accepted() {
+    let f = Fixture::new();
+    f.version("p%PATH%q");
+    assert_eq!(
+        run(&f, &["shell", "p%PATH%q"], &[("PYENV_SHELL", "cmd")]),
+        (not_installed("p%PATH%q"), String::new(), 1)
+    );
+}
+
+/// `sh-* --help` is evaluated by bash: `\n`, not `\r\n`.
+#[test]
+fn sh_help_is_lf() {
+    let f = Fixture::new();
+    assert_eq!(
+        run(&f, &["sh-rehash", "--help"], &[]).0,
+        "pyenv help \"sh-rehash\"\n"
     );
 }

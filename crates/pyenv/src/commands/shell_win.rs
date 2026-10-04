@@ -49,7 +49,11 @@ fn validate(ctx: &Ctx, args: &[&str]) -> Result<String, String> {
     let mut names = Vec::new();
     for a in args {
         let name = with_arch(a, ctx);
-        if !(crate::install::is_safe_win_segment(&name) && ctx.versions_dir().join(&name).is_dir())
+        // A `%` would be expanded by cmd when the user runs the printed `set` line, and no
+        // Python version name has one.
+        if name.contains('%')
+            || !(crate::install::is_safe_win_segment(&name)
+                && ctx.versions_dir().join(&name).is_dir())
         {
             return Err(name);
         }
@@ -206,6 +210,14 @@ pub fn sh_shell(ctx: &Ctx, args: &[&str]) -> Output {
                     lf(o)
                 }
             }
+        }
+        // The PowerShell function routes `shell` only with arguments, but Windows PowerShell
+        // 5.1 drops an empty one: return the state as a literal, which `iex` prints.
+        None if family == Family::Pwsh => {
+            let shown = show(ctx);
+            let mut o = Output::new();
+            o.out(ps_literal(shown.stdout.trim_end_matches('\n')));
+            return o;
         }
         None => return show(ctx),
         Some(a) if a.eq_ignore_ascii_case("--unset") => Action::Unset,

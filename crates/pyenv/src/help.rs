@@ -223,6 +223,10 @@ fn help_win(args: &[&str]) -> Output {
             o.stdout.push_str(crate::commands::update::HELP);
         }
         Some(c) => match find(Flavor::PyenvWin, c) {
+            // Upstream's topic with no help block (`sh-rehash`, D-12).
+            Some(t) if t.text.is_empty() => {
+                return Output::error("Sorry, this command isn't documented yet.")
+            }
             Some(t) => o.stdout.push_str(t.text),
             None => {
                 o.out(format!("pyenv: no such command '{}'", args[0]));
