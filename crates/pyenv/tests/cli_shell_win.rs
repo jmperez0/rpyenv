@@ -239,3 +239,30 @@ fn powershell_value_with_a_typographic_quote_cannot_inject() {
     let (out, err, _) = output(c);
     assert_eq!(out, "True\r\n", "{err}");
 }
+
+/// allowlist D-90
+/// Someone switching from pyenv-win without the profile line: a real PowerShell is
+/// detected as the parent, so `pyenv shell` prints PowerShell's command and names the
+/// setup, and exits 1 without changing anything.
+#[test]
+fn powershell_without_the_profile_line_prints_the_command_and_the_setup() {
+    let f = Fixture::new();
+    f.version("3.7.7");
+    winshell::install_pyenv(&f);
+    let mut c = host(&f, &winshell::powershell(), &[], &[]);
+    c.args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "pyenv shell 3.7.7; \"rc=$LASTEXITCODE\"; \"set=[$env:PYENV_VERSION]\"",
+    ]);
+    let (out, err, _) = output(c);
+    assert_eq!(
+        out, "$Env:PYENV_VERSION = '3.7.7'\r\nrc=1\r\nset=[]\r\n",
+        "{err}"
+    );
+    assert!(
+        err.contains("to enable it, see `pyenv init powershell`."),
+        "{err}"
+    );
+}
