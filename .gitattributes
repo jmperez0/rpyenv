@@ -3,3 +3,4 @@ parity/golden/** -text
 crates/pyenv/python-build/** -text
 crates/pyenv/tests/fixtures/** -text
 crates/pyenv/keys/*.asc -text
+completions/* -text

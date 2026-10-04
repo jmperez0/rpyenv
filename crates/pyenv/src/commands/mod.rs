@@ -1,5 +1,6 @@
 //! The command table.
 
+pub mod completions;
 pub mod exec;
 pub mod init;
 #[cfg(unix)]
@@ -29,6 +30,7 @@ pub type Command = fn(&Ctx, &[&str]) -> Output;
 const COMMANDS: &[(&str, Command)] = &[
     ("--version", misc::version_cmd),
     ("commands", misc::commands),
+    ("completions", completions::completions),
     ("exec", exec::exec_listed),
     ("global", local_global::global),
     ("help", misc::help),

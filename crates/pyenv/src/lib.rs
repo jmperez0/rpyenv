@@ -62,6 +62,12 @@ fn run_pyenv(args: &[&str], raw: &[OsString], ctx: &Ctx) -> Output {
         o.stderr.push_str(&help::listing(Flavor::Pyenv));
         return o.with_code(1);
     };
+    // Each upstream command answers `--complete` as its first argument (Decision 5).
+    if rest.first() == Some(&"--complete") {
+        if let Some(o) = commands::completions::answer(ctx, cmd) {
+            return o;
+        }
+    }
     match cmd {
         "-v" | "--version" => return commands::misc::version_cmd(ctx, rest),
         "-h" | "--help" => return help::help_command(Flavor::Pyenv, &[]),
