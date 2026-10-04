@@ -1,0 +1,7 @@
+# Load pyenv automatically by appending
+# the following to your PowerShell profile ($PROFILE) :
+
+iex ((pyenv init - pwsh) -join "`n")
+
+# Restart your shell for the changes to take effect.
+
