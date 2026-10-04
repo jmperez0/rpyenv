@@ -220,3 +220,22 @@ fn sh_rehash_listing_help_and_completions() {
         "--help\r\n--unset\r\n"
     );
 }
+
+/// Final review #1: a typographic quote in a version name can neither end the PowerShell
+/// literal nor inject code.
+#[test]
+fn powershell_value_with_a_typographic_quote_cannot_inject() {
+    let f = Fixture::new();
+    let name = "x\u{2019};Write-Output INJECTED;\u{2019}";
+    f.version(name);
+    winshell::install_pyenv(&f);
+    let units: Vec<String> = name.encode_utf16().map(|u| u.to_string()).collect();
+    let script = format!(
+        "$n = [string]::new([char[]]@({})); iex ((pyenv sh-shell $n) -join \"`n\"); $env:PYENV_VERSION -eq $n",
+        units.join(",")
+    );
+    let mut c = host(&f, &winshell::powershell(), &[("PYENV_SHELL", "pwsh")], &[]);
+    c.args(["-NoProfile", "-NonInteractive", "-Command", &script]);
+    let (out, err, _) = output(c);
+    assert_eq!(out, "True\r\n", "{err}");
+}

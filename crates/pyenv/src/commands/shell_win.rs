@@ -69,12 +69,44 @@ fn show(ctx: &Ctx) -> Output {
     o
 }
 
+/// A PowerShell string expression in ASCII only. PowerShell also takes U+2018 to U+201B
+/// as single quotes, and its code goes through the console code page, so each non-ASCII
+/// character becomes `[char]0xNNNN`; pure ASCII stays one `'…'` literal. The expression
+/// starts with a string so `+` concatenates.
+pub(crate) fn ps_literal(s: &str) -> String {
+    if s.is_ascii() {
+        return format!("'{}'", s.replace('\'', "''"));
+    }
+    let mut parts: Vec<String> = Vec::new();
+    let mut run = String::new();
+    for c in s.chars() {
+        if c.is_ascii() {
+            if c == '\'' {
+                run.push_str("''");
+            } else {
+                run.push(c);
+            }
+            continue;
+        }
+        if !run.is_empty() || parts.is_empty() {
+            parts.push(format!("'{run}'"));
+            run.clear();
+        }
+        let mut buf = [0u16; 2];
+        for u in c.encode_utf16(&mut buf) {
+            parts.push(format!("[char]0x{u:04X}"));
+        }
+    }
+    if !run.is_empty() {
+        parts.push(format!("'{run}'"));
+    }
+    format!("({})", parts.join(" + "))
+}
+
 /// The command that applies `action` in a shell of `family`.
 fn code(family: Family, action: &Action) -> Vec<String> {
     let line = match (family, action) {
-        (Family::Pwsh, Action::Set(v)) => {
-            format!("$Env:PYENV_VERSION = '{}'", v.replace('\'', "''"))
-        }
+        (Family::Pwsh, Action::Set(v)) => format!("$Env:PYENV_VERSION = {}", ps_literal(v)),
         (Family::Pwsh, Action::Unset) => {
             "Remove-Item Env:PYENV_VERSION -ErrorAction SilentlyContinue".to_string()
         }

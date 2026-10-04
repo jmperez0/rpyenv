@@ -107,9 +107,55 @@ pub(crate) fn msys(p: &Path) -> String {
     }
 }
 
-/// A PowerShell single-quoted literal.
+/// A PowerShell literal in ASCII only (final review #1, #2): see `shell_win::ps_literal`.
 fn sq(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "''"))
+    crate::commands::shell_win::ps_literal(s)
+}
+
+/// A bash or zsh single-quoted word.
+fn sh_word(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// A fish single-quoted word.
+fn fish_word(s: &str) -> String {
+    format!("'{}'", s.replace('\\', "\\\\").replace('\'', "\\'"))
+}
+
+/// The POSIX PATH code with the shims path quoted as one word (final review #3). Upstream's
+/// Linux form pastes the path into a nested single-quoted script, which a `'` in a Windows
+/// profile name breaks; here the nested `bash` gets it as `$1`.
+fn posix_path_lines_win(shims: &str, no_push_path: bool) -> Vec<String> {
+    let w = sh_word(shims);
+    let prepend = format!("export PATH={w}\":${{PATH}}\"");
+    if no_push_path {
+        return vec![
+            format!("if [[ \":$PATH:\" != *:{w}:* ]]; then"),
+            prepend,
+            "fi".to_string(),
+        ];
+    }
+    vec![
+        format!("PATH=\"$(bash --norc -ec 'IFS=:; paths=($PATH); for i in ${{!paths[@]}}; do if [[ ${{paths[i]}} == \"$1\" ]]; then unset '\\''paths[i]'\\''; fi; done; echo \"${{paths[*]}}\"' bash {w})\""),
+        prepend,
+    ]
+}
+
+fn fish_path_lines_win(shims: &str, no_push_path: bool) -> Vec<String> {
+    let w = fish_word(shims);
+    let prepend = format!("set -gx PATH {w} $PATH");
+    if no_push_path {
+        return vec![
+            format!("if not contains -- {w} $PATH"),
+            prepend,
+            "end".to_string(),
+        ];
+    }
+    vec![
+        format!("while set pyenv_index (contains -i -- {w} $PATH)"),
+        "set -eg PATH[$pyenv_index]; end; set -e pyenv_index".to_string(),
+        prepend,
+    ]
 }
 
 fn path_lines(o: &mut Output, ctx: &Ctx, family: Family, no_push_path: bool) {
@@ -135,8 +181,8 @@ fn path_lines(o: &mut Output, ctx: &Ctx, family: Family, no_push_path: bool) {
                 ]
             }
         }
-        Family::Fish => init::fish_path_lines(&msys(&shims), no_push_path),
-        _ => init::posix_path_lines(&msys(&shims), no_push_path),
+        Family::Fish => fish_path_lines_win(&msys(&shims), no_push_path),
+        _ => posix_path_lines_win(&msys(&shims), no_push_path),
     };
     for l in lines {
         o.out(l);
@@ -168,7 +214,8 @@ fn completion_line(o: &mut Output, shell: &str, family: Family) {
     }
     o.out(match family {
         Family::Pwsh => format!("iex (Get-Content {} -Raw)", sq(&path.display().to_string())),
-        _ => format!("source '{}'", msys(&path)),
+        Family::Fish => format!("source {}", fish_word(&msys(&path))),
+        _ => format!("source {}", sh_word(&msys(&path))),
     });
 }
 
