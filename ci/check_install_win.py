@@ -25,6 +25,18 @@ def parse(code):
     return int(m.group(1)), int(m.group(2)), bool(m.group(3))
 
 
+def expected_version(code):
+    """'X.Y.Z' for a three-part code, 'X.Y' for a two-part one (compare major.minor only)."""
+    parse(code)
+    m = re.match(r"^(\d+\.\d+(?:\.\d+)?)", code)
+    return m.group(1)
+
+
+def version_matches(code, actual):
+    want = expected_version(code)
+    return actual == want or (want.count(".") == 1 and actual.startswith(want + "."))
+
+
 def modules(x, y):
     if x == 2 and y < 6:
         return ["zlib", "Tkinter"]
@@ -41,12 +53,15 @@ def copies(x, y):
 
 
 def run(cmd, env=None):
-    p = subprocess.run(cmd, capture_output=True, text=True, env=env)
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, env=env)
+    except OSError as e:
+        return 127, str(e)
     return p.returncode, (p.stdout + p.stderr).strip()
 
 
 def main(root, code):
-    x, y, _ft = parse(code)
+    x, y, ft = parse(code)
     versions = os.path.join(root, "versions")
     prefix = os.path.join(versions, code)
     fails = []
@@ -67,13 +82,28 @@ def main(root, code):
     rc, out = run([py, "-E", "-s", "-c", "import " + ", ".join(modules(x, y))], env)
     if rc:
         fails.append(f"imports failed: {out}")
-    has_pip = (x, y) >= (3, 4) or (x == 2 and os.path.isdir(os.path.join(prefix, "Lib", "ensurepip")))
+    rc, out = run([py, "-E", "-s", "-c", "import sys; print('%d.%d.%d' % sys.version_info[:3])"], env)
+    if rc or not version_matches(code, out):
+        fails.append(f"running version is {out!r} (rc {rc}), expected {expected_version(code)}")
+    rc, out = run([py, "-E", "-s", "-c", "import sysconfig; print(sysconfig.get_config_var('Py_GIL_DISABLED'))"], env)
+    if rc or (out == "1") != ft:
+        fails.append(f"free-threaded mismatch: Py_GIL_DISABLED={out!r} (rc {rc}), expected {'1' if ft else 'not 1'}")
+    outs = {}
+    for name in copies(x, y):
+        rc, out = run([os.path.join(prefix, name), "-E", "-s", "-c", "import sys; print(sys.version)"], env)
+        if rc:
+            fails.append(f"{name} did not run (rc {rc}): {out}")
+        else:
+            outs[name] = out
+    if len(set(outs.values())) > 1:
+        fails.append(f"copies disagree: {outs}")
+    has_pip = (x, y) >= (3, 4) or (x, y) == (2, 7)
     if has_pip:
         rc, out = run([os.path.join(prefix, "Scripts", "pip.exe"), "--version"], env)
         if rc:
             fails.append(f"Scripts\\pip.exe --version failed: {out}")
     shim = os.path.join(root, "shims", "python.exe")
-    rc, out = run([shim, "-c", "import sys; print(sys.prefix)"], dict(env, PYENV_VERSION=code))
+    rc, out = run([shim, "-c", "import sys; print(sys.prefix)"], dict(env, PYENV_VERSION=code, PYENV_ROOT=root, PYENV=root, PYENV_HOME=root))
     if rc or os.path.normcase(os.path.normpath(out)) != os.path.normcase(os.path.normpath(prefix)):
         fails.append(f"the python shim gave rc {rc}: {out}")
     if (x, y) >= (3, 3):
