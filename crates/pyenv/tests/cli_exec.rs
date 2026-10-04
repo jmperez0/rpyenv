@@ -92,7 +92,18 @@ fn exec_usage_and_not_found() {
     let r = f.pyenv(&["exec"]);
     assert_eq!(
         (r.stderr.as_str(), r.code),
-        ("Usage: pyenv exec <command> [arg1 arg2...]\n", 1)
+        (
+            "Usage: pyenv exec [-N|--environment] <command> [arg1 arg2...]\n",
+            1
+        )
+    );
+    let r = f.pyenv(&["exec", "-N"]);
+    assert_eq!(
+        (r.stderr.as_str(), r.code),
+        (
+            "Usage: pyenv exec [-N|--environment] <command> [arg1 arg2...]\n",
+            1
+        )
     );
     let r = f.pyenv_env(&["exec", "tool"], &[("PYENV_VERSION", "9.9")]);
     assert_eq!(
@@ -102,6 +113,94 @@ fn exec_usage_and_not_found() {
              pyenv: tool: command not found\n",
             127
         )
+    );
+}
+
+/// `exec -N` (pyenv 2.8.8, test/exec.bats "--environment sets envvars in Linux" and "in
+/// macOS"): PYTHONHOME is the version's prefix, and `<prefix>/lib` goes first on the
+/// library path, which `uname -s` picks.
+#[cfg(unix)]
+#[test]
+fn exec_environment_sets_python_home_and_the_library_path() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new();
+    let tool = f.exe("3.12.10/bin/print_env");
+    std::fs::write(
+        &tool,
+        "#!/bin/sh\necho PYTHONHOME=\"$PYTHONHOME\"\necho LD=\"$LD_LIBRARY_PATH\"\necho DYLD=\"$DYLD_LIBRARY_PATH\"\n",
+    )
+    .unwrap();
+    let home = f.root.join("versions").join("3.12.10");
+    let home = home.display();
+    let run = |lib: &str| {
+        f.pyenv_env(
+            &["exec", "-N", "print_env"],
+            &[
+                ("PYENV_VERSION", "3.12.10"),
+                ("LD_LIBRARY_PATH", lib),
+                ("DYLD_LIBRARY_PATH", lib),
+            ],
+        )
+    };
+    let r = run("");
+    assert_eq!(
+        (r.stdout.as_str(), r.code),
+        (
+            format!("PYTHONHOME={home}\nLD={home}/lib\nDYLD=\n").as_str(),
+            0
+        )
+    );
+    let r = run("/foo/bar");
+    assert_eq!(
+        r.stdout,
+        format!("PYTHONHOME={home}\nLD={home}/lib:/foo/bar\nDYLD=/foo/bar\n")
+    );
+    // A `uname` on PATH that says Darwin switches to macOS's variable, as upstream's does.
+    let uname = f.syspath.join("uname");
+    std::fs::create_dir_all(&f.syspath).unwrap();
+    std::fs::write(&uname, "#!/bin/sh\necho Darwin\n").unwrap();
+    std::fs::set_permissions(&uname, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let r = run("/foo/bar");
+    assert_eq!(
+        r.stdout,
+        format!("PYTHONHOME={home}\nLD=/foo/bar\nDYLD={home}/lib:/foo/bar\n")
+    );
+    // Without -N nothing is set.
+    let r = f.pyenv_env(&["exec", "print_env"], &[("PYENV_VERSION", "3.12.10")]);
+    assert_eq!(r.stdout, "PYTHONHOME=\nLD=\nDYLD=\n");
+}
+
+/// Several versions: the first one's prefix, with upstream's warning. A selected version
+/// that isn't installed fails as `pyenv-prefix` does, after the command is found.
+#[cfg(unix)]
+#[test]
+fn exec_environment_with_several_versions() {
+    let f = Fixture::new();
+    let tool = f.exe("3.12.10/bin/print_home");
+    std::fs::write(&tool, "#!/bin/sh\necho \"$PYTHONHOME\"\n").unwrap();
+    std::fs::create_dir_all(f.root.join("versions").join("3.11.9")).unwrap();
+    let r = f.pyenv_env(
+        &["exec", "--environment", "print_home"],
+        &[("PYENV_VERSION", "3.12.10:3.11.9")],
+    );
+    let home = f.root.join("versions").join("3.12.10");
+    assert_eq!(
+        (r.stdout.as_str(), r.stderr.as_str(), r.code),
+        (
+            format!("{}\n", home.display()).as_str(),
+            "pyenv: Warning: multiple Python versions are selected. Setting environment variables for the first one, (/versions/3.12.10)\n",
+            0
+        )
+    );
+    let r = f.pyenv_env(
+        &["exec", "-N", "print_home"],
+        &[("PYENV_VERSION", "3.12.10:9.9")],
+    );
+    assert_eq!((r.stdout.as_str(), r.code), ("", 1), "stderr: {}", r.stderr);
+    assert!(
+        r.stderr.ends_with("pyenv: version `9.9' not installed\n"),
+        "{}",
+        r.stderr
     );
 }
 
@@ -132,7 +231,16 @@ fn help_for_exec() {
     let f = Fixture::new();
     assert_eq!(
         f.pyenv(&["exec", "--help"]).stdout,
-        "Usage: pyenv exec <command> [arg1 arg2...]\n\n\
+        "Usage: pyenv exec [-N|--environment] <command> [arg1 arg2...]\n\n\
+         \x20  -N/--environment   Set PYTHONHOME and LD_LIBRARY_PATH (DYLD_LIBRARY_PATH in macOS)\n\
+         \x20                 envvars for the running command.\n\
+         \x20                 This allows to run programs that embed Python without using rpath or\n\
+         \x20                 exact library path to libpython.\n\
+         \x20                 WARNING: For the running command and its child processes, this will\n\
+         \x20                 break linkage for programs that expect to be linked to a different\n\
+         \x20                 libpython instance with the same name!\n\
+         \x20                 WARNING: In macOS, DYLD_LIBRARY_PATH will be unset by the system for\n\
+         \x20                 processes covered by System Integrity Protection.\n\n\
          Runs an executable by first preparing PATH so that the selected Python\n\
          version's `bin' directory is at the front.\n\n\
          For example, if the currently selected Python version is 2.7.6:\n  \
