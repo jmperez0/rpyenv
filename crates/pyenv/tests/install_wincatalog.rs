@@ -152,3 +152,25 @@ fn write_db_replaces_the_file_whole() {
     let left: Vec<_> = std::fs::read_dir(d.path()).unwrap().collect();
     assert_eq!(left.len(), 1, "no temporary file left");
 }
+
+#[test]
+fn hostile_cache_text_never_panics() {
+    for bad in [
+        "<versions><version </version></versions>",
+        "<versions><version",
+        "<versions><version x64=\"true></version></versions>",
+        "<versions>é<version x64=\"ü\">",
+        "<versions>é<version x64=\"ü\"></version></versions>",
+    ] {
+        assert!(parse_db(bad).is_err(), "{bad}");
+    }
+    let real = real_db();
+    let mut cut = 97;
+    while cut < real.len() {
+        while !real.is_char_boundary(cut) {
+            cut += 1;
+        }
+        let _ = parse_db(&real[..cut]);
+        cut += 97;
+    }
+}

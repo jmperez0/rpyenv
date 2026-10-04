@@ -231,8 +231,9 @@ pub fn parse_db(text: &str) -> Result<Vec<Row>, DbError> {
             .find('>')
             .ok_or_else(|| DbError::Malformed("unclosed <version".into()))?;
         let tag = &rest[..tag_end];
-        let close = rest
+        let close = rest[tag_end..]
             .find("</version>")
+            .map(|c| c + tag_end)
             .ok_or_else(|| DbError::Malformed("<version> without </version>".into()))?;
         let block = &rest[tag_end + 1..close];
         let need = |t: &str| {
