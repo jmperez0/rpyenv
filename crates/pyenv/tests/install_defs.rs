@@ -18,10 +18,10 @@ fn parse_builtin(name: &str) -> defs::Definition {
 
 #[test]
 fn every_vendored_definition_parses() {
-    // Mechanical: all 292, so a construct the interpreter misses fails here, by name.
+    // Mechanical: all 299 (pyenv 2.8.8), so a construct the interpreter misses fails here, by name.
     let root = Path::new("/nonexistent-root");
     let names = defs::names(root, &no_env);
-    assert_eq!(names.len(), 292);
+    assert_eq!(names.len(), 299);
     let mut failures = Vec::new();
     for n in &names {
         let found = defs::find(root, n, &no_env).unwrap();
