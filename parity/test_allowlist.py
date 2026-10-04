@@ -76,7 +76,7 @@ class Reasons(unittest.TestCase):
         self.assertIn("M1 is delivered", allowlist.check_reason("M1 x", "Linux", self.table))
 
     def test_a_milestone_is_accepted(self):
-        self.assertIsNone(allowlist.check_reason("M3 shell integration", "Linux", self.table))
+        self.assertIsNone(allowlist.check_reason("M4 virtualenvs and plugins", "Linux", self.table))
 
     def test_a_row_for_the_other_os_is_rejected(self):
         self.assertIn("Linux row", allowlist.check_reason("D-35 x", "Windows", self.table))

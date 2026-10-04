@@ -1,0 +1,4 @@
+cmd: set "PYENV_VERSION=3.10.11"
+PowerShell: $Env:PYENV_VERSION = '3.10.11'
+bash: export PYENV_VERSION='3.10.11'
+fish: set -gx PYENV_VERSION '3.10.11'

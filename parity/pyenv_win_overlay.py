@@ -15,8 +15,20 @@ import allowlist as _allowlist  # noqa: E402
 
 
 @pytest.fixture()
-def pyenv_file(bin_path):
-    return str(Path(bin_path, "pyenv.exe"))
+def pyenv_file(bin_path, shell):
+    path = str(Path(bin_path, "pyenv.exe"))
+    # The suite's own fixture escapes spaces for PowerShell (tests/conftest.py:55-60);
+    # unescaped, PowerShell splits the path and never starts pyenv.exe (plan M3 Decision 9a).
+    return path if shell == "cmd" else path.replace(" ", "` ")
+
+
+@pytest.fixture()
+def run_args(shell):
+    if shell == "cmd":
+        return ["cmd", "/d", "/c", "call"]
+    # PowerShell loads rpyenv's integration first, as the profile line would (allowlist
+    # D-90, plan M3 Decision 9c). --no-rehash: a test's shims are its own business.
+    return [shell, "-Command", 'iex ((pyenv init - pwsh --no-rehash) -join "`n");']
 
 
 @pytest.fixture(autouse=True)
@@ -28,6 +40,12 @@ def tmp_pyenv(tmp_path, pyenv_path, local_path, bin_path, shims_path, settings, 
     os.mkdir(pyenv_path)
     os.mkdir(local_path)
     pyenv_setup(settings)
+    # No pyenv-win entry point may run: PowerShell would pick pyenv.ps1 over pyenv.exe
+    # (plan M3 Decision 9b).
+    for f in ("pyenv.ps1", "pyenv.bat", "pyenv"):
+        p = Path(bin_path, f)
+        if p.exists():
+            p.unlink()
     for f in ("pyenv.exe", "pyenv-shim.exe", "pyenv-shimw.exe"):
         _shutil.copy(_os.path.join(_RPYENV_BIN, f), bin_path)
     prev_cwd = os.getcwd()

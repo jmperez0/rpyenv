@@ -1,14 +1,17 @@
 --version
 commands
+completions
 exec
 global
 help
+init
 install
 latest
 local
 prefix
 rehash
 root
+shell
 shims
 uninstall
 update

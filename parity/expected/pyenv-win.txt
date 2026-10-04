@@ -13,25 +13,17 @@ test_pyenv_feature_exec.py::test_exec_arg[Two Words-python shim] | D-36 shims ar
 test_pyenv_feature_exec.py::test_path_not_updated | D-36 shims are `.exe`, not `python.bat`
 test_pyenv_feature_rehash.py::test_rehash_global_version[<lambda>] | D-36 one `.exe` shim per program; no extensionless sh shims
 test_pyenv_feature_rehash.py::test_rehash_local_version[<lambda>] | D-36 one `.exe` shim per program; no extensionless sh shims
-test_pyenv_feature_shell.py::test_no_shell_version[cmd] | M3 shell integration (`pyenv shell`)
-test_pyenv_feature_shell.py::test_no_shell_version[powershell] | M3 shell integration (`pyenv shell`)
-test_pyenv_feature_shell.py::test_no_shell_version[pwsh] | M3 shell integration (`pyenv shell`)
-test_pyenv_feature_shell.py::test_shell_help[cmd] | M3 shell integration (`pyenv shell`)
-test_pyenv_feature_shell.py::test_shell_help[powershell] | M3 shell integration (`pyenv shell`)
-test_pyenv_feature_shell.py::test_shell_help[pwsh] | M3 shell integration (`pyenv shell`)
-test_pyenv_feature_shell.py::test_shell_many_versions_defined[cmd] | M3 shell integration (`pyenv shell`)
-test_pyenv_feature_shell.py::test_shell_many_versions_defined[powershell] | M3 shell integration (`pyenv shell`)
-test_pyenv_feature_shell.py::test_shell_many_versions_defined[pwsh] | M3 shell integration (`pyenv shell`)
-test_pyenv_feature_shell.py::test_shell_set_installed_version[cmd-<lambda>] | M3 shell integration (`pyenv shell`)
-test_pyenv_feature_shell.py::test_shell_set_many_versions[cmd-<lambda>] | M3 shell integration (`pyenv shell`)
-test_pyenv_feature_shell.py::test_shell_set_many_versions_one_not_installed[cmd-<lambda>] | M3 shell integration (`pyenv shell`)
-test_pyenv_feature_shell.py::test_shell_set_many_versions_one_not_installed[powershell-<lambda>] | M3 shell integration (`pyenv shell`)
-test_pyenv_feature_shell.py::test_shell_set_many_versions_one_not_installed[pwsh-<lambda>] | M3 shell integration (`pyenv shell`)
-test_pyenv_feature_shell.py::test_shell_set_unknown_version[cmd-<lambda>] | M3 shell integration (`pyenv shell`)
-test_pyenv_feature_shell.py::test_shell_set_unknown_version[powershell-<lambda>] | M3 shell integration (`pyenv shell`)
-test_pyenv_feature_shell.py::test_shell_set_unknown_version[pwsh-<lambda>] | M3 shell integration (`pyenv shell`)
-test_pyenv_feature_shell.py::test_shell_unset_unaffected[cmd-<lambda>] | M3 shell integration (`pyenv shell`)
-test_pyenv_feature_shell.py::test_shell_version_defined[cmd] | M3 shell integration (`pyenv shell`)
-test_pyenv_feature_shell.py::test_shell_version_defined[powershell] | M3 shell integration (`pyenv shell`)
-test_pyenv_feature_shell.py::test_shell_version_defined[pwsh] | M3 shell integration (`pyenv shell`)
+test_pyenv_feature_shell.py::test_shell_set_installed_version[cmd-<lambda>] | D-89 an executable can't change cmd's environment
+test_pyenv_feature_shell.py::test_shell_set_many_versions[cmd-<lambda>] | D-89 an executable can't change cmd's environment
 test_pyenv_feature_version.py::test_bad_path[<lambda>] | D-15 the PATH check looks for `shims\python.exe`
+test_pyenv_feature_exec.py::test_exec_arg[Double Quote-pyenv exec] | D-92 calls bin\pyenv.bat by path; rpyenv ships no pyenv.bat
+test_pyenv_feature_exec.py::test_exec_arg[Exclamation Mark-pyenv exec] | D-92 calls bin\pyenv.bat by path; rpyenv ships no pyenv.bat
+test_pyenv_feature_exec.py::test_exec_arg[Imbalance Double Quote-pyenv exec] | D-92 calls bin\pyenv.bat by path; rpyenv ships no pyenv.bat
+test_pyenv_feature_exec.py::test_exec_arg[Imbalance Single Quote-pyenv exec] | D-92 calls bin\pyenv.bat by path; rpyenv ships no pyenv.bat
+test_pyenv_feature_exec.py::test_exec_arg[One Double Quote-pyenv exec] | D-92 calls bin\pyenv.bat by path; rpyenv ships no pyenv.bat
+test_pyenv_feature_exec.py::test_exec_arg[One Single Quote-pyenv exec] | D-92 calls bin\pyenv.bat by path; rpyenv ships no pyenv.bat
+test_pyenv_feature_exec.py::test_exec_arg[One Word-pyenv exec] | D-92 calls bin\pyenv.bat by path; rpyenv ships no pyenv.bat
+test_pyenv_feature_exec.py::test_exec_arg[Percentage-pyenv exec] | D-92 calls bin\pyenv.bat by path; rpyenv ships no pyenv.bat
+test_pyenv_feature_exec.py::test_exec_arg[Pound-pyenv exec] | D-92 calls bin\pyenv.bat by path; rpyenv ships no pyenv.bat
+test_pyenv_feature_exec.py::test_exec_arg[Single Quote-pyenv exec] | D-92 calls bin\pyenv.bat by path; rpyenv ships no pyenv.bat
+test_pyenv_feature_exec.py::test_exec_arg[Two Words-pyenv exec] | D-92 calls bin\pyenv.bat by path; rpyenv ships no pyenv.bat

@@ -38,7 +38,7 @@ class StaleEntries(unittest.TestCase):
     """Review focus 1."""
 
     results = bats_check.parse_tap(TAP)
-    good = {"a.bats | fails here": "D-35 x", "b.bats | fails here": "M3 y"}
+    good = {"a.bats | fails here": "D-35 x", "b.bats | fails here": "M4 y"}
 
     def test_the_exact_set_passes(self):
         self.assertEqual(bats_check.problems(self.results, self.good, TABLE), [])
