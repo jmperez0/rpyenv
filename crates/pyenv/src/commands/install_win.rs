@@ -196,10 +196,7 @@ pub fn install(ctx: &Ctx, args: &[&str]) -> Output {
             Ok(winpkg::Done::Installed) => {
                 let prefix = ctx.versions_dir().join(w);
                 if let Some(line) = crate::install::default_packages::run(&ctx.root, &prefix) {
-                    // Blank lines around it, as around pyenv-win's own error blocks.
-                    say("");
                     say(&line);
-                    say("");
                 }
             }
             Ok(winpkg::Done::Skipped) => {}

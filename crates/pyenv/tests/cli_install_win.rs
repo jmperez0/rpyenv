@@ -252,7 +252,10 @@ fn default_packages_run_after_a_new_install_and_a_failure_still_succeeds() {
     assert_eq!(r.code, 0, "{}", r.stdout);
     let file = f.root.join("default-packages");
     assert!(
-        r.stdout.contains(&format!(":: [Info] :: completed! 3.12.1\r\n\r\npyenv: error installing packages from  `{}'\r\n\r\n", file.display())),
+        r.stdout.contains(&format!(
+            ":: [Info] :: completed! 3.12.1\r\npyenv: error installing packages from  `{}'\r\n",
+            file.display()
+        )),
         "{}",
         r.stdout
     );
@@ -274,4 +277,33 @@ fn clear_empties_the_cache_and_tolerates_none() {
     let r = f.pyenv(&["install", "--clear"]);
     assert_eq!((r.code, r.stdout), (0, BANNER.to_string()));
     assert_eq!(std::fs::read_dir(&cache).unwrap().count(), 0);
+}
+
+#[test]
+fn no_version_argument_installs_the_selected_prefix_resolved_against_the_db() {
+    let f = Fixture::new();
+    db(
+        &f,
+        &[
+            ("3.12.0rc1", false),
+            ("3.12.1", false),
+            ("3.12.1-win32", false),
+        ],
+    );
+    std::fs::write(f.work.join(".python-version"), "3.12\n").unwrap();
+    let s = fake();
+    let r = run(&f, &s, &["install"]);
+    assert_eq!(r.code, 0, "{}", r.stdout);
+    assert!(
+        r.stdout
+            .ends_with(":: [Installing] ::  3.12.1 ...\r\n:: [Info] :: completed! 3.12.1\r\n"),
+        "{}",
+        r.stdout
+    );
+    assert!(f
+        .root
+        .join("versions")
+        .join("3.12.1")
+        .join("python.exe")
+        .is_file());
 }

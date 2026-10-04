@@ -5,7 +5,8 @@
 use std::path::Path;
 use std::process::Command;
 
-/// None on success or when there is no file; otherwise the error line for stderr.
+/// None on success or when there is no file; otherwise the error line, which the caller prints
+/// (on stderr on Linux, on stdout on Windows).
 pub fn run(root: &Path, prefix: &Path) -> Option<String> {
     let file = root.join("default-packages");
     if !file.is_file() {
