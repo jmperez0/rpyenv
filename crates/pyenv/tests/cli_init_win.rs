@@ -60,7 +60,7 @@ fn print_mode_for_bash_uses_msys_paths_and_lf() {
     let out = raw(&f, &["init", "-", "bash", "--no-push-path", "--no-rehash"]);
     assert_eq!(
         out,
-        format!("if [[ \":$PATH:\" != *:'{s}':* ]]; then\nexport PATH='{s}'\":${{PATH}}\"\nfi\nexport PYENV_SHELL=bash\npyenv() {{\n  local command=${{1:-}}\n  [ \"$#\" -gt 0 ] && shift\n  case \"$command\" in\n  rehash|shell)\n    eval \"$(pyenv \"sh-$command\" \"$@\")\"\n    ;;\n  *)\n    command pyenv \"$command\" \"$@\"\n    ;;\n  esac\n}}\n")
+        format!("if [[ \":$PATH:\" != *:'{s}':* ]]; then\nexport PATH='{s}'\":${{PATH}}\"\nfi\nexport PYENV_SHELL=bash\npyenv() {{\n  local command=${{1:-}}\n  [ \"$#\" -gt 0 ] && shift\n  case \"$command\" in\n  activate|deactivate|rehash|shell)\n    eval \"$(pyenv \"sh-$command\" \"$@\")\"\n    ;;\n  *)\n    command pyenv \"$command\" \"$@\"\n    ;;\n  esac\n}}\n")
     );
     assert!(raw(&f, &["init", "-", "fish"]).contains(&format!("set -gx PATH '{s}' $PATH\n")));
 }

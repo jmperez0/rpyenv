@@ -60,6 +60,7 @@ use Tail::{
 
 /// Linux, from upstream's scripts at 2.8.8. A command not listed has no `--complete`.
 pub(crate) const TABLE_PYENV: &[Entry] = &[
+    e("activate", true, Words(&["--unset"], VirtualenvsBare)),
     e("commands", true, Words(&["--sh", "--no-sh"], Nothing)),
     e("completions", true, Words(&[], Commands)),
     e("exec", true, Words(&["--environment"], ShimsShort)),

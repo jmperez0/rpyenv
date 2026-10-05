@@ -1,5 +1,6 @@
 //! The command table.
 
+pub mod activate;
 pub mod completions;
 pub mod exec;
 pub mod init;
@@ -43,6 +44,8 @@ const COMMANDS: &[(&str, Command)] = &[
     ("rehash", rehash::rehash),
     ("root", misc::root),
     ("shims", rehash::shims),
+    ("sh-activate", activate::sh_activate),
+    ("sh-deactivate", activate::sh_deactivate),
     ("version", version::version),
     ("version-file", version::version_file),
     ("version-file-read", version::version_file_read),
@@ -72,6 +75,8 @@ const WIN_ONLY: &[(&str, Command)] = &[
 
 /// pyenv (Linux) only, until M2b brings pyenv-win's installer commands.
 const LINUX_ONLY: &[(&str, Command)] = &[
+    ("activate", activate::activate),
+    ("deactivate", activate::deactivate),
     #[cfg(unix)]
     ("install", install::install),
     #[cfg(unix)]
