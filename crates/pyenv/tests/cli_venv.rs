@@ -672,8 +672,11 @@ fn virtualenv_init_never_writes_through_a_link() {
 /// The host's real `python3`, for the one test that runs a real `python -m venv`. CI must have
 /// one; a developer machine without it skips the test with a note.
 fn real_python3() -> Option<PathBuf> {
+    // Not a conda install's Python (GitHub's Ubuntu runner has one on PATH): rpyenv makes
+    // conda envs with `conda create`, which isn't this test's case.
     let found = std::env::var_os("PATH").and_then(|p| {
         std::env::split_paths(&p)
+            .filter(|d| !d.join("conda").exists() && !d.join("..").join("conda-meta").exists())
             .map(|d| d.join("python3"))
             .find(|p| p.is_file())
     });
@@ -967,4 +970,27 @@ fn a_stray_file_in_envs_is_skipped() {
     let (_, err, code) = run_stdin(&f, &["uninstall", "3.12.1"], "y\ny\n");
     assert_eq!(code, 0, "{err}");
     assert!(!e.exists() && !f.root.join("versions/3.12.1").exists());
+}
+
+/// User decision (2026-10-05, after a side-agent note): pyenv-virtualenv's hook points have no
+/// equivalent (allowlist D-51), so hooks written for them are named as not run, once, on stderr;
+/// `--quiet` stays silent (auto-activation runs it at every prompt).
+#[test]
+fn hooks_for_the_virtualenv_commands_are_named_as_not_run() {
+    let f = Fixture::new();
+    make_env(&f, "3.12.1", "venv1", false);
+    let hook = f.root.join("pyenv.d/activate/mine.bash");
+    f.file(&hook, "after_activate 'echo hi'\n");
+    let (_, err, code) = bash(&f, &["sh-activate", "venv1"], &[]);
+    assert_eq!(code, 0);
+    assert!(
+        err.contains("not run") && err.contains(&hook.display().to_string()),
+        "{err}"
+    );
+    assert_eq!(bash(&f, &["sh-activate", "--quiet", "venv1"], &[]).1, "");
+    let vhook = f.root.join("pyenv.d/virtualenv/mine.bash");
+    f.file(&vhook, "after_virtualenv 'echo hi'\n");
+    let (_, err, code) = run(&f, &["virtualenv", "3.12.1", "venv2"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(err.contains(&vhook.display().to_string()), "{err}");
 }

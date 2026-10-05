@@ -156,7 +156,12 @@ pub(crate) fn deactivate_code(ctx: &Ctx, args: &[&str], sh: Sh) -> Output {
         o.err(format!("pyenv-virtualenv: deactivate {name}"));
     }
     let prefix = Path::new(&venv_path);
-    if !venv_path.is_empty() && venv::is_conda(prefix) && sh != Sh::Fish {
+    // `[ -d "${prefix}/conda-meta" ] || [ -x "${prefix}/bin/conda" ]`, built as text as
+    // upstream does: with no VIRTUAL_ENV (the nested `--force` deactivate) that is
+    // `/conda-meta` and `/bin/conda`, so a host with `/bin/conda` gets `unset CONDA_PREFIX`.
+    let conda = Path::new(&format!("{venv_path}/conda-meta")).is_dir()
+        || rpyenv_core::pathsearch::is_runnable(Path::new(&format!("{venv_path}/bin/conda")));
+    if conda && sh != Sh::Fish {
         if sh == Sh::Posix {
             for s in scripts(&prefix.join("etc/conda/deactivate.d"), "sh") {
                 o.out(format!(". \"{}\";", s.display()));
@@ -187,7 +192,28 @@ pub(crate) fn deactivate_code(ctx: &Ctx, args: &[&str], sh: Sh) -> Output {
             }
         }
     }
+    if !quiet {
+        if let Some(m) = unrun_hooks(ctx, "deactivate") {
+            o.err(m);
+        }
+    }
     o
+}
+
+/// User decision (2026-10-05): pyenv-virtualenv's hook points have no equivalent in rpyenv
+/// (allowlist D-51), so hook files written for them are named as not run, on stderr.
+pub(crate) fn unrun_hooks(ctx: &Ctx, point: &str) -> Option<String> {
+    if ctx.flavor != Flavor::Pyenv {
+        return None;
+    }
+    let listed = crate::commands::misc::hooks(ctx, &[point]).stdout;
+    let files: Vec<&str> = listed.lines().filter(|l| !l.is_empty()).collect();
+    (!files.is_empty()).then(|| {
+        format!(
+            "pyenv-virtualenv: rpyenv runs no hooks, so these `{point}' hooks were not run: {}",
+            files.join(", ")
+        )
+    })
 }
 
 /// `versions/<v>`, one level of link resolved, as v1.4.0 computes `VIRTUAL_ENV`.
@@ -409,6 +435,11 @@ fn activate_code(ctx: &Ctx, args: &[&str], sh: Sh) -> Output {
                 }
             }
             _ => o.out(set(sh, "CONDA_PREFIX", &p)),
+        }
+    }
+    if !quiet {
+        if let Some(m) = unrun_hooks(ctx, "activate") {
+            o.err(m);
         }
     }
     o
