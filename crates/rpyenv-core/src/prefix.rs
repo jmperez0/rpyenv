@@ -43,9 +43,13 @@ pub fn prefix_of(ctx: &Ctx, version: &str) -> Result<PathBuf, PrefixError> {
     }
     if ctx.flavor == Flavor::PyenvWin && version.contains(['/', '\\']) {
         // `<base>/envs/<name>`, printed with `\` (allowlist D-101); no `.` or `..` segment.
-        let plain = version
-            .split(['/', '\\'])
-            .all(|s| !s.is_empty() && s != "." && s != "..");
+        // Exactly `<base>/envs/<name>`: never an absolute or deeper path (final review M4).
+        let segs: Vec<&str> = version.split(['/', '\\']).collect();
+        let plain = segs.len() == 3
+            && segs[1] == "envs"
+            && segs
+                .iter()
+                .all(|s| !s.is_empty() && *s != "." && *s != ".." && !s.contains(':'));
         let dir = vdir.join(version.replace('/', "\\"));
         return if plain && dir.is_dir() {
             Ok(dir)
@@ -110,6 +114,37 @@ mod tests {
             fs::create_dir_all(tmp.path().join("versions").join(v)).unwrap();
         }
         tmp
+    }
+
+    /// Final review M4: on Windows only `<base>/envs/<name>` is taken as a path-like name, so an
+    /// absolute or deeper name never resolves outside `versions`.
+    #[cfg(windows)]
+    #[test]
+    fn windows_slash_names_must_be_env_shaped() {
+        let tmp = root_with(&["3.13.1"]);
+        fs::create_dir_all(
+            tmp.path()
+                .join("versions")
+                .join("3.13.1")
+                .join("envs")
+                .join("foo"),
+        )
+        .unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let ctx = Ctx::for_test(Flavor::PyenvWin, tmp.path(), tmp.path());
+        assert_eq!(
+            prefix_of(&ctx, "3.13.1/envs/foo"),
+            Ok(tmp
+                .path()
+                .join("versions")
+                .join("3.13.1")
+                .join("envs")
+                .join("foo"))
+        );
+        let abs = outside.path().display().to_string();
+        assert!(prefix_of(&ctx, &abs).is_err(), "{abs}");
+        assert!(prefix_of(&ctx, "3.13.1/envs/foo/x").is_err());
+        assert!(prefix_of(&ctx, "3.13.1/lib/foo").is_err());
     }
 
     #[test]

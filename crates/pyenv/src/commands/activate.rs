@@ -382,8 +382,10 @@ fn activate_code(ctx: &Ctx, args: &[&str], sh: Sh) -> Output {
                 ));
             }
             Sh::Cmd => {
-                let old = Some(var("PROMPT"))
-                    .filter(|p| !p.is_empty())
+                // The prompt saved by an earlier activation, so the tags don't stack.
+                let old = [var("_OLD_VIRTUAL_PROMPT"), var("PROMPT")]
+                    .into_iter()
+                    .find(|p| !p.is_empty())
                     .unwrap_or_else(|| "$P$G".into());
                 o.out(format!("set \"_OLD_VIRTUAL_PROMPT={old}\""));
                 o.out(format!("set \"PROMPT={tag} {old}\""));

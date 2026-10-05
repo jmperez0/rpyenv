@@ -28,7 +28,7 @@ envs.bats | path should be handled properly even if there is 'envs' in PYENV_ROO
 hooks.bats | pyenv-virtualenv hooks | D-51 no bash hook points (before_activate, after_virtualenv, ...)
 hooks.bats | pyenv-sh-activate hooks | D-51 no bash hook points (before_activate, after_virtualenv, ...)
 hooks.bats | deactivate virtualenv | D-51 no bash hook points (before_activate, after_virtualenv, ...)
-pip.bats | install pip with ensurepip | D-99 rpyenv never downloads get-pip.py; the suite's pip step also runs through a stubbed pyenv-exec (D-52)
+pip.bats | install pip with ensurepip | D-52 the suite's pip step runs through a stubbed pyenv-exec
 pip.bats | install pip without using ensurepip | D-99 rpyenv never downloads get-pip.py; the suite's pip step also runs through a stubbed pyenv-exec (D-52)
 prefix.bats | resolves a version that is not an exact match | D-52 a stub states what the fixture contradicts (the selected version)
 python.bats | resolve python executable from enabled version | D-52 the interpreter is resolved through the suite's stubbed pyenv-which, pyenv-whence and python-build

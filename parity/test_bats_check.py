@@ -1,3 +1,5 @@
+import io
+import contextlib
 import unittest
 
 import bats_check
@@ -107,3 +109,10 @@ class Suites(unittest.TestCase):
         self.assertEqual((exp, files), ("bats-virtualenv.txt", "bats-virtualenv-files.txt"))
         self.assertIn("pyenv-virtualenv", heading)
         self.assertEqual(bats_check.SUITES["pyenv"][:2], ("bats.txt", "bats-files.txt"))
+
+
+class UnknownSuite(unittest.TestCase):
+    def test_an_unknown_suite_is_a_usage_error(self):
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(bats_check.main(["--suite", "nope", "x.tap"]), 2)
+        self.assertIn("unknown suite", err.getvalue())

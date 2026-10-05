@@ -31,6 +31,7 @@ if [ "$1" = "-m" ] && [ "$2" = "venv" ]; then
 fi
 if [ "$1" = "-s" ] && [ "$2" = "-m" ] && [ "$3" = "ensurepip" ]; then
   echo "ensurepip" >> "$here/calls.log"
+  [ -n "$FAKE_ENSUREPIP_FAIL" ] && exit 1
   printf '#!/bin/sh\n' > "${0%/*}/pip"
   chmod 755 "${0%/*}/pip"
   exit 0
@@ -855,4 +856,41 @@ fn uninstall_removes_a_dangling_env_link() {
     std::os::unix::fs::symlink(base.join("envs/gone"), f.root.join("versions/gone")).unwrap();
     assert_eq!(run(&f, &["uninstall", "-f", "gone"]).2, 0);
     assert!(std::fs::symlink_metadata(f.root.join("versions/gone")).is_err());
+}
+
+/// Final review M1 (allowlist D-99): when pip can't be ensured, a set GET_PIP_URL is named as
+/// ignored, and nothing is downloaded.
+#[test]
+fn get_pip_url_is_ignored_with_a_message() {
+    let f = Fixture::new();
+    let base = fake_base(&f, "3.12.1");
+    let (_, err, code) = run_env(
+        &f,
+        &["virtualenv", "3.12.1", "np"],
+        &[
+            ("FAKE_NO_PIP", "1"),
+            ("FAKE_ENSUREPIP_FAIL", "1"),
+            ("GET_PIP_URL", "https://example.invalid/get-pip.py"),
+        ],
+    );
+    assert_eq!(code, 1);
+    assert!(err.contains("GET_PIP_URL is ignored"), "{err}");
+    assert!(!base.join("envs/np").exists());
+}
+
+/// Final review M2 (allowlist D-96): `-p <name>` falls back to the system Python, as upstream's
+/// `pyenv-which` does.
+#[test]
+fn dash_p_finds_a_system_python() {
+    let f = Fixture::new();
+    let base = fake_base(&f, "3.12.1");
+    let sys = f.base.join("sysroot");
+    exe(&f, &sys.join("bin/python3"), FAKE_PYTHON);
+    let path = std::env::join_paths([f.syspath.clone(), sys.join("bin")]).unwrap();
+    let r = f.pyenv_env(
+        &["virtualenv", "-p", "python3", "3.12.1", "pv2"],
+        &[("PATH", path.to_str().unwrap())],
+    );
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert!(calls(&sys).contains(&base.join("envs/pv2").display().to_string()));
 }
