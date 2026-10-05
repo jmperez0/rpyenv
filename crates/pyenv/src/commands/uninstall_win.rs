@@ -17,6 +17,12 @@ fn say(line: &str) {
     rpyenv_core::textout::write(false, &format!("{line}\r\n"));
 }
 
+/// `<v>/envs/<n>` or `<v>\envs\<n>`, each part a version name (allowlist D-101).
+fn is_env_name(s: &str) -> bool {
+    let parts: Vec<&str> = s.split(['/', '\\']).collect();
+    parts.len() == 3 && parts[1] == "envs" && parts.iter().all(|p| is_version(p))
+}
+
 /// pyenv-win's `IsVersion`: `^[a-zA-Z_0-9-.]+$`.
 fn is_version(s: &str) -> bool {
     !s.is_empty()
@@ -95,11 +101,17 @@ pub fn uninstall(ctx: &Ctx, args: &[&str]) -> Output {
             }
             "-f" | "--force" => force = true,
             "-a" | "--all" => all = true,
+            v if is_env_name(v) => names.push(v.to_string()),
             v if is_version(v) => {
-                // pyenv-win's `Check32Bit`.
+                // pyenv-win's `Check32Bit`, but never for an env's junction (allowlist D-101).
                 let lower = v.to_ascii_lowercase();
+                let env_link = ctx
+                    .versions_dir()
+                    .join(v)
+                    .symlink_metadata()
+                    .is_ok_and(|m| m.file_type().is_symlink());
                 names.push(
-                    if ctx.arch_suffix == "-win32" && !lower.ends_with("-win32") {
+                    if ctx.arch_suffix == "-win32" && !lower.ends_with("-win32") && !env_link {
                         format!("{v}-win32")
                     } else {
                         v.to_string()
@@ -137,6 +149,19 @@ pub fn uninstall(ctx: &Ctx, args: &[&str]) -> Output {
     let single = names.len() == 1;
     let mut status = 0;
     for n in &names {
+        // Envs go with their junctions, and a base takes its envs (spec §10).
+        match crate::commands::venv::uninstall_related(ctx, n, force) {
+            Ok(crate::commands::venv::Related::Env) => {
+                say(&format!("pyenv: Successfully uninstalled {n}"));
+                continue;
+            }
+            Ok(crate::commands::venv::Related::Base) => {}
+            Err(o) => {
+                o.emit(ctx.flavor);
+                status = o.code.max(1);
+                continue;
+            }
+        }
         let Some(p) = target(&versions, n).filter(|p| p.is_dir()) else {
             if single {
                 say(&format!("pyenv: version '{n}' not installed"));

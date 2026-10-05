@@ -248,9 +248,18 @@ pub(crate) fn link_env(ctx: &Ctx, env_dir: &Path, link: &Path) -> std::io::Resul
             }
         }
         Flavor::PyenvWin => {
-            // Junctions arrive with Task 7 (plan M4b Decision 4).
-            let _ = (env_dir, link);
-            Err(std::io::ErrorKind::Unsupported.into())
+            #[cfg(windows)]
+            {
+                if is_link(link) {
+                    std::fs::remove_dir(link)?;
+                }
+                rpyenv_core::junction::create(link, env_dir)
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = (env_dir, link);
+                Err(std::io::ErrorKind::Unsupported.into())
+            }
         }
     }
 }
@@ -805,8 +814,6 @@ pub fn virtualenv_delete(ctx: &Ctx, args: &[&str]) -> Output {
 }
 
 /// What `pyenv uninstall <arg>` did for envs (v1.4.0's uninstall/envs.bash).
-// Used by `uninstall_win` from Task 7 on.
-#[cfg_attr(not(unix), allow(dead_code))]
 pub enum Related {
     /// `arg` was an env (long name or link): deleted with its link; nothing is left to remove.
     Env,
@@ -814,8 +821,6 @@ pub enum Related {
     Base,
 }
 
-// Used by `uninstall_win` from Task 7 on.
-#[cfg_attr(not(unix), allow(dead_code))]
 pub fn uninstall_related(ctx: &Ctx, arg: &str, force: bool) -> Result<Related, Output> {
     let sep = |c: char| c == '/' || (ctx.flavor == Flavor::PyenvWin && c == '\\');
     let name = arg.rsplit(sep).next().unwrap_or("");
@@ -852,8 +857,6 @@ pub fn uninstall_related(ctx: &Ctx, arg: &str, force: bool) -> Result<Related, O
 }
 
 /// A top-level link of `versions/` whose target is `env`.
-// Used by `uninstall_win` from Task 7 on.
-#[cfg_attr(not(unix), allow(dead_code))]
 fn links_to(ctx: &Ctx, env: &Path) -> Option<PathBuf> {
     rpyenv_core::installed::top_level(&ctx.versions_dir(), ctx.flavor)
         .into_iter()

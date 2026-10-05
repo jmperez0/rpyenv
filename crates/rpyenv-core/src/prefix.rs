@@ -41,6 +41,18 @@ pub fn prefix_of(ctx: &Ctx, version: &str) -> Result<PathBuf, PrefixError> {
             return Ok(vdir.join(version));
         }
     }
+    if ctx.flavor == Flavor::PyenvWin && version.contains(['/', '\\']) {
+        // `<base>/envs/<name>`, printed with `\` (allowlist D-101); no `.` or `..` segment.
+        let plain = version
+            .split(['/', '\\'])
+            .all(|s| !s.is_empty() && s != "." && s != "..");
+        let dir = vdir.join(version.replace('/', "\\"));
+        return if plain && dir.is_dir() {
+            Ok(dir)
+        } else {
+            Err(PrefixError::NotInstalled(version.to_string()))
+        };
+    }
     let names = installed::names(&vdir, ctx.flavor);
     let resolved = match ctx.flavor {
         Flavor::Pyenv => {

@@ -5,6 +5,8 @@ pub mod ctx;
 pub mod debuglog;
 pub mod flavor;
 pub mod installed;
+#[cfg(windows)]
+pub mod junction;
 pub mod latest;
 pub mod launch;
 pub mod lookup;
