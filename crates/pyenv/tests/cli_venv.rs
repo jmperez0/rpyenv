@@ -626,3 +626,43 @@ fn a_missing_current_version_is_reported_as_such() {
         );
     }
 }
+
+#[test]
+fn virtualenv_init_prints_the_hook_for_bash() {
+    let f = Fixture::new();
+    let (out, _, code) = run(&f, &["virtualenv-init", "-", "bash"]);
+    assert_eq!(code, 0);
+    let shims = f.root.join(".rpyenv/virtualenv/shims");
+    assert!(out.starts_with(&format!("export PATH=\"{}:${{PATH}}\";\nexport PYENV_VIRTUALENV_INIT=1;\n_pyenv_virtualenv_hook() {{\n", shims.display())), "{out}");
+    assert!(out.ends_with("if ! [[ \"${PROMPT_COMMAND-}\" =~ _pyenv_virtualenv_hook ]]; then\n  PROMPT_COMMAND=\"_pyenv_virtualenv_hook;${PROMPT_COMMAND-}\"\nfi\n"), "{out}");
+    let act = std::fs::read_to_string(shims.join("activate")).unwrap();
+    assert!(act.contains("eval \"$(pyenv sh-activate --verbose \"$@\" || true)\""));
+    // ksh: only the two lines; `bash -` drops the shell name.
+    assert_eq!(
+        run(&f, &["virtualenv-init", "-", "ksh"]).0.lines().count(),
+        2
+    );
+    assert_eq!(
+        run(&f, &["virtualenv-init", "bash", "-"]).0.lines().count(),
+        2
+    );
+}
+
+#[test]
+fn virtualenv_init_help_mode() {
+    let f = Fixture::new();
+    assert_eq!(run(&f, &["virtualenv-init", "zsh"]),
+               (String::new(), "# Load pyenv-virtualenv automatically by adding\n# the following to ~/.zshrc:\n\neval \"$(pyenv virtualenv-init -)\"\n\n".into(), 1));
+}
+
+/// allowlist D-102: the helper scripts are never written through a symlinked folder.
+#[test]
+fn virtualenv_init_never_writes_through_a_link() {
+    let f = Fixture::new();
+    let mine = f.base.join("mine");
+    std::fs::create_dir_all(&mine).unwrap();
+    std::fs::create_dir_all(f.root.join(".rpyenv")).unwrap();
+    std::os::unix::fs::symlink(&mine, f.root.join(".rpyenv/virtualenv")).unwrap();
+    assert_eq!(run(&f, &["virtualenv-init", "-", "bash"]).2, 0);
+    assert_eq!(std::fs::read_dir(&mine).unwrap().count(), 0);
+}
