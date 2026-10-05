@@ -23,8 +23,28 @@ pub(crate) enum Sh {
     Cmd,
 }
 
-/// `${PYENV_SHELL:-${SHELL##*/}}` on Linux; Task 8 adds Windows.
+fn sh_of(family: Family) -> Sh {
+    match family {
+        Family::Fish => Sh::Fish,
+        Family::Pwsh => Sh::Pwsh,
+        Family::Cmd => Sh::Cmd,
+        _ => Sh::Posix,
+    }
+}
+
+/// Windows: the shell `sh-*` code is for, as `sh-shell` finds it (`PYENV_SHELL`, else the
+/// parent process).
+fn win_shell() -> Option<Sh> {
+    crate::commands::shell_win::code_family().map(sh_of)
+}
+
+const NO_SHELL: &str = "pyenv: can't tell which shell to print code for: set PYENV_SHELL, or load the integration (`pyenv init`)";
+
+/// `${PYENV_SHELL:-${SHELL##*/}}` on Linux; Windows: `win_shell`, POSIX when unknown.
 pub(crate) fn shell(ctx: &Ctx) -> Sh {
+    if ctx.flavor == Flavor::PyenvWin {
+        return win_shell().unwrap_or(Sh::Posix);
+    }
     let name = shellname::from_env(
         std::env::var("PYENV_SHELL").ok().as_deref(),
         std::env::var("SHELL").ok().as_deref(),
@@ -83,8 +103,21 @@ fn verdict(o: &mut Output, sh: Sh, word: &str) {
     }
 }
 
+/// Windows code for bash, zsh or fish is `\n`-terminated (`shell_win::lf`).
+fn finish(ctx: &Ctx, sh: Sh, o: Output) -> Output {
+    if ctx.flavor == Flavor::PyenvWin && matches!(sh, Sh::Posix | Sh::Fish) {
+        crate::commands::shell_win::lf(o)
+    } else {
+        o
+    }
+}
+
 pub fn sh_deactivate(ctx: &Ctx, args: &[&str]) -> Output {
-    deactivate_code(ctx, args, shell(ctx))
+    if ctx.flavor == Flavor::PyenvWin && win_shell().is_none() {
+        return Output::error(NO_SHELL);
+    }
+    let sh = shell(ctx);
+    finish(ctx, sh, deactivate_code(ctx, args, sh))
 }
 
 pub(crate) fn deactivate_code(ctx: &Ctx, args: &[&str], sh: Sh) -> Output {
@@ -146,7 +179,13 @@ pub(crate) fn deactivate_code(ctx: &Ctx, args: &[&str], sh: Sh) -> Output {
         Sh::Posix => o.stdout.push_str(TAIL_POSIX),
         Sh::Fish => o.stdout.push_str(TAIL_FISH),
         Sh::Pwsh => o.stdout.push_str(TAIL_PWSH),
-        Sh::Cmd => o.out("set \"PROMPT=%_OLD_VIRTUAL_PROMPT%\""),
+        Sh::Cmd => {
+            let old = var("_OLD_VIRTUAL_PROMPT");
+            if !old.is_empty() {
+                o.out(format!("set \"PROMPT={old}\""));
+                o.out("set \"_OLD_VIRTUAL_PROMPT=\"");
+            }
+        }
     }
     o
 }
@@ -167,7 +206,17 @@ fn env_prefix(ctx: &Ctx, name: &str) -> PathBuf {
 }
 
 pub fn sh_activate(ctx: &Ctx, args: &[&str]) -> Output {
+    if ctx.flavor == Flavor::PyenvWin
+        && win_shell().is_none()
+        && args.first() != Some(&"--complete")
+    {
+        return Output::error(NO_SHELL);
+    }
     let sh = shell(ctx);
+    finish(ctx, sh, activate_code(ctx, args, sh))
+}
+
+fn activate_code(ctx: &Ctx, args: &[&str], sh: Sh) -> Output {
     let (mut force, mut quiet, mut verbose) = (false, false, false);
     let mut i = 0;
     while i < args.len() {
@@ -257,7 +306,14 @@ pub fn sh_activate(ctx: &Ctx, args: &[&str]) -> Output {
     }
     let prefix = env_prefix(ctx, &venv_name);
     let p = prefix.display().to_string();
-    if virtual_env == p && !force {
+    // Git Bash and fish on Windows keep paths in MSYS form, as venv's own bash `activate`
+    // does (Decision 6).
+    let shown = if ctx.flavor == Flavor::PyenvWin && matches!(sh, Sh::Posix | Sh::Fish) {
+        crate::commands::init_win::msys(&prefix)
+    } else {
+        p.clone()
+    };
+    if (virtual_env == p || virtual_env == shown) && !force {
         if !quiet {
             o.err(format!(
                 "pyenv-virtualenv: version `{venv_name}' is already activated"
@@ -266,9 +322,12 @@ pub fn sh_activate(ctx: &Ctx, args: &[&str]) -> Output {
         verdict(&mut o, sh, "true");
         return o;
     }
-    let d = deactivate_code(ctx, &["--force", "--quiet"], sh);
-    o.stdout.push_str(&d.stdout);
-    o.stderr.push_str(&d.stderr);
+    // cmd starts fresh: its deactivate would restore a prompt it never saved.
+    if sh != Sh::Cmd {
+        let d = deactivate_code(ctx, &["--force", "--quiet"], sh);
+        o.stdout.push_str(&d.stdout);
+        o.stderr.push_str(&d.stderr);
+    }
     if verbose {
         o.err(format!("pyenv-virtualenv: activate {venv_name}"));
     }
@@ -280,8 +339,8 @@ pub fn sh_activate(ctx: &Ctx, args: &[&str]) -> Output {
             _ => set(sh, "PYENV_ACTIVATE_SHELL", "1"),
         });
     }
-    o.out(set(sh, "PYENV_VIRTUAL_ENV", &p));
-    o.out(set(sh, "VIRTUAL_ENV", &p));
+    o.out(set(sh, "PYENV_VIRTUAL_ENV", &shown));
+    o.out(set(sh, "VIRTUAL_ENV", &shown));
     let conda = venv::is_conda(&prefix);
     if conda {
         let name = if p.contains("/envs/") {
@@ -322,7 +381,13 @@ pub fn sh_activate(ctx: &Ctx, args: &[&str]) -> Output {
                     ps_literal(&format!("{tag} "))
                 ));
             }
-            Sh::Cmd => o.out(format!("set \"PROMPT={tag} $P$G\"")),
+            Sh::Cmd => {
+                let old = Some(var("PROMPT"))
+                    .filter(|p| !p.is_empty())
+                    .unwrap_or_else(|| "$P$G".into());
+                o.out(format!("set \"_OLD_VIRTUAL_PROMPT={old}\""));
+                o.out(format!("set \"PROMPT={tag} {old}\""));
+            }
         }
     }
     if conda {
@@ -363,6 +428,51 @@ fn needs_shell(cmd: &str) -> Output {
     }
 }
 
+/// Windows without integration (allowlist D-101): the code for the detected shell, or for
+/// every shell, then what to do with it, exit 1 (as `pyenv shell`, D-89).
+fn without_integration(ctx: &Ctx, code: impl Fn(Sh) -> Output) -> Output {
+    let name = shellname::windows_shell(
+        crate::commands::shell_win::parent_image().as_deref(),
+        crate::commands::shell_win::pyenv_shell_var().as_deref(),
+    );
+    let mut o = Output::new();
+    match name {
+        Some(name) => {
+            let family = shellname::family(&name, ctx.flavor);
+            let c = code(sh_of(family));
+            if c.code != 0 {
+                return c;
+            }
+            o.stdout = c.stdout;
+            o.stderr = c.stderr;
+            if family == Family::Cmd {
+                o.err("pyenv: cmd has no shell integration, so nothing was changed: run the commands above.");
+            } else {
+                o.err("pyenv: shell integration is not enabled in this shell, so nothing was changed: run the commands above.");
+                o.err(format!("pyenv: to enable it, see `pyenv init {name}`."));
+            }
+        }
+        None => {
+            for (label, sh) in [
+                ("cmd", Sh::Cmd),
+                ("PowerShell", Sh::Pwsh),
+                ("bash", Sh::Posix),
+                ("fish", Sh::Fish),
+            ] {
+                let c = code(sh);
+                if c.code != 0 {
+                    return c;
+                }
+                for l in c.stdout.lines() {
+                    o.out(format!("{label}: {l}"));
+                }
+            }
+            o.err("pyenv: shell integration is not enabled, so nothing was changed: run the lines for your shell above.");
+        }
+    }
+    o.with_code(1)
+}
+
 pub fn activate(ctx: &Ctx, args: &[&str]) -> Output {
     if args.first() == Some(&"--complete") {
         let mut o = Output::new();
@@ -371,10 +481,16 @@ pub fn activate(ctx: &Ctx, args: &[&str]) -> Output {
             .push_str(&crate::commands::venv::virtualenvs(ctx, &["--bare"]).stdout);
         return o;
     }
+    if ctx.flavor == Flavor::PyenvWin {
+        return without_integration(ctx, |sh| activate_code(ctx, args, sh));
+    }
     needs_shell("activate")
 }
 
-pub fn deactivate(_ctx: &Ctx, _args: &[&str]) -> Output {
+pub fn deactivate(ctx: &Ctx, args: &[&str]) -> Output {
+    if ctx.flavor == Flavor::PyenvWin {
+        return without_integration(ctx, |sh| deactivate_code(ctx, args, sh));
+    }
     needs_shell("deactivate")
 }
 

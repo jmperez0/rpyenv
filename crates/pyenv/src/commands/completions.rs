@@ -125,6 +125,7 @@ pub(crate) const TABLE_PYENV: &[Entry] = &[
 
 /// Windows: rpyenv's own (pyenv-win has none). The options are each pyenv-win command's.
 pub(crate) const TABLE_WIN: &[Entry] = &[
+    e("activate", true, Words(&["--unset"], VirtualenvsBare)),
     e("commands", true, Words(&[], Nothing)),
     e("completions", true, Words(&[], Commands)),
     e("exec", true, Words(&[], ShimsShort)),

@@ -31,7 +31,7 @@ fn msys(p: &std::path::Path) -> String {
     format!("/{}{}", s[..1].to_ascii_lowercase(), &s[2..])
 }
 
-const FUNCTION: &str = "function pyenv {\n  $command = ''\n  $rest = @()\n  if ($args.Count -gt 0) { $command = $args[0]; $rest = @($args | Select-Object -Skip 1) }\n  $pyenv = Get-Command -CommandType Application pyenv -TotalCount 1\n  if ($command -eq 'shell' -and $rest.Count -gt 0 -and $rest[0] -ne '--help') {\n    $shell_cmds = & $pyenv sh-shell @rest\n    if ($LASTEXITCODE -ne 0) { $shell_cmds; return }\n    if ($shell_cmds) { Invoke-Expression ($shell_cmds -join \"`n\") }\n  } elseif ($command -eq '') {\n    & $pyenv\n  } else {\n    & $pyenv $command @rest\n  }\n}\n";
+const FUNCTION: &str = "function pyenv {\n  $command = ''\n  $rest = @()\n  if ($args.Count -gt 0) { $command = $args[0]; $rest = @($args | Select-Object -Skip 1) }\n  $pyenv = Get-Command -CommandType Application pyenv -TotalCount 1\n  if (($command -eq 'shell' -and $rest.Count -gt 0 -and $rest[0] -ne '--help') -or $command -eq 'activate' -or $command -eq 'deactivate') {\n    $shell_cmds = & $pyenv \"sh-$command\" @rest\n    if ($LASTEXITCODE -ne 0) { $shell_cmds; return }\n    if ($shell_cmds) { Invoke-Expression ($shell_cmds -join \"`n\") }\n  } elseif ($command -eq '') {\n    & $pyenv\n  } else {\n    & $pyenv $command @rest\n  }\n}\n";
 
 #[test]
 fn print_mode_for_powershell() {

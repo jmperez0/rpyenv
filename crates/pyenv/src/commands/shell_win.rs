@@ -127,7 +127,7 @@ fn code(family: Family, action: &Action) -> Vec<String> {
     vec![line]
 }
 
-fn parent_image() -> Option<String> {
+pub(crate) fn parent_image() -> Option<String> {
     #[cfg(windows)]
     {
         rpyenv_core::winproc::parent_image_name()
@@ -138,7 +138,7 @@ fn parent_image() -> Option<String> {
     }
 }
 
-fn pyenv_shell_var() -> Option<String> {
+pub(crate) fn pyenv_shell_var() -> Option<String> {
     std::env::var("PYENV_SHELL").ok().filter(|s| !s.is_empty())
 }
 
@@ -186,7 +186,7 @@ pub fn shell(ctx: &Ctx, args: &[&str]) -> Output {
 
 /// The shell `sh-shell` and `sh-rehash` print code for: `PYENV_SHELL`, which `pyenv init`
 /// set in the shell that runs the function, else the parent process.
-fn code_family() -> Option<Family> {
+pub(crate) fn code_family() -> Option<Family> {
     pyenv_shell_var()
         .and_then(|s| shellname::windows_name(&s))
         .or_else(|| shellname::windows_shell(parent_image().as_deref(), None))

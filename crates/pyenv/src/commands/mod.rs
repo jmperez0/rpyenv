@@ -64,6 +64,8 @@ const COMMANDS: &[(&str, Command)] = &[
 
 /// pyenv-win only: its installer commands (`install`, `update`) and the `vname` alias.
 const WIN_ONLY: &[(&str, Command)] = &[
+    ("activate", activate::activate),
+    ("deactivate", activate::deactivate),
     ("init", init_win::init),
     ("install", install_win::install),
     ("uninstall", uninstall_win::uninstall),
