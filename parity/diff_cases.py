@@ -16,6 +16,8 @@ class Case:
     readonly: tuple = ()  # paths made read-only after the fixture is built
     compare: tuple = ()  # paths whose bytes are compared after the run
     executable: tuple = ()  # paths made executable after the fixture is built
+    plugin: bool = False  # Linux: upstream runs with pyenv-virtualenv in root/plugins (diff.py --pyenv-virtualenv)
+    links: tuple = ()  # (path, target) symlinks made after the files; both root/... or work/... places, {v0}/{v1} expand
     allow: tuple = ()  # allowlist rows explaining a difference
 
 
