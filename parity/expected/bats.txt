@@ -13,6 +13,7 @@ latest.bats | sort CPython | D-52 rpyenv resolves versions in-process; the test 
 latest.bats | ignores rolling releases, branch tips, alternative srcs, prereleases, virtualenvs; 't' versions if prefix without 't' | D-52 rpyenv resolves versions in-process; the test stubs pyenv-versions/python-build on PATH
 latest.bats | resolves to a 't' version if prefix has 't' | D-52 rpyenv resolves versions in-process; the test stubs pyenv-versions/python-build on PATH
 prefix.bats | prefix for system in / | D-52 replaces `pyenv-which` on PATH; rpyenv resolves in-process
+pyenv.bats | adds its own libexec and plugin bin dirs to PATH | D-94 rpyenv's built-in links lead a plugin's PATH
 rehash.bats | empty rehash | D-35 rehash keeps its state and template in `shims`
 rehash.bats | rehash in progress | D-35 the lock is `shims/.rehash.lock`
 rehash.bats | removes stale lockfile | D-35 the lock is `shims/.rehash.lock`

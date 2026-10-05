@@ -13,13 +13,13 @@ pub(crate) fn search_path(ctx: &Ctx) -> OsString {
     plugins::dispatch_path(&front(ctx), ctx.path.as_deref(), ctx.flavor)
 }
 
-/// The `PATH` a plugin runs with: the search path's folders, then the built-in links,
-/// made or repaired here.
+/// The `PATH` a plugin runs with: the built-in links (made or repaired here) first, in
+/// upstream's slot for the dispatcher's own libexec, then the search path's folders. So an
+/// old pyenv's `libexec/pyenv-*` scripts next to rpyenv can't answer for a built-in
+/// (allowlist D-94).
 pub(crate) fn run_path(ctx: &Ctx) -> OsString {
-    let mut front = front(ctx);
-    if let Some(links) = builtin_links(ctx) {
-        front.push(links);
-    }
+    let mut front: Vec<PathBuf> = builtin_links(ctx).into_iter().collect();
+    front.extend(self::front(ctx));
     plugins::dispatch_path(&front, ctx.path.as_deref(), ctx.flavor)
 }
 

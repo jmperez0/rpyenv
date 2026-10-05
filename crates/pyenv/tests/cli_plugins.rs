@@ -39,8 +39,9 @@ fn a_plugin_runs_with_the_dispatcher_s_environment() {
         run(&f, &["hello", "a b", "c"]),
         (format!("a b|c|{r}|{w}|{r}/pyenv.d\n"), String::new(), 0)
     );
-    // The plugin folders, then the built-in links, lead PATH. The test binary's install
-    // folder (`target`) has no libexec with `pyenv-*` files, so that one isn't added.
+    // The built-in links lead PATH, as upstream's own libexec does, then the plugin
+    // folders. The test binary's install folder (`target`) has no libexec with `pyenv-*`
+    // files, so that one isn't added.
     plugin(
         &f,
         "path",
@@ -50,9 +51,9 @@ fn a_plugin_runs_with_the_dispatcher_s_environment() {
     );
     let out = run(&f, &["path"]).0;
     let lines: Vec<&str> = out.lines().collect();
-    assert_eq!(lines[0], format!("{r}/plugins/path/bin"), "{out}");
-    assert_eq!(lines[1], format!("{r}/plugins/hello/bin"));
-    assert_eq!(lines[2], format!("{r}/.rpyenv/libexec"));
+    assert_eq!(lines[0], format!("{r}/.rpyenv/libexec"), "{out}");
+    assert_eq!(lines[1], format!("{r}/plugins/path/bin"));
+    assert_eq!(lines[2], format!("{r}/plugins/hello/bin"));
 }
 
 #[test]
@@ -504,4 +505,36 @@ fn a_relative_root_keeps_the_built_ins_reachable() {
         "{}",
         r.stderr
     );
+}
+
+/// rpyenv dropped into an old pyenv clone: that clone's `libexec/pyenv-*` bash scripts
+/// can't answer a plugin's call to a built-in, because the links come first (allowlist D-94).
+#[test]
+fn an_old_pyenv_libexec_cannot_shadow_a_built_in() {
+    let f = Fixture::new();
+    let inst = f.base.join("inst");
+    std::fs::create_dir_all(inst.join("bin")).unwrap();
+    let exe = inst.join("bin/pyenv");
+    std::fs::copy(env!("CARGO_BIN_EXE_pyenv"), &exe).unwrap();
+    let old = inst.join("libexec/pyenv-root");
+    f.file(&old, "#!/bin/sh\necho old-pyenv\n");
+    std::fs::set_permissions(&old, std::fs::Permissions::from_mode(0o755)).unwrap();
+    plugin(&f, "x", "where", "pyenv-root\n");
+    for _ in 0..100 {
+        let o = f.command(&exe, &f.work, &[]).arg("where").output();
+        match o {
+            Ok(o) => {
+                assert_eq!(
+                    String::from_utf8_lossy(&o.stdout),
+                    format!("{}\n", f.root.display())
+                );
+                return;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                std::thread::sleep(std::time::Duration::from_millis(20))
+            }
+            Err(e) => panic!("{e}"),
+        }
+    }
+    panic!("busy");
 }

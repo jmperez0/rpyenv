@@ -248,7 +248,9 @@ pyenv-win's own scripts. A plugin can't shadow a built-in, and a name with a
 path separator is no command. On Linux, existing bash plugins work
 unchanged: when a plugin runs, rpyenv makes (or repairs, or prunes) a
 `pyenv-<cmd>` symlink to itself for each built-in in
-`$PYENV_ROOT/.rpyenv/libexec` and puts that folder on the plugin's `PATH`;
+`$PYENV_ROOT/.rpyenv/libexec` and puts that folder first on the plugin's
+`PATH`, in the slot upstream gives its own libexec, so an old pyenv's
+`libexec/pyenv-*` scripts next to rpyenv never answer for a built-in (D-94);
 run under such a name it acts as `pyenv <cmd>`. Commands that only list or
 look up plugins write nothing. `pyenv hooks` lists hook scripts for plugins
 that source them; rpyenv runs none itself (D4). On Windows, a plugin must be
