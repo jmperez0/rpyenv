@@ -50,7 +50,7 @@ pub(crate) fn parse(args: &[&str]) -> Args {
 
 /// The shell argument, or the one detected from the parent's command line
 /// (libexec/pyenv-init:56-67).
-fn shell_name(given: Option<String>) -> String {
+pub(crate) fn shell_name(given: Option<String>) -> String {
     given.filter(|s| !s.is_empty()).unwrap_or_else(|| {
         #[cfg(unix)]
         let cmdline = shellname::parent_cmdline();

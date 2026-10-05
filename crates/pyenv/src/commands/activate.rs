@@ -6,6 +6,7 @@
 use crate::commands::shell_win::ps_literal;
 use crate::output::Output;
 use rpyenv_core::ctx::Ctx;
+use rpyenv_core::flavor::Flavor;
 use rpyenv_core::shellname::{self, Family};
 use rpyenv_core::venv;
 use std::path::{Path, PathBuf};
@@ -375,4 +376,184 @@ pub fn activate(ctx: &Ctx, args: &[&str]) -> Output {
 
 pub fn deactivate(_ctx: &Ctx, _args: &[&str]) -> Output {
     needs_shell("deactivate")
+}
+
+/// GNU `stat` (`_stat_fmt` in bin/pyenv-virtualenv-init:13-17); rpyenv's Linux flavor is GNU.
+const STAT_FMT: &str = "-L -c %Y";
+
+/// bin/pyenv-virtualenv-init:186-247 (bash and zsh), `{STAT}` for the stat format. The cache
+/// parts are left out when `pyenv hooks version-name` lists hooks, as upstream does.
+const POSIX_HEAD: &str = "_pyenv_virtualenv_hook() {\n  local ret=$?\n";
+const POSIX_CACHE_CHECK: &str = r#"  if [ "${PYENV_VERSION-}" = "${_PYENV_VH_VERSION-}" ] \
+    && [ "${VIRTUAL_ENV-}" = "${_PYENV_VH_VENV-}" ]; then
+    if [ -n "${PYENV_VERSION-}" ]; then
+      return $ret
+    fi
+    if [ "${PWD}" = "${_PYENV_VH_PWD-}" ] \
+      && [ "$(stat {STAT} "${_PYENV_VH_PATHS[@]}" 2>/dev/null)" = "${_PYENV_VH_MTIMES-}" ]; then
+      return $ret
+    fi
+  fi
+"#;
+const POSIX_EVAL: &str = r#"  if [ -n "${VIRTUAL_ENV-}" ]; then
+    eval "$(pyenv sh-activate --quiet || pyenv sh-deactivate --quiet || true)" || true
+  else
+    eval "$(pyenv sh-activate --quiet || true)" || true
+  fi
+"#;
+const POSIX_CACHE_SAVE: &str = "  _PYENV_VH_PWD=\"${PWD}\"\n  _PYENV_VH_VERSION=\"${PYENV_VERSION-}\"\n  _PYENV_VH_VENV=\"${VIRTUAL_ENV-}\"\n  local _pvh_d=\"${PWD}\" _pvh_found_local=0\n  _PYENV_VH_PATHS=()\n  while :; do\n    if [ -f \"${_pvh_d}/.python-version\" ] || [ -L \"${_pvh_d}/.python-version\" ]; then\n      _PYENV_VH_PATHS+=(\"${_pvh_d}/.python-version\")\n      if [ -f \"${_pvh_d}/.python-version\" ]; then \n        _pvh_found_local=1\n        break\n      fi\n    else\n      _PYENV_VH_PATHS+=(\"${_pvh_d}\")\n    fi\n    [ \"${_pvh_d}\" = \"/\" ] && break\n    _pvh_d=\"${_pvh_d%/*}\"\n    [ -z \"${_pvh_d}\" ] && _pvh_d=\"/\"\n  done\n  if [ \"${_pvh_found_local}\" = \"0\" ]; then\n    _PYENV_VH_PATHS+=(\"${PYENV_ROOT}/version\")\n  fi\n  _PYENV_VH_MTIMES=\"$(stat {STAT} \"${_PYENV_VH_PATHS[@]}\" 2>/dev/null)\"\n";
+const POSIX_TAIL: &str = "  return $ret\n};\n";
+
+/// bin/pyenv-virtualenv-init:121-184 (fish).
+const FISH_HEAD: &str =
+    "function _pyenv_virtualenv_hook --on-event fish_prompt;\n  set -l ret $status\n";
+const FISH_CACHE_CHECK: &str = r#"  if test "$PYENV_VERSION" = "$_PYENV_VH_VERSION" \
+    -a "$VIRTUAL_ENV" = "$_PYENV_VH_VENV"
+    if test -n "$PYENV_VERSION"
+      return $ret
+    end
+    if test "$PWD" = "$_PYENV_VH_PWD" \
+      -a "(stat {STAT} $_PYENV_VH_PATHS 2>/dev/null)" = "$_PYENV_VH_MTIMES"
+      return $ret
+    end
+  end
+"#;
+const FISH_EVAL: &str = "  if [ -n \"$VIRTUAL_ENV\" ]\n    pyenv activate --quiet; or pyenv deactivate --quiet; or true\n  else\n    pyenv activate --quiet; or true\n  end\n";
+const FISH_CACHE_SAVE: &str = "  set -g _PYENV_VH_PWD \"$PWD\"\n  set -g _PYENV_VH_VERSION \"$PYENV_VERSION\"\n  set -g _PYENV_VH_VENV \"$VIRTUAL_ENV\"\n  set -l d \"$PWD\"\n  set -l _pvh_found_local 0\n  set -g _PYENV_VH_PATHS\n  while true\n    if test -f \"$d/.python-version\"; or test -L \"$d/.python-version\"\n      set -g _PYENV_VH_PATHS $_PYENV_VH_PATHS \"$d/.python-version\"\n      if test -f \"$d/.python-version\" \n        set _pvh_found_local 1\n        break\n      end\n    else\n      set -g _PYENV_VH_PATHS $_PYENV_VH_PATHS \"$d\"\n    end\n    test \"$d\" = \"/\"; and break\n    set d (string replace -r '/[^/]*$' '' -- \"$d\")\n    test -z \"$d\"; and set d \"/\"\n  end\n  if test \"$_pvh_found_local\" = \"0\"\n    set -g _PYENV_VH_PATHS $_PYENV_VH_PATHS \"$PYENV_ROOT/version\"\n  end\n  set -g _PYENV_VH_MTIMES (stat {STAT} $_PYENV_VH_PATHS 2>/dev/null)\n";
+const FISH_TAIL: &str = "  return $ret\nend\n";
+
+const BASH_REGISTER: &str = "if ! [[ \"${PROMPT_COMMAND-}\" =~ _pyenv_virtualenv_hook ]]; then\n  PROMPT_COMMAND=\"_pyenv_virtualenv_hook;${PROMPT_COMMAND-}\"\nfi\n";
+const ZSH_REGISTER: &str = "typeset -g -a precmd_functions\nif [[ -z $precmd_functions[(r)_pyenv_virtualenv_hook] ]]; then\n  precmd_functions=(_pyenv_virtualenv_hook $precmd_functions);\nfi\n";
+
+/// shims/activate and shims/deactivate of v1.4.0: `source activate <env>` helpers.
+const SHIM_ACTIVATE: &str = "#!/usr/bin/env bash\nif [[ \"$0\" != \"${BASH_SOURCE}\" ]]; then\n  eval \"$(pyenv sh-activate --verbose \"$@\" || true)\"\nelse\n  echo \"pyenv-virtualenv: activate must be sourced. Run 'source activate envname' instead of 'activate envname'\" 1>&2\n  false\nfi\n";
+const SHIM_DEACTIVATE: &str = "#!/usr/bin/env bash\nif [[ \"$0\" != \"${BASH_SOURCE}\" ]]; then\n  eval \"$(pyenv sh-deactivate --verbose \"$@\" || true)\"\nelse\n  echo \"pyenv-virtualenv: deactivate must be sourced. Run 'source deactivate' instead of 'deactivate'\" 1>&2\n  false\nfi\n";
+
+fn hook(head: &str, check: &str, eval: &str, save: &str, tail: &str, cached: bool) -> String {
+    let mut s = head.to_string();
+    if cached {
+        s.push_str(&check.replace("{STAT}", STAT_FMT));
+    }
+    s.push_str(eval);
+    if cached {
+        s.push_str(&save.replace("{STAT}", STAT_FMT));
+    }
+    s.push_str(tail);
+    s
+}
+
+/// The folder `virtualenv-init` puts first on `PATH` (allowlist D-102):
+/// `$PYENV_VIRTUALENV_ROOT/shims` when set (nothing is written there), else
+/// `<root>/.rpyenv/virtualenv/shims`, whose two helpers are written when missing, and never
+/// through a symlinked `.rpyenv` or `virtualenv` folder (M4a's rule for rpyenv's own files).
+fn helper_shims(ctx: &Ctx) -> PathBuf {
+    if let Some(r) = std::env::var_os("PYENV_VIRTUALENV_ROOT").filter(|v| !v.is_empty()) {
+        return PathBuf::from(r).join("shims");
+    }
+    let own = ctx.root.join(".rpyenv");
+    let venv_dir = own.join("virtualenv");
+    let shims = venv_dir.join("shims");
+    let linked = |p: &Path| std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_symlink());
+    if linked(&own) || linked(&venv_dir) || linked(&shims) {
+        return shims;
+    }
+    if std::fs::create_dir_all(&shims).is_ok() {
+        for (name, body) in [("activate", SHIM_ACTIVATE), ("deactivate", SHIM_DEACTIVATE)] {
+            let p = shims.join(name);
+            if std::fs::symlink_metadata(&p).is_err() && std::fs::write(&p, body).is_ok() {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755));
+                }
+            }
+        }
+    }
+    shims
+}
+
+/// `virtualenv-init [-] [<shell>]` (reference "pyenv virtualenv-init"). Windows: nothing
+/// (allowlist D-101).
+pub fn virtualenv_init(ctx: &Ctx, args: &[&str]) -> Output {
+    if ctx.flavor == Flavor::PyenvWin {
+        return Output::new();
+    }
+    // Each `-` sets print mode and shifts away the first remaining argument, whichever it is.
+    let mut rest: Vec<&str> = args.to_vec();
+    let mut print = false;
+    for a in args {
+        if *a == "-" {
+            print = true;
+            if !rest.is_empty() {
+                rest.remove(0);
+            }
+        }
+    }
+    let shell = rest
+        .first()
+        .map(|s| s.to_string())
+        .or_else(|| std::env::var("PYENV_SHELL").ok().filter(|s| !s.is_empty()))
+        .unwrap_or_else(|| crate::commands::init::shell_name(None));
+    if !print {
+        let profile = match shell.as_str() {
+            "bash" => "~/.bashrc",
+            "zsh" => "~/.zshrc",
+            "ksh" => "~/.profile",
+            "fish" => "~/.config/fish/config.fish",
+            _ => "your profile",
+        };
+        let line = if shell == "fish" {
+            "status --is-interactive; and source (pyenv virtualenv-init -|psub)"
+        } else {
+            "eval \"$(pyenv virtualenv-init -)\""
+        };
+        return Output {
+            stderr: format!(
+                "# Load pyenv-virtualenv automatically by adding\n# the following to {profile}:\n\n{line}\n\n"
+            ),
+            code: 1,
+            ..Output::new()
+        };
+    }
+    let shims = helper_shims(ctx);
+    let s = shims.display();
+    let mut o = Output::new();
+    if shell == "fish" {
+        o.stdout.push_str(&format!(
+            "while set index (contains -i -- \"{s}\" $PATH)\nset -eg PATH[$index]; end; set -e index\nset -gx PATH '{s}' $PATH;\nset -gx PYENV_VIRTUALENV_INIT 1;\n"
+        ));
+    } else {
+        o.out(format!("export PATH=\"{s}:${{PATH}}\";"));
+        o.out("export PYENV_VIRTUALENV_INIT=1;");
+    }
+    let cached = crate::commands::misc::hooks(ctx, &["version-name"])
+        .stdout
+        .is_empty();
+    match shell.as_str() {
+        "bash" | "zsh" => {
+            o.stdout.push_str(&hook(
+                POSIX_HEAD,
+                POSIX_CACHE_CHECK,
+                POSIX_EVAL,
+                POSIX_CACHE_SAVE,
+                POSIX_TAIL,
+                cached,
+            ));
+            o.stdout.push_str(if shell == "bash" {
+                BASH_REGISTER
+            } else {
+                ZSH_REGISTER
+            });
+        }
+        "fish" => o.stdout.push_str(&hook(
+            FISH_HEAD,
+            FISH_CACHE_CHECK,
+            FISH_EVAL,
+            FISH_CACHE_SAVE,
+            FISH_TAIL,
+            cached,
+        )),
+        _ => {}
+    }
+    o
 }

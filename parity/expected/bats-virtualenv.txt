@@ -28,14 +28,6 @@ envs.bats | path should be handled properly even if there is 'envs' in PYENV_ROO
 hooks.bats | pyenv-virtualenv hooks | M4b not built yet
 hooks.bats | pyenv-sh-activate hooks | M4b not built yet
 hooks.bats | deactivate virtualenv | M4b not built yet
-init.bats | detect parent shell | M4b not built yet
-init.bats | detect parent shell from script (bash) | M4b not built yet
-init.bats | fish instructions | M4b not built yet
-init.bats | other shells instructions | M4b not built yet
-init.bats | outputs bash-specific syntax | M4b not built yet
-init.bats | outputs fish-specific syntax | M4b not built yet
-init.bats | outputs zsh-specific syntax | M4b not built yet
-init.bats | outputs other shells syntax | M4b not built yet
 pip.bats | install pip with ensurepip | M4b not built yet
 pip.bats | install pip without using ensurepip | M4b not built yet
 prefix.bats | resolves a version that is not an exact match | M4b not built yet
