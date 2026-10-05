@@ -13,7 +13,6 @@ pub mod msi;
 pub mod openpgp;
 #[cfg(unix)]
 pub mod preflight;
-#[cfg(unix)]
 mod reply;
 pub mod txn;
 #[cfg(unix)]
@@ -23,7 +22,6 @@ pub mod winpkg;
 pub mod winsource;
 pub mod zipx;
 
-#[cfg(unix)]
 pub use reply::{prompt, Reply};
 
 use std::ffi::OsStr;
