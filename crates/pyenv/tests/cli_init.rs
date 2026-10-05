@@ -135,7 +135,7 @@ pyenv() {{
   local command=${{1:-}}
   [ "$#" -gt 0 ] && shift
   case "$command" in
-  rehash|shell)
+  activate|deactivate|rehash|shell)
     eval "$(pyenv "sh-$command" "$@")"
     ;;
   *)
@@ -155,11 +155,11 @@ fn print_mode_for_fish_and_pwsh() {
     let r = root(&f);
     assert_eq!(
         init(&f, &["-", "fish", "--no-rehash"], &[]).0,
-        format!("while set pyenv_index (contains -i -- \"{r}/shims\" $PATH)\nset -eg PATH[$pyenv_index]; end; set -e pyenv_index\nset -gx PATH '{r}/shims' $PATH\nset -gx PYENV_SHELL fish\nfunction pyenv\n  set command $argv[1]\n  set -e argv[1]\n\n  switch \"$command\"\n  case rehash shell\n    source (pyenv \"sh-$command\" $argv|psub)\n  case \"*\"\n    command pyenv \"$command\" $argv\n  end\nend\n")
+        format!("while set pyenv_index (contains -i -- \"{r}/shims\" $PATH)\nset -eg PATH[$pyenv_index]; end; set -e pyenv_index\nset -gx PATH '{r}/shims' $PATH\nset -gx PYENV_SHELL fish\nfunction pyenv\n  set command $argv[1]\n  set -e argv[1]\n\n  switch \"$command\"\n  case activate deactivate rehash shell\n    source (pyenv \"sh-$command\" $argv|psub)\n  case \"*\"\n    command pyenv \"$command\" $argv\n  end\nend\n")
     );
     assert_eq!(
         init(&f, &["-", "pwsh"], &[]).0,
-        format!("$Env:PATH=\"$(($Env:PATH -split ':' | where {{ -not ($_ -match '{r}/shims') }}) -join ':')\"\n$Env:PATH=\"{r}/shims:$Env:PATH\"\n$Env:PYENV_SHELL=\"pwsh\"\n& pyenv rehash\nfunction pyenv {{\n  $command=\"\"\n  if ( $args.Count -gt 0 ) {{\n    $command, $args = $args\n  }}\n\n  if ( (\"rehash shell\" -split ' ') -contains $command ) {{\n    $shell_cmds = (& (get-command -commandtype application pyenv -totalcount 1) sh-$command $args)\n    if ( $shell_cmds.Count -gt 0 ) {{\n      iex ($shell_cmds -join \"`n\")\n    }}\n  }} else {{\n    & (get-command -commandtype application pyenv -totalcount 1) $command $args\n  }}\n}}\n")
+        format!("$Env:PATH=\"$(($Env:PATH -split ':' | where {{ -not ($_ -match '{r}/shims') }}) -join ':')\"\n$Env:PATH=\"{r}/shims:$Env:PATH\"\n$Env:PYENV_SHELL=\"pwsh\"\n& pyenv rehash\nfunction pyenv {{\n  $command=\"\"\n  if ( $args.Count -gt 0 ) {{\n    $command, $args = $args\n  }}\n\n  if ( (\"activate deactivate rehash shell\" -split ' ') -contains $command ) {{\n    $shell_cmds = (& (get-command -commandtype application pyenv -totalcount 1) sh-$command $args)\n    if ( $shell_cmds.Count -gt 0 ) {{\n      iex ($shell_cmds -join \"`n\")\n    }}\n  }} else {{\n    & (get-command -commandtype application pyenv -totalcount 1) $command $args\n  }}\n}}\n")
     );
 }
 

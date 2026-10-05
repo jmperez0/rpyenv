@@ -191,12 +191,12 @@ fn help_for_a_plugin_reads_its_comment_block() {
 fn commands_completions_and_init_include_plugins() {
     let f = Fixture::new();
     plugin(&f, "x", "hello", "# provide pyenv completions\nif [ \"$1\" = --complete ]; then shift; for a; do echo \"$a\"; done; fi\n");
-    plugin(&f, "x", "sh-activate", "echo :\n");
+    plugin(&f, "x", "sh-plugged", "echo :\n");
     let commands = run(&f, &["commands"]).0;
-    assert!(commands.lines().any(|l| l == "hello") && commands.lines().any(|l| l == "activate"));
+    assert!(commands.lines().any(|l| l == "hello") && commands.lines().any(|l| l == "plugged"));
     assert_eq!(
         run(&f, &["commands", "--sh"]).0,
-        "activate\nrehash\nshell\n"
+        "activate\ndeactivate\nplugged\nrehash\nshell\n"
     );
     assert_eq!(
         run(&f, &["completions", "hello", "happy", "world"]).0,
@@ -205,7 +205,7 @@ fn commands_completions_and_init_include_plugins() {
     // Decision 7: plugin sh-* commands join the routed set.
     assert!(run(&f, &["init", "-", "bash"])
         .0
-        .contains("\n  activate|rehash|shell)\n"));
+        .contains("\n  activate|deactivate|plugged|rehash|shell)\n"));
 }
 
 /// Review focus 4, corrected by probing upstream: bash's `command -v` falls back to a
@@ -262,17 +262,17 @@ fn a_plugin_can_list_hooks_by_name() {
     plugin(
         &f,
         "venv",
-        "sh-activate",
+        "sh-hooked",
         "set -e\nIFS='\n' scripts=(`pyenv-hooks activate`)\necho ok\n",
     );
     // bash arrays: run the plugin under bash, as pyenv-virtualenv does.
-    let p = f.root.join("plugins/venv/bin/pyenv-sh-activate");
+    let p = f.root.join("plugins/venv/bin/pyenv-sh-hooked");
     let body = std::fs::read_to_string(&p)
         .unwrap()
         .replacen("#!/bin/sh", "#!/bin/bash", 1);
     std::fs::write(&p, body).unwrap();
     assert_eq!(
-        run(&f, &["sh-activate"]),
+        run(&f, &["sh-hooked"]),
         ("ok\n".to_string(), String::new(), 0)
     );
     let hooks = f.base.join("my hooks");

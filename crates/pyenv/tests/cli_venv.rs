@@ -489,3 +489,140 @@ fn uninstall_cascades() {
         );
     }
 }
+
+fn bash(f: &Fixture, args: &[&str], env: &[(&str, &str)]) -> (String, String, i32) {
+    let mut e = vec![("PYENV_SHELL", "bash")];
+    e.extend_from_slice(env);
+    run_env(f, args, &e)
+}
+
+const DEACTIVATE_TAIL: &str = "if [ -n \"${_OLD_VIRTUAL_PATH:-}\" ]; then\n  export PATH=\"${_OLD_VIRTUAL_PATH}\";\n  unset _OLD_VIRTUAL_PATH;\nfi;\nif [ -n \"${_OLD_VIRTUAL_PYTHONHOME:-}\" ]; then\n  export PYTHONHOME=\"${_OLD_VIRTUAL_PYTHONHOME}\";\n  unset _OLD_VIRTUAL_PYTHONHOME;\nfi;\nif [ -n \"${_OLD_VIRTUAL_PS1:-}\" ]; then\n  export PS1=\"${_OLD_VIRTUAL_PS1}\";\n  unset _OLD_VIRTUAL_PS1;\nfi;\nif declare -f deactivate 1>/dev/null 2>&1; then\n  unset -f deactivate;\nfi;\n";
+
+#[test]
+fn sh_activate_prints_upstream_s_posix_code() {
+    let f = Fixture::new();
+    let e = make_env(&f, "3.12.1", "venv1", false);
+    let p = e.display();
+    let (out, err, code) = bash(&f, &["sh-activate", "venv1"], &[]);
+    assert_eq!((err.as_str(), code), ("", 0));
+    assert_eq!(out, format!(
+        "unset PYENV_VIRTUAL_ENV;\nunset VIRTUAL_ENV;\n{DEACTIVATE_TAIL}export PYENV_VERSION=\"venv1\";\nexport PYENV_ACTIVATE_SHELL=1;\nexport PYENV_VIRTUAL_ENV=\"{p}\";\nexport VIRTUAL_ENV=\"{p}\";\nexport _OLD_VIRTUAL_PS1=\"${{PS1:-}}\";\nexport PS1=\"(venv1) ${{PS1:-}}\";\n"
+    ));
+}
+
+#[test]
+fn sh_activate_refusals() {
+    let f = Fixture::new();
+    let e = make_env(&f, "3.12.1", "venv1", false);
+    make_env(&f, "3.12.1", "venv2", false);
+    assert_eq!(
+        bash(&f, &["sh-activate", "3.12.1"], &[]),
+        (
+            "false\n".into(),
+            "pyenv-virtualenv: version `3.12.1' is not a virtualenv\n".into(),
+            1
+        )
+    );
+    assert_eq!(
+        bash(&f, &["sh-activate", "--quiet", "3.12.1"], &[]),
+        ("false\n".into(), String::new(), 1)
+    );
+    assert_eq!(
+        bash(&f, &["sh-activate", "venv1", "venv2"], &[]).1,
+        "pyenv-virtualenv: cannot activate multiple versions at once: venv1 venv2\n"
+    );
+    assert_eq!(
+        bash(
+            &f,
+            &["sh-activate", "venv1"],
+            &[("VIRTUAL_ENV", "/opt/other")]
+        ),
+        (
+            "true\n".into(),
+            "pyenv-virtualenv: virtualenv `/opt/other' is already activated\n".into(),
+            0
+        )
+    );
+    let p = e.display().to_string();
+    assert_eq!(
+        bash(
+            &f,
+            &["sh-activate", "venv1"],
+            &[("VIRTUAL_ENV", &p), ("PYENV_VIRTUAL_ENV", &p)]
+        ),
+        (
+            "true\n".into(),
+            "pyenv-virtualenv: version `venv1' is already activated\n".into(),
+            0
+        )
+    );
+}
+
+#[test]
+fn sh_deactivate_as_upstream() {
+    let f = Fixture::new();
+    assert_eq!(
+        bash(&f, &["sh-deactivate"], &[]),
+        (
+            "false\n".into(),
+            "pyenv-virtualenv: no virtualenv has been activated.\n".into(),
+            1
+        )
+    );
+    let (out, _, code) = bash(
+        &f,
+        &["sh-deactivate"],
+        &[("VIRTUAL_ENV", "/opt/other"), ("PYENV_ACTIVATE_SHELL", "1")],
+    );
+    assert_eq!(code, 0);
+    assert_eq!(out, format!("unset PYENV_VERSION;\nunset PYENV_ACTIVATE_SHELL;\nunset PYENV_VIRTUAL_ENV;\nunset VIRTUAL_ENV;\n{DEACTIVATE_TAIL}"));
+}
+
+#[test]
+fn activate_without_the_shell_function() {
+    let f = Fixture::new();
+    assert_eq!(run(&f, &["activate", "venv1"]),
+               (String::new(), "\u{1b}[31;1m\n`pyenv activate' requires Pyenv and Pyenv-Virtualenv to be loaded into your shell.\nCheck your shell configuration and Pyenv and Pyenv-Virtualenv installation instructions.\n\n\u{1b}[0m".into(), 1));
+    make_env(&f, "3.12.1", "venv1", false);
+    assert_eq!(
+        run(&f, &["completions", "activate"]).0,
+        "--help\n--unset\n3.12.1/envs/venv1\nvenv1\n"
+    );
+}
+
+/// allowlist D-100: pwsh gets PowerShell, every value through ps_literal (review focus 5).
+#[test]
+fn pwsh_gets_powershell() {
+    let f = Fixture::new();
+    make_env(&f, "3.12.1", "v ñ", false);
+    let (out, _, code) = run_env(&f, &["sh-activate", "v ñ"], &[("PYENV_SHELL", "pwsh")]);
+    assert_eq!(code, 0);
+    assert!(out.contains("$Env:VIRTUAL_ENV = "), "{out}");
+    assert!(out.is_ascii(), "{out}");
+    assert!(!out.contains("export "), "{out}");
+}
+
+/// A selected version that isn't installed stops the command with core's message, as upstream's
+/// `pyenv-version-name` does under `set -e` (found while running the venv bats, Task 5).
+#[test]
+fn a_missing_current_version_is_reported_as_such() {
+    let f = Fixture::new();
+    let core = run_env(&f, &["version-name"], &[("PYENV_VERSION", "nosuch")]).1;
+    assert!(core.contains("nosuch"), "{core}");
+    for args in [
+        &["sh-activate"][..],
+        &["virtualenv-prefix"],
+        &["virtualenv", "v"],
+    ] {
+        let (out, err, code) = run_env(
+            &f,
+            args,
+            &[("PYENV_VERSION", "nosuch"), ("PYENV_SHELL", "bash")],
+        );
+        assert_eq!(
+            (out.as_str(), err.as_str(), code),
+            ("", core.as_str(), 1),
+            "{args:?}"
+        );
+    }
+}

@@ -40,6 +40,10 @@ const SHELL_HELP: &str = "Usage: pyenv shell <version>...\n       pyenv shell -\
 const PYENV: &[Topic] = &[
     topic("--version", Some("Display the version of pyenv"), None,
         "Usage: pyenv --version\n\nDisplays the version number of this pyenv release, including the\ncurrent revision from git, if available.\n\nThe format of the git revision is:\n  <version>-<num_commits>-<git_sha>\nwhere `num_commits` is the number of commits since `version` was\ntagged.\n\n"),
+    topic("activate", Some("Activate virtual environment"), Some("Usage: pyenv activate <virtualenv>\n       pyenv activate --unset"),
+        "Usage: pyenv activate <virtualenv>\n       pyenv activate --unset\n\nActivate a Python virtualenv environment in current shell.\nThis acts almost as same as `pyenv shell`, but this invokes the `activate`\nscript in your shell.\n\n<virtualenv> should be a string matching a Python version known to pyenv.\n\n"),
+    topic("deactivate", Some("Deactivate virtual environment"), Some("Usage: pyenv deactivate"),
+        "Usage: pyenv deactivate\n\nDeactivate a Python virtual environment.\n\n"),
     topic("commands", Some("List all available pyenv commands"), Some("Usage: pyenv commands [--sh|--no-sh]"),
         "Usage: pyenv commands [--sh|--no-sh]\n\nList all available pyenv commands\n\n"),
     topic("completions", None, Some("Usage: pyenv completions <command> [arg1 arg2...]"),
@@ -99,6 +103,10 @@ const PYENV: &[Topic] = &[
         "Usage: pyenv virtualenv-prefix [<virtualenv>]\n\nDisplay real_prefix for a Python virtualenv version\n\n"),
     topic("virtualenvs", Some("List all Python virtualenvs found in `$PYENV_ROOT/versions/*'."), Some("Usage: pyenv virtualenvs [--bare] [--skip-aliases]"),
         "Usage: pyenv virtualenvs [--bare] [--skip-aliases]\n\nList all virtualenvs found in `$PYENV_ROOT/versions/*' and its `$PYENV_ROOT/versions/envs/*'.\n\n"),
+    topic("sh-activate", None, Some("Usage: pyenv activate <virtualenv>\n       pyenv activate --unset"),
+        "Usage: pyenv activate <virtualenv>\n       pyenv activate --unset\n\nActivate a Python virtualenv environment in current shell.\nThis acts almost as same as `pyenv shell`, but this invokes the `activate`\nscript in your shell.\n\n<virtualenv> should be a string matching a Python version known to pyenv.\n\n"),
+    topic("sh-deactivate", None, Some("Usage: pyenv deactivate"),
+        "Usage: pyenv deactivate\n\nDeactivate a Python virtual environment.\n\n"),
     topic("which", Some("Display the full path to an executable"), Some("Usage: pyenv which <command> [--nosystem] [--skip-advice]"),
         "Usage: pyenv which <command> [--nosystem] [--skip-advice]\n\nDisplays the full path to the executable that pyenv will invoke when\nyou run the given command.\nUse --nosystem argument in case when you don't need to search command in the \nsystem environment.\nInternal switch --skip-advice used to skip printing an error message on a\nfailed search.\n\n"),
 ];
@@ -107,6 +115,10 @@ const PYENV: &[Topic] = &[
 const PYENV_WIN: &[Topic] = &[
     topic("--version", None, None,
         "Usage: pyenv --version\n\nDisplays the version number of this pyenv release, including the\ncurrent revision from git, if available.\n\nThe format of the git revision is:\n  <major_version>-<train>-<minor_version>\nwhere `num_commits` is the number of commits since `minor_version` was\ntagged.\n\n"),
+    topic("activate", Some("Activate virtual environment"), Some("Usage: pyenv activate <virtualenv>\n       pyenv activate --unset"),
+        "Usage: pyenv activate <virtualenv>\n       pyenv activate --unset\n\nActivate a Python virtualenv environment in current shell.\nThis acts almost as same as `pyenv shell`, but this invokes the `activate`\nscript in your shell.\n\n<virtualenv> should be a string matching a Python version known to pyenv.\n\n"),
+    topic("deactivate", Some("Deactivate virtual environment"), Some("Usage: pyenv deactivate"),
+        "Usage: pyenv deactivate\n\nDeactivate a Python virtual environment.\n\n"),
     topic("commands", None, None, "Usage: pyenv commands\n\nList all available pyenv commands\n\n"),
     topic("exec", None, None,
         "Usage: pyenv exec <command> [arg1 arg2...]\n\nRuns an executable by first preparing PATH so that the selected Python\nversion's `bin' directory is at the front.\n \nFor example, if the currently selected Python version is 3.5.3:\n  pyenv exec pip install -r requirements.txt\n \nis equivalent to:\n  PATH=\"$PYENV_ROOT/versions/3.5.3/bin:$PATH\" pip install -r requirements.txt\n\n"),
@@ -138,6 +150,10 @@ const PYENV_WIN: &[Topic] = &[
         "Usage: pyenv virtualenv-prefix [<virtualenv>]\n\nDisplay real_prefix for a Python virtualenv version\n\n"),
     topic("virtualenvs", Some("List all Python virtualenvs found in `$PYENV_ROOT/versions/*'."), Some("Usage: pyenv virtualenvs [--bare] [--skip-aliases]"),
         "Usage: pyenv virtualenvs [--bare] [--skip-aliases]\n\nList all virtualenvs found in `$PYENV_ROOT/versions/*' and its `$PYENV_ROOT/versions/envs/*'.\n\n"),
+    topic("sh-activate", None, Some("Usage: pyenv activate <virtualenv>\n       pyenv activate --unset"),
+        "Usage: pyenv activate <virtualenv>\n       pyenv activate --unset\n\nActivate a Python virtualenv environment in current shell.\nThis acts almost as same as `pyenv shell`, but this invokes the `activate`\nscript in your shell.\n\n<virtualenv> should be a string matching a Python version known to pyenv.\n\n"),
+    topic("sh-deactivate", None, Some("Usage: pyenv deactivate"),
+        "Usage: pyenv deactivate\n\nDeactivate a Python virtual environment.\n\n"),
     topic("which", None, None,
         "Usage: pyenv which <command>\n\nShows the full path of the executable\nselected. To obtain the full path, use `pyenv which pip'.\n"),
 ];

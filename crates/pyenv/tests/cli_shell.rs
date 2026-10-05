@@ -211,7 +211,10 @@ fn shell_without_integration_and_help() {
 #[test]
 fn commands_lists_sh_commands_by_their_short_name() {
     let f = Fixture::new();
-    assert_eq!(run(&f, &["commands", "--sh"], &[]), out("rehash\nshell\n"));
+    assert_eq!(
+        run(&f, &["commands", "--sh"], &[]),
+        out("activate\ndeactivate\nrehash\nshell\n")
+    );
     let all = run(&f, &["commands"], &[]).0;
     assert_eq!(all.lines().filter(|l| *l == "shell").count(), 1);
     assert_eq!(all.lines().filter(|l| *l == "rehash").count(), 1);

@@ -12,14 +12,8 @@ activate.bats | activate virtualenv from command-line argument (without pyenv-vi
 activate.bats | activate virtualenv from command-line argument (fish) | M4b not built yet
 activate.bats | activate virtualenv from command-line argument (fish) (without pyenv-virtualenv-init) | M4b not built yet
 activate.bats | unset invokes deactivate | M4b not built yet
-activate.bats | should fail if the version is not a virtualenv | M4b not built yet
-activate.bats | should fail if the version is not a virtualenv (quiet) | M4b not built yet
 activate.bats | should fail if there are multiple versions | M4b not built yet
-activate.bats | should fail if there are multiple virtualenvs (quiet) | M4b not built yet
-activate.bats | should fail if the first version is not a virtualenv | M4b not built yet
 activate.bats | activate if the first virtualenv is a virtualenv | M4b not built yet
-activate.bats | do nothing if a 3rd-party virtualenv is active | M4b not built yet
-activate.bats | do nothing if a 3rd-party virtualenv is active over ours | M4b not built yet
 conda-activate.bats | activate conda root from current version | M4b not built yet
 conda-activate.bats | activate conda root from current version with custom prompt | M4b not built yet
 conda-activate.bats | activate conda root from current version (fish) | M4b not built yet
@@ -29,20 +23,6 @@ conda-activate.bats | activate conda env from command-line argument | M4b not bu
 conda.bats | create virtualenv by conda create | M4b not built yet
 conda.bats | create virtualenv by conda create with -p | M4b not built yet
 conda.bats | create virtualenv by conda create with --python | M4b not built yet
-conda-deactivate.bats | deactivate conda root | M4b not built yet
-conda-deactivate.bats | deactivate conda root (fish) | M4b not built yet
-conda-deactivate.bats | deactivate conda env | M4b not built yet
-deactivate.bats | deactivate virtualenv | M4b not built yet
-deactivate.bats | deactivate virtualenv (quiet) | M4b not built yet
-deactivate.bats | deactivate virtualenv (verbose) | M4b not built yet
-deactivate.bats | deactivate virtualenv (with shell activation) | M4b not built yet
-deactivate.bats | deactivate virtualenv (with shell activation) (quiet) | M4b not built yet
-deactivate.bats | deactivate virtualenv which has been activated manually | M4b not built yet
-deactivate.bats | deactivate virtualenv (fish) | M4b not built yet
-deactivate.bats | deactivate virtualenv (fish) (quiet) | M4b not built yet
-deactivate.bats | deactivate virtualenv (fish) (with shell activation) | M4b not built yet
-deactivate.bats | deactivate virtualenv (fish) (with shell activation) (quiet) | M4b not built yet
-deactivate.bats | deactivate virtualenv which has been activated manually (fish) | M4b not built yet
 delete.bats | delete virtualenv | M4b not built yet
 envs.bats | path should be handled properly even if there is 'envs' in PYENV_ROOT | M4b not built yet
 hooks.bats | pyenv-virtualenv hooks | M4b not built yet

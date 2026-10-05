@@ -84,6 +84,24 @@ fn parse(args: &[&str]) -> (Opts, Vec<String>) {
     (o, pos)
 }
 
+/// The selected versions, where a version that isn't installed stops the command with core's
+/// message, as upstream's `pyenv-version-name` does under `set -e`. Windows: pyenv-win's
+/// selection, which has no such failure.
+pub(crate) fn current(ctx: &Ctx) -> Result<Vec<String>, Output> {
+    if ctx.flavor == Flavor::Pyenv {
+        let r = select::version_name(ctx, false);
+        if r.failed {
+            let mut o = Output::new();
+            for l in &r.stderr {
+                o.err(l);
+            }
+            return Err(o.with_code(1));
+        }
+        return Ok(r.names);
+    }
+    Ok(current_names(ctx))
+}
+
 /// The first selected version, or `system` (Linux); the first pyenv-win selection (Windows).
 pub(crate) fn current_names(ctx: &Ctx) -> Vec<String> {
     match ctx.flavor {
@@ -262,10 +280,10 @@ pub fn virtualenv(ctx: &Ctx, args: &[&str]) -> Output {
     }
     let (base, name) = match pos.as_slice() {
         [] => return Output::error("pyenv-virtualenv: no virtualenv name given."),
-        [name] => (
-            current_names(ctx).into_iter().next().unwrap_or_default(),
-            name.clone(),
-        ),
+        [name] => match current(ctx) {
+            Ok(c) => (c.into_iter().next().unwrap_or_default(), name.clone()),
+            Err(o) => return o,
+        },
         [base, name, ..] => (base.clone(), name.clone()),
     };
     let base = if base.is_empty() {
@@ -622,7 +640,10 @@ pub fn virtualenvs(ctx: &Ctx, args: &[&str]) -> Output {
 /// `pyenv virtualenv-prefix [<virtualenv>...]` (reference "pyenv virtualenv-prefix").
 pub fn virtualenv_prefix(ctx: &Ctx, args: &[&str]) -> Output {
     let names: Vec<String> = if args.is_empty() {
-        let c = current_names(ctx);
+        let c = match current(ctx) {
+            Ok(c) => c,
+            Err(o) => return o,
+        };
         if c.is_empty() {
             vec!["system".into()]
         } else {
