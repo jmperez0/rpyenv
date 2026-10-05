@@ -92,10 +92,24 @@ fn versions_win(ctx: &Ctx, args: &[&str]) -> Output {
     };
     let mut o = Output::new();
     for entry in installed::top_level(&ctx.versions_dir(), Flavor::PyenvWin) {
-        match selected.iter().find(|s| s.name == entry.name) {
-            _ if bare => o.out(&entry.name),
-            Some(s) => o.out(format!("* {} (set by {})", entry.name, s.origin)),
-            None => o.out(format!("  {}", entry.name)),
+        // A version, then its envs as `<base>\envs\<name>`; a junction as
+        // `<name> --> <target>` (allowlist D-101).
+        let mut lines = vec![(entry.name.clone(), entry.link.clone())];
+        lines.extend(
+            installed::envs_of(&entry)
+                .into_iter()
+                .map(|e| (e.name.replace('/', "\\"), None)),
+        );
+        for (name, link) in lines {
+            let text = match &link {
+                Some(l) => format!("{name} --> {}", l.display()),
+                None => name.clone(),
+            };
+            match selected.iter().find(|s| s.name.replace('/', "\\") == name) {
+                _ if bare => o.out(&name),
+                Some(s) => o.out(format!("* {text} (set by {})", s.origin)),
+                None => o.out(format!("  {text}")),
+            }
         }
     }
     o

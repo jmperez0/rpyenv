@@ -282,7 +282,7 @@ fn which_win_with(ctx: &Ctx, command: &str, runnable_only: bool) -> Result<Found
     }
     let exts = win_extensions(ctx.pathext.as_deref());
     for s in &selected {
-        let dir = ctx.versions_dir().join(&s.name);
+        let dir = crate::venv::version_dir(ctx, &s.name);
         if !dir.is_dir() {
             return Err(NotFound::WinNotInstalled(s.name.clone()));
         }
