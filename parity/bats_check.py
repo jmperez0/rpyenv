@@ -12,6 +12,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import allowlist  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# --suite NAME: (expected-failure list, files list, summary heading), all under parity/expected/.
+SUITES = {
+    "pyenv": ("bats.txt", "bats-files.txt", "Upstream pyenv bats suite"),
+    "virtualenv": ("bats-virtualenv.txt", "bats-virtualenv-files.txt",
+                   "Upstream pyenv-virtualenv bats suite"),
+}
 PLAN = re.compile(r"^([^\t]+)\t1\.\.(\d+)$")
 LINE = re.compile(r"^([^\t]+)\t(ok|not ok) \d+ (.*?)(?: # skip.*)?$")
 SKIP = re.compile(r"^([^\t]+)\tok \d+ (.*?) # skip\b")
@@ -45,7 +51,7 @@ def read_files(path):
         return [l.strip() for l in f if l.strip() and not l.startswith("#")]
 
 
-def structure_problems(text, files):
+def structure_problems(text, files, files_name="bats-files.txt"):
     """A file that vanished from the log, one nobody listed, a file with no plan, or a plan
     that doesn't match the results counted (a crashed or truncated run) are all problems."""
     plans, counts = {}, {}
@@ -63,7 +69,7 @@ def structure_problems(text, files):
     if missing:
         out.append("files missing from the log: " + ", ".join(missing))
     if extra:
-        out.append("files in the log that are not listed in bats-files.txt: " + ", ".join(extra))
+        out.append(f"files in the log that are not listed in {files_name}: " + ", ".join(extra))
     for f in sorted(seen):
         if f not in plans:
             out.append(f"{f}: no `1..N` plan line")
@@ -91,16 +97,21 @@ def problems(results, expected, table):
 
 
 def main(argv):
+    suite = "pyenv"
+    if argv[:1] == ["--suite"]:
+        suite, argv = argv[1], argv[2:]
+    exp_name, files_name, heading = SUITES[suite]
     with open(argv[0], encoding="utf-8") as f:
         text = f.read()
     results = parse_tap(text)
-    expected = allowlist.read_expected(os.path.join(HERE, "expected", "bats.txt"), 2)
-    found = structure_problems(text, read_files(os.path.join(HERE, "expected", "bats-files.txt")))
+    expected = allowlist.read_expected(os.path.join(HERE, "expected", exp_name), 2)
+    found = structure_problems(text, read_files(os.path.join(HERE, "expected", files_name)), files_name)
     found += problems(results, expected, allowlist.rows())
     failed = sum(1 for ok in results.values() if not ok)
     skips = skipped(text)
+    label = "bats" if suite == "pyenv" else f"bats ({suite})"
     line = (
-        f"bats: {len(results)} tests, {failed} failing, {len(expected)} expected to fail, "
+        f"{label}: {len(results)} tests, {failed} failing, {len(expected)} expected to fail, "
         f"{len(found)} problems, {len(skips)} skipped"
     )
     print(line)
@@ -112,7 +123,7 @@ def main(argv):
     if summary:
         with open(summary, "a", encoding="utf-8") as f:
             f.write(
-                f"### Upstream pyenv bats suite\n\n{line}\n\n"
+                f"### {heading}\n\n{line}\n\n"
                 + "".join(f"- {p}\n" for p in found)
                 + "".join(f"- skipped: {sf} | {name}\n" for sf, name in skips)
                 + "\n"

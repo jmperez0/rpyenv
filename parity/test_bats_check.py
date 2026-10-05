@@ -99,3 +99,11 @@ class Structure(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Suites(unittest.TestCase):
+    def test_virtualenv_suite_has_its_own_lists(self):
+        exp, files, heading = bats_check.SUITES["virtualenv"]
+        self.assertEqual((exp, files), ("bats-virtualenv.txt", "bats-virtualenv-files.txt"))
+        self.assertIn("pyenv-virtualenv", heading)
+        self.assertEqual(bats_check.SUITES["pyenv"][:2], ("bats.txt", "bats-files.txt"))

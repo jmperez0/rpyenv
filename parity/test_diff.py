@@ -1,3 +1,5 @@
+import tempfile
+import os
 import contextlib
 import io
 import unittest
@@ -121,3 +123,27 @@ class Cases(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PluginAndLinks(unittest.TestCase):
+    @unittest.skipIf(os.name == "nt", "Linux cases")
+    def test_links_and_the_plugin_go_into_the_fixture(self):
+        with tempfile.TemporaryDirectory() as t:
+            plugin = os.path.join(t, "plugin")
+            os.makedirs(plugin)
+            old = diff.BASE
+            diff.BASE = os.path.join(t, "base")
+            try:
+                case = diff_cases.Case(
+                    "x", (), os="Linux", plugin=True,
+                    files=(("root/versions/{v0}/envs/e/bin/python", "#!/bin/sh\n"),),
+                    links=(("root/versions/e", "root/versions/{v0}/envs/e"),))
+                places = diff.build("unused", case, plugin_dir=plugin)
+                link = os.path.join(places["root"], "versions", "e")
+                self.assertEqual(os.readlink(link),
+                                 os.path.join(places["root"], "versions", diff.VERSIONS[0], "envs", "e"))
+                self.assertEqual(os.readlink(os.path.join(places["root"], "plugins", "pyenv-virtualenv")), plugin)
+                places = diff.build("unused", case, plugin_dir=None)
+                self.assertFalse(os.path.lexists(os.path.join(places["root"], "plugins", "pyenv-virtualenv")))
+            finally:
+                diff.BASE = old

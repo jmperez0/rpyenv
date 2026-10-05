@@ -126,7 +126,7 @@ def resolve(places, rel):
     return os.path.join(places[head], *tail.split("/")) if tail else places[head]
 
 
-def build(upstream, case):
+def build(upstream, case, plugin_dir=None):
     """A fresh fixture at BASE: two versions with a `python`, the first one global."""
     remove_tree(BASE)
     root = os.path.join(BASE, "pyenv-win" if WINDOWS else "root")
@@ -165,6 +165,11 @@ def build(upstream, case):
             os.remove(p)
     for rel in case.readonly:
         os.chmod(resolve(places, rel), stat.S_IREAD)
+    for rel, target in case.links:
+        os.symlink(resolve(places, expand(target)), resolve(places, expand(rel)))
+    if case.plugin and plugin_dir:
+        os.makedirs(os.path.join(root, "plugins"), exist_ok=True)
+        os.symlink(plugin_dir, os.path.join(root, "plugins", "pyenv-virtualenv"))
     return places
 
 
@@ -237,6 +242,7 @@ def main(argv):
     p.add_argument("--rpyenv", required=True)
     p.add_argument("--upstream", required=True)
     p.add_argument("--only")
+    p.add_argument("--pyenv-virtualenv")
     p.add_argument("--update-golden", action="store_true",
                    help="write rpyenv's output as the golden files of the allowed cases")
     a = p.parse_args(argv)
@@ -254,9 +260,13 @@ def main(argv):
         if unknown:
             failures.append(f"{case.name}: unknown allowlist rows {unknown}")
             continue
+        if case.plugin and not a.pyenv_virtualenv:
+            failures.append(f"{case.name}: needs --pyenv-virtualenv")
+            continue
         results = {}
         for tool in ("upstream", "rpyenv"):
-            places = build(upstream, case)
+            plugin = os.path.abspath(a.pyenv_virtualenv) if tool == "upstream" and case.plugin else None
+            places = build(upstream, case, plugin_dir=plugin)
             results[tool] = run(tool, rpyenv, upstream, places, case)
         rows_here = applicable(case, table)
         same = results["upstream"] == results["rpyenv"]

@@ -1,0 +1,18 @@
+# pyenv-virtualenv v1.4.0's test files that parity/bats_venv_run.sh runs (installer.bats is left out).
+activate.bats
+conda-activate.bats
+conda-deactivate.bats
+conda-prefix.bats
+conda.bats
+deactivate.bats
+delete.bats
+envs.bats
+hooks.bats
+init.bats
+pip.bats
+prefix.bats
+python.bats
+pyvenv.bats
+version.bats
+virtualenv.bats
+virtualenvs.bats

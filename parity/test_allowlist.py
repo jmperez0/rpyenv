@@ -104,3 +104,10 @@ class Expected(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class M4Milestones(unittest.TestCase):
+    def test_m4b_is_a_reason_tag_and_m4a_is_delivered(self):
+        table = allowlist.rows()
+        self.assertIsNone(allowlist.check_reason("M4b not built yet", "Linux", table))
+        self.assertIn("M4a", allowlist.DELIVERED)
