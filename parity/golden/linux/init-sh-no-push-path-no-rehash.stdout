@@ -1,0 +1,16 @@
+if [[ ":$PATH:" != *':{root}/shims:'* ]]; then
+export PATH="{root}/shims:${PATH}"
+fi
+export PYENV_SHELL=sh
+pyenv() {
+  local command=${1:-}
+  [ "$#" -gt 0 ] && shift
+  case "$command" in
+  activate|deactivate|rehash|shell)
+    eval "$(pyenv "sh-$command" "$@")"
+    ;;
+  *)
+    command pyenv "$command" "$@"
+    ;;
+  esac
+}

@@ -40,7 +40,8 @@ class Rows(unittest.TestCase):
 
 class Malformed(unittest.TestCase):
     def test_a_malformed_row_is_an_error(self):
-        for bad in ("| D-100 | Linux | x |", "| D-02 | linux | x |", "| D-03 | Both | x |"):
+        # D-100 is a valid ID since M4b's rows reached it; four digits are not.
+        for bad in ("| D-1000 | Linux | x |", "| D-02 | linux | x |", "| D-03 | Both | x |"):
             with self.assertRaises(ValueError, msg=bad):
                 allowlist.rows(write(SAMPLE + bad + "\n"))
 
@@ -107,7 +108,16 @@ if __name__ == "__main__":
 
 
 class M4Milestones(unittest.TestCase):
-    def test_m4b_is_a_reason_tag_and_m4a_is_delivered(self):
+    def test_m4a_and_m4b_are_delivered_so_neither_is_a_reason(self):
         table = allowlist.rows()
-        self.assertIsNone(allowlist.check_reason("M4b not built yet", "Linux", table))
         self.assertIn("M4a", allowlist.DELIVERED)
+        self.assertIn("M4b", allowlist.DELIVERED)
+        self.assertIsNotNone(allowlist.check_reason("M4b not built yet", "Linux", table))
+
+
+class ThreeDigitIds(unittest.TestCase):
+    """M4b's rows reach D-100: three-digit IDs parse as rows."""
+
+    def test_d_100_is_a_row(self):
+        path = write(SAMPLE + "| D-100 | Linux | `x` | a | b | c |\n")
+        self.assertEqual(allowlist.rows(path)["D-100"], "Linux")

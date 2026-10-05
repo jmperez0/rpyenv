@@ -1,6 +1,8 @@
 --version
+activate
 commands
 completions
+deactivate
 exec
 global
 help
@@ -22,5 +24,10 @@ version-file-write
 version-name
 version-origin
 versions
+virtualenv
+virtualenv-delete
+virtualenv-init
+virtualenv-prefix
+virtualenvs
 whence
 which

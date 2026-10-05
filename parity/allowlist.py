@@ -5,14 +5,14 @@ import re
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ALLOWLIST = os.path.join(REPO, "docs", "parity", "allowlist.md")
-ROW = re.compile(r"^\|\s*(D-\d{2})\s*\|\s*(both|Linux|Windows)\s*\|")
+ROW = re.compile(r"^\|\s*(D-\d{2,3})\s*\|\s*(both|Linux|Windows)\s*\|")
 MALFORMED = re.compile(r"^\|\s*D-")
 # A test of a command rpyenv doesn't implement yet fails for that reason alone; its reason
 # cites the milestone that brings the command (spec §14) instead of a row.
 MILESTONES = ("M2a", "M2b", "M2", "M3", "M4", "M4a", "M4b", "M5", "M6", "M7", "M8", "M9")
 # (the tag is the first whole word of a reason, so `M2a` and `M2b` never match `M2`)
 # milestones that have shipped; add yours when your plan lands
-DELIVERED = ("M1", "M2a", "M2b", "M3", "M4a")
+DELIVERED = ("M1", "M2a", "M2b", "M3", "M4a", "M4b")
 
 
 def rows(path=ALLOWLIST):

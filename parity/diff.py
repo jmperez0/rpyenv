@@ -122,7 +122,7 @@ def remove_tree(path):
 
 
 def resolve(places, rel):
-    head, _, tail = rel.partition("/")
+    head, _, tail = expand(rel).partition("/")
     return os.path.join(places[head], *tail.split("/")) if tail else places[head]
 
 
@@ -154,7 +154,8 @@ def build(upstream, case, plugin_dir=None):
         p = resolve(places, rel)
         os.makedirs(os.path.dirname(p), exist_ok=True)
         with open(p, "w", encoding="utf-8", newline="") as f:
-            f.write(expand(content))
+            # {root}: the fixture's PYENV_ROOT, for files that name it (pyvenv.cfg).
+            f.write(expand(content).replace("{root}", root))
     for rel in case.executable:
         os.chmod(resolve(places, rel), 0o755)
     for rel in case.remove:

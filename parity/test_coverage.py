@@ -144,3 +144,8 @@ class Main(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ThreeDigitCitations(unittest.TestCase):
+    def test_a_three_digit_citation_is_found(self):
+        self.assertEqual(coverage.ID.findall("// allowlist D-101 and allowlist D-07"), ["D-101", "D-07"])
