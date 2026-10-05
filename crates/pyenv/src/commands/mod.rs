@@ -18,6 +18,7 @@ pub mod shell_win;
 pub mod uninstall;
 pub mod uninstall_win;
 pub mod update;
+pub mod venv;
 pub mod version;
 pub mod versions;
 pub mod which;
@@ -49,6 +50,7 @@ const COMMANDS: &[(&str, Command)] = &[
     ("version-name", version::version_name),
     ("version-origin", version::version_origin),
     ("versions", versions::versions),
+    ("virtualenv", venv::virtualenv),
     ("whence", which::whence),
     ("which", which::which),
 ];

@@ -11,7 +11,8 @@ use std::path::{Path, PathBuf};
 /// FAKE_NO_PIP or --without-pip), `-m venv --help`, and `-s -m ensurepip`. Calls are logged
 /// to `<prefix>/calls.log`, where `<prefix>` is the folder above the script's `bin`.
 pub const FAKE_PYTHON: &str = r#"#!/bin/sh
-here=$(cd "$(dirname "$0")/.." && pwd)
+PATH=/usr/bin:/bin
+here=${0%/bin/*}
 if [ "$1" = "-m" ] && [ "$2" = "venv" ]; then
   shift 2
   [ "$1" = "--help" ] && exit 0
@@ -29,8 +30,8 @@ if [ "$1" = "-m" ] && [ "$2" = "venv" ]; then
 fi
 if [ "$1" = "-s" ] && [ "$2" = "-m" ] && [ "$3" = "ensurepip" ]; then
   echo "ensurepip" >> "$here/calls.log"
-  printf '#!/bin/sh\n' > "$(dirname "$0")/pip"
-  chmod 755 "$(dirname "$0")/pip"
+  printf '#!/bin/sh\n' > "${0%/*}/pip"
+  chmod 755 "${0%/*}/pip"
   exit 0
 fi
 exit 3
@@ -80,7 +81,11 @@ fn run_stdin(f: &Fixture, args: &[&str], input: &str) -> (String, String, i32) {
             std::thread::sleep(std::time::Duration::from_millis(20));
             continue;
         }
-        return (String::from_utf8_lossy(&o.stdout).into_owned(), err, o.status.code().unwrap());
+        return (
+            String::from_utf8_lossy(&o.stdout).into_owned(),
+            err,
+            o.status.code().unwrap(),
+        );
     }
     panic!("busy");
 }
@@ -93,10 +98,19 @@ fn creates_an_env_its_link_pydoc_and_shims() {
     assert_eq!((out.as_str(), code), ("", 0), "{err}");
     let env = base.join("envs/venv1");
     assert!(env.join("pyvenv.cfg").is_file());
-    assert_eq!(std::fs::read_link(f.root.join("versions/venv1")).unwrap(), env);
+    assert_eq!(
+        std::fs::read_link(f.root.join("versions/venv1")).unwrap(),
+        env
+    );
     assert_eq!(calls(&base), format!("venv {}\n", env.display()));
     let pydoc = std::fs::read_to_string(env.join("bin/pydoc")).unwrap();
-    assert_eq!(pydoc, format!("#!{}/bin/python\nimport pydoc\nif __name__ == '__main__':\n      pydoc.cli()\n", env.display()));
+    assert_eq!(
+        pydoc,
+        format!(
+            "#!{}/bin/python\nimport pydoc\nif __name__ == '__main__':\n      pydoc.cli()\n",
+            env.display()
+        )
+    );
     assert!(f.root.join("shims/python").exists(), "rehash ran");
 }
 
@@ -104,7 +118,10 @@ fn creates_an_env_its_link_pydoc_and_shims() {
 fn one_name_uses_the_current_version_and_a_prefix_is_resolved() {
     let f = Fixture::new();
     let base = fake_base(&f, "3.12.1");
-    assert_eq!(run_env(&f, &["virtualenv", "venv2"], &[("PYENV_VERSION", "3.12.1")]).2, 0);
+    assert_eq!(
+        run_env(&f, &["virtualenv", "venv2"], &[("PYENV_VERSION", "3.12.1")]).2,
+        0
+    );
     assert!(base.join("envs/venv2").is_dir());
     assert_eq!(run(&f, &["virtualenv", "3.12", "venv3"]).2, 0);
     assert!(base.join("envs/venv3").is_dir());
@@ -116,12 +133,30 @@ fn name_checks() {
     let f = Fixture::new();
     fake_base(&f, "3.12.1");
     let err = |args: &[&str]| run(&f, args).1;
-    assert_eq!(err(&["virtualenv"]), "pyenv-virtualenv: no virtualenv name given.\n");
-    assert_eq!(err(&["virtualenv", "3.12.1", "system"]), "pyenv-virtualenv: `system' is not allowed as virtualenv name.\n");
-    assert_eq!(err(&["virtualenv", "3.12.1", "a b"]), "pyenv-virtualenv: no whitespace allowed in virtualenv name.\n");
-    assert_eq!(err(&["virtualenv", "3.12.1", "x/y"]), "pyenv-virtualenv: no slash allowed in virtualenv name.\n");
-    assert_eq!(err(&["virtualenv", "3.12.1", "../x"]), "pyenv-virtualenv: no slash allowed in virtualenv name.\n");
-    assert_eq!(err(&["virtualenv", "3.12.1", ".."]), "pyenv-virtualenv: `..' is not allowed as virtualenv name.\n");
+    assert_eq!(
+        err(&["virtualenv"]),
+        "pyenv-virtualenv: no virtualenv name given.\n"
+    );
+    assert_eq!(
+        err(&["virtualenv", "3.12.1", "system"]),
+        "pyenv-virtualenv: `system' is not allowed as virtualenv name.\n"
+    );
+    assert_eq!(
+        err(&["virtualenv", "3.12.1", "a b"]),
+        "pyenv-virtualenv: no whitespace allowed in virtualenv name.\n"
+    );
+    assert_eq!(
+        err(&["virtualenv", "3.12.1", "x/y"]),
+        "pyenv-virtualenv: no slash allowed in virtualenv name.\n"
+    );
+    assert_eq!(
+        err(&["virtualenv", "3.12.1", "../x"]),
+        "pyenv-virtualenv: no slash allowed in virtualenv name.\n"
+    );
+    assert_eq!(
+        err(&["virtualenv", "3.12.1", ".."]),
+        "pyenv-virtualenv: `..' is not allowed as virtualenv name.\n"
+    );
     assert_eq!(run(&f, &["virtualenv", "3.12.1", "3.12.1/envs/ok"]).2, 0);
     assert!(!f.base.join("x").exists() && !f.root.join("x").exists());
 }
@@ -157,10 +192,18 @@ fn a_taken_name_is_refused() {
     let other = fake_base(&f, "3.12.2");
     run(&f, &["virtualenv", "3.12.1", "venv1"]);
     let link = f.root.join("versions/venv1");
-    assert_eq!(run(&f, &["virtualenv", "3.12.2", "venv1"]).1,
-               format!("pyenv-virtualenv: `{}' already exists.\n", link.display()));
-    assert_eq!(run(&f, &["virtualenv", "-f", "3.12.1", "3.12.2"]),
-               (String::new(), format!("pyenv-virtualenv: `{}' already exists.\n", other.display()), 1));
+    assert_eq!(
+        run(&f, &["virtualenv", "3.12.2", "venv1"]).1,
+        format!("pyenv-virtualenv: `{}' already exists.\n", link.display())
+    );
+    assert_eq!(
+        run(&f, &["virtualenv", "-f", "3.12.1", "3.12.2"]),
+        (
+            String::new(),
+            format!("pyenv-virtualenv: `{}' already exists.\n", other.display()),
+            1
+        )
+    );
     assert!(other.join("bin/python").is_file());
 }
 
@@ -171,8 +214,17 @@ fn an_existing_env_asks_first() {
     run(&f, &["virtualenv", "3.12.1", "venv1"]);
     let env = base.join("envs/venv1");
     let (_, err, code) = run_stdin(&f, &["virtualenv", "3.12.1", "venv1"], "n\n");
-    assert_eq!((err.as_str(), code), (format!("pyenv-virtualenv: {} already exists\n", env.display()).as_str(), 1));
-    assert_eq!(run_stdin(&f, &["virtualenv", "3.12.1", "venv1"], "yes\n").2, 0);
+    assert_eq!(
+        (err.as_str(), code),
+        (
+            format!("pyenv-virtualenv: {} already exists\n", env.display()).as_str(),
+            1
+        )
+    );
+    assert_eq!(
+        run_stdin(&f, &["virtualenv", "3.12.1", "venv1"], "yes\n").2,
+        0
+    );
 }
 
 /// Review focus 4: a failed venv leaves no env and no link; an env that was there before
@@ -181,12 +233,24 @@ fn an_existing_env_asks_first() {
 fn a_failed_venv_cleans_up() {
     let f = Fixture::new();
     let base = fake_base(&f, "3.12.1");
-    let (out, _, code) = run_env(&f, &["virtualenv", "3.12.1", "bad"], &[("FAKE_VENV_FAIL", "1")]);
+    let (out, _, code) = run_env(
+        &f,
+        &["virtualenv", "3.12.1", "bad"],
+        &[("FAKE_VENV_FAIL", "1")],
+    );
     assert_eq!((out.as_str(), code), ("venv failed\n", 5));
     assert!(!base.join("envs/bad").exists());
     assert!(std::fs::symlink_metadata(f.root.join("versions/bad")).is_err());
     run(&f, &["virtualenv", "3.12.1", "keep"]);
-    assert_eq!(run_env(&f, &["virtualenv", "-f", "3.12.1", "keep"], &[("FAKE_VENV_FAIL", "1")]).2, 5);
+    assert_eq!(
+        run_env(
+            &f,
+            &["virtualenv", "-f", "3.12.1", "keep"],
+            &[("FAKE_VENV_FAIL", "1")]
+        )
+        .2,
+        5
+    );
     assert!(base.join("envs/keep/pyvenv.cfg").is_file());
 }
 
@@ -197,7 +261,14 @@ fn dash_p_takes_the_next_word() {
     let base = fake_base(&f, "3.12.1");
     let other = fake_base(&f, "3.13.1");
     let py = other.join("bin/python");
-    assert_eq!(run(&f, &["virtualenv", "3.12.1", "-p", py.to_str().unwrap(), "pv"]).2, 0);
+    assert_eq!(
+        run(
+            &f,
+            &["virtualenv", "3.12.1", "-p", py.to_str().unwrap(), "pv"]
+        )
+        .2,
+        0
+    );
     assert!(calls(&other).contains(&base.join("envs/pv").display().to_string()));
     assert_eq!(calls(&base), "");
 }
@@ -207,10 +278,16 @@ fn dash_p_takes_the_next_word() {
 fn pip_is_ensured_unless_declined() {
     let f = Fixture::new();
     let base = fake_base(&f, "3.12.1");
-    assert_eq!(run_env(&f, &["virtualenv", "3.12.1", "e1"], &[("FAKE_NO_PIP", "1")]).2, 0);
+    assert_eq!(
+        run_env(&f, &["virtualenv", "3.12.1", "e1"], &[("FAKE_NO_PIP", "1")]).2,
+        0
+    );
     assert!(base.join("envs/e1/bin/pip").is_file());
     assert!(calls(&base.join("envs/e1")).contains("ensurepip"));
-    assert_eq!(run(&f, &["virtualenv", "--without-pip", "3.12.1", "e2"]).2, 0);
+    assert_eq!(
+        run(&f, &["virtualenv", "--without-pip", "3.12.1", "e2"]).2,
+        0
+    );
     assert!(!base.join("envs/e2/bin/pip").exists());
 }
 
@@ -230,10 +307,20 @@ fn a_system_env_has_no_self_link() {
 fn version_help_and_completion() {
     let f = Fixture::new();
     fake_base(&f, "3.12.1");
-    assert_eq!(run_env(&f, &["virtualenv", "--version"], &[("PYENV_VERSION", "3.12.1")]).0,
-               "pyenv-virtualenv 1.4.0 (python -m venv)\n");
+    assert_eq!(
+        run_env(
+            &f,
+            &["virtualenv", "--version"],
+            &[("PYENV_VERSION", "3.12.1")]
+        )
+        .0,
+        "pyenv-virtualenv 1.4.0 (python -m venv)\n"
+    );
     let help = run(&f, &["virtualenv", "--help"]);
     assert_eq!((help.0.lines().next(), help.2),
                (Some("Usage: pyenv virtualenv [-f|--force] [VIRTUALENV_OPTIONS] [version] <virtualenv-name>"), 0));
-    assert_eq!(run(&f, &["completions", "virtualenv"]).0, "--help\n3.12.1\n");
+    assert_eq!(
+        run(&f, &["completions", "virtualenv"]).0,
+        "--help\n3.12.1\n"
+    );
 }

@@ -1,4 +1,4 @@
-//! `read -p` for the commands that ask a question (install, uninstall).
+//! `read -p` for the commands that ask a question (install, uninstall, the virtualenv commands).
 
 use super::interrupted;
 use std::io::{BufRead, IsTerminal};

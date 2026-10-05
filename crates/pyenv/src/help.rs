@@ -91,6 +91,8 @@ const PYENV: &[Topic] = &[
         "Usage: pyenv versions [--bare] [--skip-aliases] [--skip-envs] [--executables]\n\nLists all Python versions found in `$PYENV_ROOT/versions/*'.\n\n  --bare            List just the names, omit `system'\n  --skip-aliases    Skip symlinks to other versions and to virtual environments\n  --skip-envs       Skip virtual environments (under <version>/envs)\n  --executables     Internal. Overrides other options.\n                    Optimally get a deduplicated list of all executable names in Pyenv-managed\n                    versions and environments for `pyenv rehash'\n\n"),
     topic("whence", Some("List all Python versions that contain the given executable"), Some("Usage: pyenv whence [--path] <command>"),
         "Usage: pyenv whence [--path] <command>\n\nList all Python versions that contain the given executable\n\n"),
+    topic("virtualenv", Some("Create a Python virtualenv using the pyenv-virtualenv plugin"), Some("Usage: pyenv virtualenv [-f|--force] [VIRTUALENV_OPTIONS] [version] <virtualenv-name>\n       pyenv virtualenv --version\n       pyenv virtualenv --help"),
+        commands::venv::HELP),
     topic("which", Some("Display the full path to an executable"), Some("Usage: pyenv which <command> [--nosystem] [--skip-advice]"),
         "Usage: pyenv which <command> [--nosystem] [--skip-advice]\n\nDisplays the full path to the executable that pyenv will invoke when\nyou run the given command.\nUse --nosystem argument in case when you don't need to search command in the \nsystem environment.\nInternal switch --skip-advice used to skip printing an error message on a\nfailed search.\n\n"),
 ];
@@ -122,6 +124,8 @@ const PYENV_WIN: &[Topic] = &[
     topic("vname", None, None, "Usage: pyenv vname\n\nShows the currently selected Python version.\n"),
     topic("whence", None, None,
         "Usage: pyenv whence [--path] <command>\n\nShows the currently given executable contains path\nselected. To obtain python version of executable, use `pyenv whence pip'.\n"),
+    topic("virtualenv", Some("Create a Python virtualenv using the pyenv-virtualenv plugin"), Some("Usage: pyenv virtualenv [-f|--force] [VIRTUALENV_OPTIONS] [version] <virtualenv-name>\n       pyenv virtualenv --version\n       pyenv virtualenv --help"),
+        commands::venv::HELP),
     topic("which", None, None,
         "Usage: pyenv which <command>\n\nShows the full path of the executable\nselected. To obtain the full path, use `pyenv which pip'.\n"),
 ];
