@@ -33,8 +33,9 @@ pub fn create(link: &Path, target: &Path) -> std::io::Result<()> {
     if target.as_os_str().to_string_lossy().starts_with(r"\\") {
         return invalid("junction target must be a drive path");
     }
-    // Both names, NUL-terminated, plus 8 header bytes, must fit the buffer's u16 lengths.
-    if (wide(target.as_os_str()).len() * 2 + 6) * 2 + 8 > usize::from(u16::MAX) {
+    // The whole buffer (8-byte header, 8 bytes of offsets, both NUL-terminated names) must
+    // fit the kernel's 16 KiB MAXIMUM_REPARSE_DATA_BUFFER_SIZE, and so the u16 lengths too.
+    if 8 + 8 + (wide(target.as_os_str()).len() * 2 + 6) * 2 > 16 * 1024 {
         return invalid("junction target is too long");
     }
     std::fs::create_dir(link)?;
@@ -141,6 +142,17 @@ mod tests {
                 .kind(),
             std::io::ErrorKind::InvalidInput
         );
+        assert!(!link.exists());
+    }
+
+    /// Re-review M5: the kernel's 16 KiB reparse buffer bounds the target, checked up front.
+    #[test]
+    fn a_target_over_the_kernel_limit_is_refused_up_front() {
+        let t = tempfile::tempdir().unwrap();
+        let link = t.path().join("link");
+        let long = format!(r"C:\{}", "a".repeat(5_000));
+        let e = super::create(&link, std::path::Path::new(&long)).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput);
         assert!(!link.exists());
     }
 }
