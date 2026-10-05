@@ -169,10 +169,15 @@ fn git_bash_gets_an_msys_virtual_env() {
 
 /// A real CPython install to copy into the scratch root: `RPYENV_TEST_PYTHON` (a folder with
 /// `python.exe`), else the first `python.exe` on `PATH` that sits in a full install (it has
-/// `Lib\venv`). Never a pyenv-win shim or an install under `.pyenv`: the test copies from it
+/// `Lib\venv`) and isn't a conda install (copying one takes minutes, and its venvs aren't this
+/// test's case). Never a pyenv-win shim or an install under `.pyenv`: the test copies from it
 /// and never runs it. CI must have one; a machine without one skips with a note.
 fn real_python_home() -> Option<PathBuf> {
-    let full = |d: &Path| d.join("python.exe").is_file() && d.join("Lib").join("venv").is_dir();
+    let full = |d: &Path| {
+        d.join("python.exe").is_file()
+            && d.join("Lib").join("venv").is_dir()
+            && !d.join("conda-meta").exists()
+    };
     if let Some(d) = std::env::var_os("RPYENV_TEST_PYTHON").map(PathBuf::from) {
         assert!(
             full(&d),
@@ -313,4 +318,26 @@ fn uninstall_removes_a_dangling_junction_and_reports_only_what_it_removed() {
     assert!(std::fs::symlink_metadata(f.root.join("versions").join("foo")).is_err());
     let (out, _, _) = run(&f, &["uninstall", "-f", "3.13.1/envs/nosuch"]);
     assert!(!out.contains("Successfully"), "{out}");
+}
+
+/// Final review M6: re-activating in cmd replaces the prompt tag instead of stacking it.
+#[test]
+fn cmd_reactivation_does_not_stack_prompts() {
+    let f = Fixture::new();
+    base(&f, "3.13.1");
+    assert_eq!(run(&f, &["virtualenv", "3.13.1", "foo"]).2, 0);
+    let r = f.pyenv_env(
+        &["activate", "foo"],
+        &[
+            ("PATHEXT", ".COM;.EXE;.BAT;.CMD"),
+            ("PYENV_SHELL", "cmd"),
+            ("PROMPT", "(bar) $P$G"),
+            ("_OLD_VIRTUAL_PROMPT", "$P$G"),
+        ],
+    );
+    assert!(
+        r.stdout.contains("set \"PROMPT=(foo) $P$G\""),
+        "{}",
+        r.stdout
+    );
 }

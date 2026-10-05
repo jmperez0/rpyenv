@@ -167,7 +167,14 @@ fn interpreter(ctx: &Ctx, base: &str, wanted: Option<&str>) -> Result<PathBuf, O
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        if let Some(found) = which(&c, &name) {
+        // As upstream's `pyenv-which`: the base, then the system Python (allowlist D-96).
+        let found = match ctx.flavor {
+            Flavor::Pyenv => lookup::which_pyenv(&c, &name, false, &lookup::Skip::default())
+                .ok()
+                .map(|f| f.path),
+            Flavor::PyenvWin => which(&c, &name),
+        };
+        if let Some(found) = found {
             return Ok(found);
         }
         let last = match ctx.flavor {
@@ -530,16 +537,37 @@ fn ensure_pip(ctx: &Ctx, full: &str, env_dir: &Path) -> Result<(), String> {
     if ok {
         return Ok(());
     }
-    match std::env::var_os("GET_PIP").map(PathBuf::from).filter(|p| p.is_file()) {
+    match std::env::var_os("GET_PIP")
+        .map(PathBuf::from)
+        .filter(|p| p.is_file())
+    {
         Some(get_pip) => {
-            rpyenv_core::textout::write(true, &format!("Installing pip from {}...\n", get_pip.display()));
+            rpyenv_core::textout::write(
+                true,
+                &format!("Installing pip from {}...\n", get_pip.display()),
+            );
             let opts = std::env::var("GET_PIP_OPTS").unwrap_or_default();
-            let ok = Command::new(&py).arg("-s").arg(&get_pip).args(opts.split_whitespace())
+            let ok = Command::new(&py)
+                .arg("-s")
+                .arg(&get_pip)
+                .args(opts.split_whitespace())
                 .stdout(Stdio::from(std::io::stderr()))
-                .status().is_ok_and(|s| s.success());
-            if ok { Ok(()) } else { Err("error: failed to install pip via get-pip.py".into()) }
+                .status()
+                .is_ok_and(|s| s.success());
+            if ok {
+                Ok(())
+            } else {
+                Err("error: failed to install pip via get-pip.py".into())
+            }
         }
-        None => Err(format!("pyenv-virtualenv: pip could not be installed in `{full}': ensurepip failed, and rpyenv doesn't download get-pip.py (set GET_PIP to a local copy)")),
+        None => {
+            let mut m = format!("pyenv-virtualenv: pip could not be installed in `{full}': ensurepip failed, and rpyenv doesn't download get-pip.py (set GET_PIP to a local copy)");
+            // allowlist D-99: a GET_PIP_URL is never fetched (no hash to check it against).
+            if std::env::var_os("GET_PIP_URL").is_some_and(|v| !v.is_empty()) {
+                m.push_str("\npyenv-virtualenv: GET_PIP_URL is ignored");
+            }
+            Err(m)
+        }
     }
 }
 

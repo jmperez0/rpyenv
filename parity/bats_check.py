@@ -100,6 +100,9 @@ def main(argv):
     suite = "pyenv"
     if argv[:1] == ["--suite"]:
         suite, argv = argv[1], argv[2:]
+    if suite not in SUITES:
+        print(f"bats_check.py: unknown suite {suite!r}; use one of: {', '.join(SUITES)}", file=sys.stderr)
+        return 2
     exp_name, files_name, heading = SUITES[suite]
     with open(argv[0], encoding="utf-8") as f:
         text = f.read()

@@ -20,11 +20,22 @@ fn wide(s: &std::ffi::OsStr) -> Vec<u16> {
 
 /// Creates the folder `link` as a junction to the absolute folder `target`.
 pub fn create(link: &Path, target: &Path) -> std::io::Result<()> {
-    if !target.is_absolute() {
-        return Err(std::io::Error::new(
+    let invalid = |why: &str| {
+        Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
-            "junction target must be absolute",
-        ));
+            why.to_string(),
+        ))
+    };
+    if !target.is_absolute() {
+        return invalid("junction target must be absolute");
+    }
+    // A drive path only: a verbatim (`\\?\`) or UNC target would make a malformed `\??\` name.
+    if target.as_os_str().to_string_lossy().starts_with(r"\\") {
+        return invalid("junction target must be a drive path");
+    }
+    // Both names, NUL-terminated, plus 8 header bytes, must fit the buffer's u16 lengths.
+    if (wide(target.as_os_str()).len() * 2 + 6) * 2 + 8 > usize::from(u16::MAX) {
+        return invalid("junction target is too long");
     }
     std::fs::create_dir(link)?;
     let result = (|| {
@@ -111,5 +122,25 @@ mod tests {
         assert!(link.join("inside").is_dir());
         std::fs::remove_dir(&link).unwrap();
         assert!(target.join("inside").is_dir());
+    }
+
+    /// Final review M5: verbatim or UNC targets, and names too long for the reparse buffer, are
+    /// refused before anything is made.
+    #[test]
+    fn odd_targets_are_refused() {
+        let t = tempfile::tempdir().unwrap();
+        let link = t.path().join("link");
+        for target in [r"\\?\C:\x", r"\\server\share\x"] {
+            let e = super::create(&link, std::path::Path::new(target)).unwrap_err();
+            assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput, "{target}");
+        }
+        let long = format!(r"C:\{}", "a".repeat(40_000));
+        assert_eq!(
+            super::create(&link, std::path::Path::new(&long))
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+        assert!(!link.exists());
     }
 }
