@@ -19,7 +19,7 @@ import allowlist  # noqa: E402
 import diff_cases  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ID = re.compile(r"\ballowlist\s+(D-\d{2})\b")
+ID = re.compile(r"\ballowlist\s+(D-\d{2,3})\b")
 FN = re.compile(r"(pub(\([^)]*\))?\s+)?(async\s+)?fn\s+(\w+)")
 EXECUTION, CITATION, WAIVED = "by execution", "by test citation", "waived"
 

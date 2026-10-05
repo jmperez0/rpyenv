@@ -624,6 +624,38 @@ warns when it finds one. pyenv-win has the same limitation.
     Each deletion is confirmed unless `-f` is given.
   - Uninstalling a virtualenv by its link name deletes both the environment
     and the link.
+- **The fallbacks work through shims** (allowlist D-95). pyenv-virtualenv
+  1.4.0 on pyenv 2.8.8 runs its `which` hooks only after core's `system`
+  step, so they never fire there. rpyenv tries the fallbacks for each
+  selected env when the env lacks the command, before the next version and
+  before `system`, and the result is always a file.
+- **Creation details** (allowlist D-96 to D-99):
+  - `-p`/`--python <x>` takes the next word, resolved as upstream does;
+  - `-u`/`--upgrade` implies `-f`;
+  - an existing `versions/<name>` that is something other than this env's link
+    is refused, even with `-f`;
+  - an env made from `system` gets no self-link;
+  - pip is ensured for every base unless declined, through the env's own
+    `ensurepip`, else a local `GET_PIP` file. rpyenv never downloads
+    `get-pip.py` (§2: rpyenv is no hash authority).
+- **`virtualenv-init`** (Linux) prints upstream's auto-activation code for
+  bash, zsh and fish. Its `source activate` helpers live in
+  `$PYENV_ROOT/.rpyenv/virtualenv/shims` (allowlist D-102).
+- **Windows** (allowlist D-101):
+  - `versions\<name>` is a directory junction, made with
+    `FSCTL_SET_REPARSE_POINT` and removed with `remove_dir`, never followed;
+  - `pyenv versions` lists `<base>\envs\<name>` and `<name> --> <target>`;
+  - `<base>/envs/<name>` is accepted with either separator and printed with `\`;
+  - env names are never given a `-win32` suffix;
+  - `uninstall` deletes an env with its junction, and a base with its envs and
+    the junctions into them, each env confirmed unless `-f`;
+  - `activate`/`deactivate` work through the PowerShell function (variables
+    and the prompt only; `PATH` is untouched, the shims do the rest), use MSYS
+    paths in Git Bash, and without integration (cmd) print the `set` lines and
+    exit 1, as `pyenv shell` does (D-89);
+  - `virtualenv-init` prints nothing;
+  - only the system-site-packages fallback applies, searching `home` the
+    Windows way (the folder, then `Scripts`); conda is M7.
 
 ## 11. Error handling
 

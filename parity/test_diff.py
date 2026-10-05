@@ -143,6 +143,8 @@ class PluginAndLinks(unittest.TestCase):
                 self.assertEqual(os.readlink(link),
                                  os.path.join(places["root"], "versions", diff.VERSIONS[0], "envs", "e"))
                 self.assertEqual(os.readlink(os.path.join(places["root"], "plugins", "pyenv-virtualenv")), plugin)
+                # {v0} expands in paths too, so the link's target is the file the case wrote.
+                self.assertTrue(os.path.isfile(os.path.join(link, "bin", "python")))
                 places = diff.build("unused", case, plugin_dir=None)
                 self.assertFalse(os.path.lexists(os.path.join(places["root"], "plugins", "pyenv-virtualenv")))
             finally:

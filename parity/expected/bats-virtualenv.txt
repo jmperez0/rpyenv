@@ -1,53 +1,53 @@
-# Expected failures of pyenv-virtualenv v1.4.0's bats suite against rpyenv (plan M4b Task 1).
+# Expected failures of pyenv-virtualenv v1.4.0's bats suite against rpyenv (plan M4b; harness doc §1.2).
 # <file> | <test> | <reason: an allowlist row or a milestone>
-activate.bats | activate virtualenv from current version | M4b not built yet
-activate.bats | activate virtualenv from current version with custom prompt | M4b not built yet
-activate.bats | activate virtualenv from current version (quiet) | M4b not built yet
-activate.bats | activate virtualenv from current version (verbose) | M4b not built yet
-activate.bats | activate virtualenv from current version (without pyenv-virtualenv-init) | M4b not built yet
-activate.bats | activate virtualenv from current version (fish) | M4b not built yet
-activate.bats | activate virtualenv from current version (fish) (without pyenv-virtualenv-init) | M4b not built yet
-activate.bats | activate virtualenv from command-line argument | M4b not built yet
-activate.bats | activate virtualenv from command-line argument (without pyenv-virtualenv-init) | M4b not built yet
-activate.bats | activate virtualenv from command-line argument (fish) | M4b not built yet
-activate.bats | activate virtualenv from command-line argument (fish) (without pyenv-virtualenv-init) | M4b not built yet
-activate.bats | unset invokes deactivate | M4b not built yet
-activate.bats | should fail if there are multiple versions | M4b not built yet
-activate.bats | activate if the first virtualenv is a virtualenv | M4b not built yet
-conda-activate.bats | activate conda root from current version | M4b not built yet
-conda-activate.bats | activate conda root from current version with custom prompt | M4b not built yet
-conda-activate.bats | activate conda root from current version (fish) | M4b not built yet
-conda-activate.bats | activate conda root from command-line argument | M4b not built yet
-conda-activate.bats | activate conda env from current version | M4b not built yet
-conda-activate.bats | activate conda env from command-line argument | M4b not built yet
-conda.bats | create virtualenv by conda create | M4b not built yet
-conda.bats | create virtualenv by conda create with -p | M4b not built yet
-conda.bats | create virtualenv by conda create with --python | M4b not built yet
-delete.bats | delete virtualenv | M4b not built yet
-envs.bats | path should be handled properly even if there is 'envs' in PYENV_ROOT | M4b not built yet
-hooks.bats | pyenv-virtualenv hooks | M4b not built yet
-hooks.bats | pyenv-sh-activate hooks | M4b not built yet
-hooks.bats | deactivate virtualenv | M4b not built yet
-pip.bats | install pip with ensurepip | M4b not built yet
-pip.bats | install pip without using ensurepip | M4b not built yet
-prefix.bats | resolves a version that is not an exact match | M4b not built yet
-python.bats | resolve python executable from enabled version | M4b not built yet
-python.bats | resolve python executable from other versions | M4b not built yet
-python.bats | cannot resolve python executable | M4b not built yet
-pyvenv.bats | use venv if virtualenv is not available | M4b not built yet
-pyvenv.bats | not use venv if virtualenv is available | M4b not built yet
-pyvenv.bats | install virtualenv if venv is not available | M4b not built yet
-pyvenv.bats | install virtualenv if -p has given | M4b not built yet
-pyvenv.bats | install virtualenv if --python has given | M4b not built yet
-pyvenv.bats | install virtualenv with unsetting troublesome pip options | M4b not built yet
-version.bats | display virtualenv version | M4b not built yet
-version.bats | display venv version | M4b not built yet
-virtualenv.bats | create virtualenv from given version | M4b not built yet
-virtualenv.bats | create virtualenv from a given prefix | M4b not built yet
-virtualenv.bats | create virtualenv from current version | M4b not built yet
-virtualenv.bats | create virtualenv with short options | M4b not built yet
-virtualenv.bats | create virtualenv with long options | M4b not built yet
-virtualenv.bats | slash allowed if it is the long name of the virtualenv | M4b not built yet
-virtualenvs.bats | system venv | M4b not built yet
-virtualenvs.bats | list virtual environments with hit prefix | M4b not built yet
-virtualenvs.bats | hit prefix matches alias version name | M4b not built yet
+activate.bats | activate virtualenv from current version | D-52 the expected output comes from a stubbed pyenv-sh-deactivate, and the stubs select versions the fixture doesn't have
+activate.bats | activate virtualenv from current version with custom prompt | D-52 the expected output comes from a stubbed pyenv-sh-deactivate, and the stubs select versions the fixture doesn't have
+activate.bats | activate virtualenv from current version (quiet) | D-52 the expected output comes from a stubbed pyenv-sh-deactivate, and the stubs select versions the fixture doesn't have
+activate.bats | activate virtualenv from current version (verbose) | D-52 the expected output comes from a stubbed pyenv-sh-deactivate, and the stubs select versions the fixture doesn't have
+activate.bats | activate virtualenv from current version (without pyenv-virtualenv-init) | D-52 the expected output comes from a stubbed pyenv-sh-deactivate, and the stubs select versions the fixture doesn't have
+activate.bats | activate virtualenv from current version (fish) | D-52 the expected output comes from a stubbed pyenv-sh-deactivate, and the stubs select versions the fixture doesn't have
+activate.bats | activate virtualenv from current version (fish) (without pyenv-virtualenv-init) | D-52 the expected output comes from a stubbed pyenv-sh-deactivate, and the stubs select versions the fixture doesn't have
+activate.bats | activate virtualenv from command-line argument | D-52 the expected output comes from a stubbed pyenv-sh-deactivate, and the stubs select versions the fixture doesn't have
+activate.bats | activate virtualenv from command-line argument (without pyenv-virtualenv-init) | D-52 the expected output comes from a stubbed pyenv-sh-deactivate, and the stubs select versions the fixture doesn't have
+activate.bats | activate virtualenv from command-line argument (fish) | D-52 the expected output comes from a stubbed pyenv-sh-deactivate, and the stubs select versions the fixture doesn't have
+activate.bats | activate virtualenv from command-line argument (fish) (without pyenv-virtualenv-init) | D-52 the expected output comes from a stubbed pyenv-sh-deactivate, and the stubs select versions the fixture doesn't have
+activate.bats | unset invokes deactivate | D-52 the expected output comes from a stubbed pyenv-sh-deactivate, and the stubs select versions the fixture doesn't have
+activate.bats | should fail if there are multiple versions | D-52 the expected output comes from a stubbed pyenv-sh-deactivate, and the stubs select versions the fixture doesn't have
+activate.bats | activate if the first virtualenv is a virtualenv | D-52 the expected output comes from a stubbed pyenv-sh-deactivate, and the stubs select versions the fixture doesn't have
+conda-activate.bats | activate conda root from current version | D-52 the expected output comes from a stubbed pyenv-sh-deactivate, and the stubs select versions the fixture doesn't have
+conda-activate.bats | activate conda root from current version with custom prompt | D-52 the expected output comes from a stubbed pyenv-sh-deactivate, and the stubs select versions the fixture doesn't have
+conda-activate.bats | activate conda root from current version (fish) | D-52 the expected output comes from a stubbed pyenv-sh-deactivate, and the stubs select versions the fixture doesn't have
+conda-activate.bats | activate conda root from command-line argument | D-52 the expected output comes from a stubbed pyenv-sh-deactivate, and the stubs select versions the fixture doesn't have
+conda-activate.bats | activate conda env from current version | D-52 the expected output comes from a stubbed pyenv-sh-deactivate, and the stubs select versions the fixture doesn't have
+conda-activate.bats | activate conda env from command-line argument | D-52 the expected output comes from a stubbed pyenv-sh-deactivate, and the stubs select versions the fixture doesn't have
+conda.bats | create virtualenv by conda create | D-52 the env is created through the suite's stubbed pyenv-exec; rpyenv runs the base's Python itself
+conda.bats | create virtualenv by conda create with -p | D-52 the env is created through the suite's stubbed pyenv-exec; rpyenv runs the base's Python itself
+conda.bats | create virtualenv by conda create with --python | D-52 the env is created through the suite's stubbed pyenv-exec; rpyenv runs the base's Python itself
+delete.bats | delete virtualenv | D-52 a stub states what the fixture contradicts (a plain folder claimed as a virtualenv)
+envs.bats | path should be handled properly even if there is 'envs' in PYENV_ROOT | D-52 the env is created through the suite's stubbed pyenv-exec; rpyenv runs the base's Python itself
+hooks.bats | pyenv-virtualenv hooks | D-51 no bash hook points (before_activate, after_virtualenv, ...)
+hooks.bats | pyenv-sh-activate hooks | D-51 no bash hook points (before_activate, after_virtualenv, ...)
+hooks.bats | deactivate virtualenv | D-51 no bash hook points (before_activate, after_virtualenv, ...)
+pip.bats | install pip with ensurepip | D-99 rpyenv never downloads get-pip.py; the suite's pip step also runs through a stubbed pyenv-exec (D-52)
+pip.bats | install pip without using ensurepip | D-99 rpyenv never downloads get-pip.py; the suite's pip step also runs through a stubbed pyenv-exec (D-52)
+prefix.bats | resolves a version that is not an exact match | D-52 a stub states what the fixture contradicts (the selected version)
+python.bats | resolve python executable from enabled version | D-52 the interpreter is resolved through the suite's stubbed pyenv-which, pyenv-whence and python-build
+python.bats | resolve python executable from other versions | D-52 the interpreter is resolved through the suite's stubbed pyenv-which, pyenv-whence and python-build
+python.bats | cannot resolve python executable | D-52 the interpreter is resolved through the suite's stubbed pyenv-which, pyenv-whence and python-build
+pyvenv.bats | use venv if virtualenv is not available | D-52 the env is created through the suite's stubbed pyenv-exec; rpyenv runs the base's Python itself
+pyvenv.bats | not use venv if virtualenv is available | D-52 the env is created through the suite's stubbed pyenv-exec; rpyenv runs the base's Python itself
+pyvenv.bats | install virtualenv if venv is not available | D-52 the env is created through the suite's stubbed pyenv-exec; rpyenv runs the base's Python itself
+pyvenv.bats | install virtualenv if -p has given | D-52 the env is created through the suite's stubbed pyenv-exec; rpyenv runs the base's Python itself
+pyvenv.bats | install virtualenv if --python has given | D-52 the env is created through the suite's stubbed pyenv-exec; rpyenv runs the base's Python itself
+pyvenv.bats | install virtualenv with unsetting troublesome pip options | D-52 the env is created through the suite's stubbed pyenv-exec; rpyenv runs the base's Python itself
+version.bats | display virtualenv version | D-52 the backend version comes from the suite's stubbed pyenv-exec
+version.bats | display venv version | D-52 the backend version comes from the suite's stubbed pyenv-exec
+virtualenv.bats | create virtualenv from given version | D-52 the env is created through the suite's stubbed pyenv-exec; rpyenv runs the base's Python itself
+virtualenv.bats | create virtualenv from a given prefix | D-52 the env is created through the suite's stubbed pyenv-exec; rpyenv runs the base's Python itself
+virtualenv.bats | create virtualenv from current version | D-52 the env is created through the suite's stubbed pyenv-exec; rpyenv runs the base's Python itself
+virtualenv.bats | create virtualenv with short options | D-52 the env is created through the suite's stubbed pyenv-exec; rpyenv runs the base's Python itself
+virtualenv.bats | create virtualenv with long options | D-52 the env is created through the suite's stubbed pyenv-exec; rpyenv runs the base's Python itself
+virtualenv.bats | slash allowed if it is the long name of the virtualenv | D-52 the env is created through the suite's stubbed pyenv-exec; rpyenv runs the base's Python itself
+virtualenvs.bats | system venv | D-52 a stub states what the fixture contradicts (the selected version and its origin)
+virtualenvs.bats | list virtual environments with hit prefix | D-52 a stub states what the fixture contradicts (the selected version and its origin)
+virtualenvs.bats | hit prefix matches alias version name | D-52 a stub states what the fixture contradicts (the selected version and its origin)
