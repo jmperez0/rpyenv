@@ -118,6 +118,10 @@ pub fn which_pyenv(
                         warnings,
                     });
                 }
+                // An env lacking the command: spec §10's fallbacks (allowlist D-95).
+                if let Some(path) = crate::venv::fallback(ctx, v, &dir, command) {
+                    return Ok(Found { path, warnings });
+                }
             }
             Err(_) => missing.push(v.clone()),
         }
@@ -292,6 +296,21 @@ fn which_win_with(ctx: &Ctx, command: &str, runnable_only: bool) -> Result<Found
                 warnings: Vec::new(),
             });
         }
+        // allowlist D-101: only the system-site-packages fallback applies on Windows.
+        if let Some(home) = crate::venv::read_cfg(&dir, Flavor::PyenvWin)
+            .filter(|c| c.system_site_packages)
+            .and_then(|c| c.home)
+        {
+            if let Some(path) = win_hits(&home, program, &exts)
+                .into_iter()
+                .find(|h| !runnable_only || is_runnable_win(h))
+            {
+                return Ok(Found {
+                    path,
+                    warnings: Vec::new(),
+                });
+            }
+        }
     }
     Err(NotFound::WinNotFound)
 }
@@ -460,6 +479,34 @@ mod tests {
         let r = Root::new(&["3.12.1"]);
         let tool = r.bin("3.12.1", "tool");
         let found = which_pyenv(&r.ctx(Some("9.9:3.12.1")), "tool", false, &Skip::default());
+        assert_eq!(found.map(|f| f.path), Ok(tool));
+    }
+
+    /// allowlist D-95: through `which` (so through shims and `exec`), an env with system site
+    /// packages finds a base command before `system` is tried.
+    #[cfg(unix)]
+    #[test]
+    fn an_env_with_system_site_packages_finds_the_base_command() {
+        let r = Root::new(&["3.12.1"]);
+        let base = r.root().join("versions/3.12.1");
+        let tool = r.bin("3.12.1", "basetool");
+        let env = base.join("envs/ssp");
+        fs::create_dir_all(env.join("bin")).unwrap();
+        fs::write(env.join("bin/activate"), "").unwrap();
+        fs::write(
+            env.join("pyvenv.cfg"),
+            format!(
+                "home = {}/bin\ninclude-system-site-packages = true\n",
+                base.display()
+            ),
+        )
+        .unwrap();
+        let found = which_pyenv(
+            &r.ctx(Some("3.12.1/envs/ssp")),
+            "basetool",
+            false,
+            &Skip::default(),
+        );
         assert_eq!(found.map(|f| f.path), Ok(tool));
     }
 
