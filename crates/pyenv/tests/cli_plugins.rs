@@ -436,3 +436,72 @@ fn stale_built_in_links_are_pruned() {
     assert!(dir.join("pyenv-root").exists());
     assert!(std::fs::symlink_metadata(dir.join("pyenv-gone")).is_err());
 }
+
+/// Re-review I-1: a `.rpyenv/libexec` that is a symlink leads into someone else's folder,
+/// where nothing is pruned, moved aside or replaced. All paths stay in the fixture.
+#[test]
+fn a_symlinked_links_folder_is_left_alone() {
+    let f = Fixture::new();
+    let mine = f.base.join("mine");
+    f.file(&mine.join("pyenv-root"), "mine");
+    f.file(&mine.join("target"), "");
+    std::os::unix::fs::symlink(mine.join("target"), mine.join("pyenv-myplugin")).unwrap();
+    std::fs::create_dir_all(f.root.join(".rpyenv")).unwrap();
+    std::os::unix::fs::symlink(&mine, f.root.join(".rpyenv/libexec")).unwrap();
+    plugin(&f, "x", "hi", "echo ok\n");
+    assert_eq!(run(&f, &["hi"]).0, "ok\n");
+    assert_eq!(
+        std::fs::read_to_string(mine.join("pyenv-root")).unwrap(),
+        "mine"
+    );
+    assert!(std::fs::symlink_metadata(mine.join("pyenv-myplugin")).is_ok());
+    let names: Vec<_> = std::fs::read_dir(&mine)
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(names.len(), 3, "{names:?}");
+}
+
+/// Re-review I-1: a file where a link belongs is moved aside like a folder, not replaced.
+#[test]
+fn a_file_in_a_link_s_place_is_moved_aside() {
+    let f = Fixture::new();
+    let dir = f.root.join(".rpyenv/libexec");
+    f.file(&dir.join("pyenv-root"), "mine");
+    plugin(&f, "x", "where", "pyenv-root\n");
+    assert_eq!(run(&f, &["where"]).0, format!("{}\n", f.root.display()));
+    let kept: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|e| std::fs::read_to_string(e.unwrap().path()).ok())
+        .filter(|s| s == "mine")
+        .collect();
+    assert_eq!(kept.len(), 1);
+}
+
+/// Re-review M-2: only links to this binary are pruned; another binary's stay.
+#[test]
+fn links_to_other_files_are_not_pruned() {
+    let f = Fixture::new();
+    let dir = f.root.join(".rpyenv/libexec");
+    f.file(&f.base.join("other/pyenv"), "");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::os::unix::fs::symlink(f.base.join("other/pyenv"), dir.join("pyenv-newer")).unwrap();
+    plugin(&f, "x", "hi", "echo ok\n");
+    run(&f, &["hi"]);
+    assert!(std::fs::symlink_metadata(dir.join("pyenv-newer")).is_ok());
+}
+
+/// Re-review M-3: with a relative PYENV_ROOT the links folder is still found after `cd`.
+#[test]
+fn a_relative_root_keeps_the_built_ins_reachable() {
+    let f = Fixture::new();
+    assert_eq!(f.root.parent(), f.work.parent());
+    plugin(&f, "x", "where", "cd / && pyenv-root\n");
+    let r = f.pyenv_env(&["where"], &[("PYENV_ROOT", "../root")]);
+    assert_eq!(
+        (r.stdout.as_str(), r.code),
+        ("../root\n", 0),
+        "{}",
+        r.stderr
+    );
+}

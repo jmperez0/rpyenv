@@ -80,3 +80,28 @@ fn a_plugin_name_cannot_leave_the_plugin_folders() {
         (format!("pyenv: no such command '{name}'\r\n"), 1)
     );
 }
+
+/// Re-review M-5: with the marker, `completions` prints `--help`, then the plugin's own
+/// output and exit code; `\n` after `--help` when an integrated POSIX shell reads it.
+#[test]
+fn a_batch_plugin_s_completions_pass_through() {
+    let f = Fixture::new();
+    f.file(
+        &f.root.join("plugins/x/bin/pyenv-ask.cmd"),
+        "@echo off\r\necho args=%*\r\necho err>&2\r\nexit /b 7\r\n# Provide pyenv completions\r\n",
+    );
+    let pathext = ("PATHEXT", ".COM;.EXE;.BAT;.CMD");
+    let r = f.pyenv_env(&["completions", "ask", "a", "b"], &[pathext]);
+    assert_eq!(
+        (r.stdout.as_str(), r.code),
+        ("--help\r\nargs=--complete a b\r\n", 7),
+        "{}",
+        r.stderr
+    );
+    assert_eq!(r.stderr, "err\r\n");
+    let r = f.pyenv_env(
+        &["completions", "ask", "a", "b"],
+        &[pathext, ("PYENV_SHELL", "bash")],
+    );
+    assert_eq!(r.stdout, "--help\nargs=--complete a b\r\n");
+}
