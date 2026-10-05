@@ -21,8 +21,8 @@ const PWSH_FUNCTION: &str = r#"function pyenv {
   $rest = @()
   if ($args.Count -gt 0) { $command = $args[0]; $rest = @($args | Select-Object -Skip 1) }
   $pyenv = Get-Command -CommandType Application pyenv -TotalCount 1
-  if ($command -eq 'shell' -and $rest.Count -gt 0 -and $rest[0] -ne '--help') {
-    $shell_cmds = & $pyenv sh-shell @rest
+  if (($command -eq 'shell' -and $rest.Count -gt 0 -and $rest[0] -ne '--help') -or $command -eq 'activate' -or $command -eq 'deactivate') {
+    $shell_cmds = & $pyenv "sh-$command" @rest
     if ($LASTEXITCODE -ne 0) { $shell_cmds; return }
     if ($shell_cmds) { Invoke-Expression ($shell_cmds -join "`n") }
   } elseif ($command -eq '') {
