@@ -51,6 +51,9 @@ const COMMANDS: &[(&str, Command)] = &[
     ("version-origin", version::version_origin),
     ("versions", versions::versions),
     ("virtualenv", venv::virtualenv),
+    ("virtualenv-delete", venv::virtualenv_delete),
+    ("virtualenv-prefix", venv::virtualenv_prefix),
+    ("virtualenvs", venv::virtualenvs),
     ("whence", which::whence),
     ("which", which::which),
 ];

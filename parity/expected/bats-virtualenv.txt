@@ -32,8 +32,6 @@ conda.bats | create virtualenv by conda create with --python | M4b not built yet
 conda-deactivate.bats | deactivate conda root | M4b not built yet
 conda-deactivate.bats | deactivate conda root (fish) | M4b not built yet
 conda-deactivate.bats | deactivate conda env | M4b not built yet
-conda-prefix.bats | display conda root | M4b not built yet
-conda-prefix.bats | display conda env | M4b not built yet
 deactivate.bats | deactivate virtualenv | M4b not built yet
 deactivate.bats | deactivate virtualenv (quiet) | M4b not built yet
 deactivate.bats | deactivate virtualenv (verbose) | M4b not built yet
@@ -46,10 +44,6 @@ deactivate.bats | deactivate virtualenv (fish) (with shell activation) | M4b not
 deactivate.bats | deactivate virtualenv (fish) (with shell activation) (quiet) | M4b not built yet
 deactivate.bats | deactivate virtualenv which has been activated manually (fish) | M4b not built yet
 delete.bats | delete virtualenv | M4b not built yet
-delete.bats | delete virtualenv by symlink | M4b not built yet
-delete.bats | delete virtualenv with symlink | M4b not built yet
-delete.bats | not delete virtualenv with different symlink | M4b not built yet
-delete.bats | not delete virtualenv with same name | M4b not built yet
 envs.bats | path should be handled properly even if there is 'envs' in PYENV_ROOT | M4b not built yet
 hooks.bats | pyenv-virtualenv hooks | M4b not built yet
 hooks.bats | pyenv-sh-activate hooks | M4b not built yet
@@ -64,21 +58,10 @@ init.bats | outputs zsh-specific syntax | M4b not built yet
 init.bats | outputs other shells syntax | M4b not built yet
 pip.bats | install pip with ensurepip | M4b not built yet
 pip.bats | install pip without using ensurepip | M4b not built yet
-prefix.bats | display prefix of virtualenv created by virtualenv | M4b not built yet
-prefix.bats | display prefix of virtualenv created by virtualenv (pypy) | M4b not built yet
-prefix.bats | display prefix of virtualenv created by virtualenv (jython) | M4b not built yet
-prefix.bats | display prefixes of virtualenv created by virtualenv | M4b not built yet
-prefix.bats | display prefix of virtualenv created by venv | M4b not built yet
-prefix.bats | display prefixes of virtualenv created by venv | M4b not built yet
-prefix.bats | display prefix of virtualenv created by conda | M4b not built yet
-prefix.bats | should fail if the version is the system | M4b not built yet
-prefix.bats | should fail if the version is not a virtualenv | M4b not built yet
-prefix.bats | should fail if one of the versions is not a virtualenv | M4b not built yet
 prefix.bats | resolves a version that is not an exact match | M4b not built yet
 python.bats | resolve python executable from enabled version | M4b not built yet
 python.bats | resolve python executable from other versions | M4b not built yet
 python.bats | cannot resolve python executable | M4b not built yet
-python.bats | invalid python name | M4b not built yet
 pyvenv.bats | use venv if virtualenv is not available | M4b not built yet
 pyvenv.bats | not use venv if virtualenv is available | M4b not built yet
 pyvenv.bats | install virtualenv if venv is not available | M4b not built yet
@@ -92,16 +75,7 @@ virtualenv.bats | create virtualenv from a given prefix | M4b not built yet
 virtualenv.bats | create virtualenv from current version | M4b not built yet
 virtualenv.bats | create virtualenv with short options | M4b not built yet
 virtualenv.bats | create virtualenv with long options | M4b not built yet
-virtualenv.bats | no whitespace allowed in virtualenv name | M4b not built yet
-virtualenv.bats | no tab allowed in virtualenv name | M4b not built yet
-virtualenv.bats | system not allowed as virtualenv name | M4b not built yet
-virtualenv.bats | no slash allowed in virtualenv name | M4b not built yet
 virtualenv.bats | slash allowed if it is the long name of the virtualenv | M4b not built yet
 virtualenvs.bats | system venv | M4b not built yet
-virtualenvs.bats | list virtual environments | M4b not built yet
 virtualenvs.bats | list virtual environments with hit prefix | M4b not built yet
-virtualenvs.bats | list bare virtual environments | M4b not built yet
-virtualenvs.bats | list bare virtual environments without aliases | M4b not built yet
-virtualenvs.bats | list virtual environments without aliases | M4b not built yet
 virtualenvs.bats | hit prefix matches alias version name | M4b not built yet
-virtualenvs.bats | completions output | M4b not built yet

@@ -78,6 +78,14 @@ pub fn uninstall(ctx: &Ctx, args: &[&str]) -> Output {
                 Reply::Line(_) => return out.with_code(1),
             }
         }
+        match crate::commands::venv::uninstall_related(ctx, v, force) {
+            Ok(crate::commands::venv::Related::Env) => continue,
+            Ok(crate::commands::venv::Related::Base) => {}
+            Err(o) => {
+                o.emit(ctx.flavor);
+                return out.with_code(o.code.max(1));
+            }
+        }
         if present {
             // An install of this name holds the same lock; do not pull its version away.
             let lock_path = ctx.root.join(".locks").join(format!("install-{name}"));
