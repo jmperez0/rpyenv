@@ -669,6 +669,12 @@ warns when it finds one. pyenv-win has the same limitation.
      cases add more. It runs pyenv through one fixture path in `conftest.py`.
    - a subset of upstream pyenv's bats suite, with small wrappers for its
      `pyenv-<cmd>` calls, on Linux
+   - pyenv-virtualenv v1.4.0's bats suite (commit `eda6455`), on Linux, against
+     rpyenv's built-in commands through `pyenv-<cmd>` links. An overlay skips the
+     "stub was called" check for commands rpyenv answers in-process (allowlist
+     D-52). It has its own expected-failure list,
+     `parity/expected/bats-virtualenv.txt`, and `installer.bats` is left out
+     (added by plan M4b).
    - expected failures (batch internals, cmd `shell` semantics) are listed
      with reasons
 
