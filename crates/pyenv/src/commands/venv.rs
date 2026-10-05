@@ -440,8 +440,10 @@ pub fn virtualenv(ctx: &Ctx, args: &[&str]) -> Output {
             .env_remove("VIRTUALENV_PYTHON");
         cmd.status().map_err(|e| (python, e))
     };
-    let code = match status {
-        Ok(s) => s.code().unwrap_or(1),
+    // A child killed by Ctrl+C counts as an interrupt even before rpyenv's own handler has
+    // set its flag (both get the signal; seen as exit 1 on CI).
+    let (code, by_sigint) = match status {
+        Ok(s) => (s.code().unwrap_or(1), killed_by_sigint(&s)),
         Err((p, e)) => {
             let mut out = cleanup(126);
             out.err(format!(
@@ -452,7 +454,7 @@ pub fn virtualenv(ctx: &Ctx, args: &[&str]) -> Output {
             return out;
         }
     };
-    if crate::install::interrupted() {
+    if by_sigint || crate::install::interrupted() {
         return cleanup(130);
     }
     if code != 0 {
@@ -485,6 +487,11 @@ pub fn virtualenv(ctx: &Ctx, args: &[&str]) -> Output {
             return out;
         }
     }
+    if !o.quiet {
+        if let Some(m) = crate::commands::activate::unrun_hooks(ctx, "virtualenv") {
+            rpyenv_core::textout::write(true, &format!("{m}\n"));
+        }
+    }
     let r = crate::commands::rehash::rehash(ctx, &[]);
     // The env is complete; a Ctrl+C during the rehash still ends with 130.
     let code = if crate::install::interrupted() {
@@ -496,6 +503,20 @@ pub fn virtualenv(ctx: &Ctx, args: &[&str]) -> Output {
         stderr: r.stderr,
         code,
         ..Output::new()
+    }
+}
+
+/// A child that SIGINT ended (Ctrl+C in its process group).
+fn killed_by_sigint(s: &std::process::ExitStatus) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        s.signal() == Some(2)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = s;
+        false
     }
 }
 

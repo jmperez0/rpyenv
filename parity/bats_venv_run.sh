@@ -42,6 +42,10 @@ chown -R tester "$work/run/test"
 : > "$out"
 cd "$work/run/test"
 for f in $(ls -- *.bats); do
+  # Each file starts with an empty `test/tmp`: a test that fails by design (it expects a stub
+  # rpyenv never calls) dies before its unstub, and the stub left in `tmp/bin`, first on the
+  # suite's PATH, would answer for the next file's command instead of rpyenv.
+  if [ -d "$work/run/test/tmp" ]; then find "$work/run/test/tmp" -mindepth 1 -delete; fi
   runuser -u tester -- "$bats/bin/bats" --tap "./$f" 2>&1 | sed "s|^|$f\t|" >> "$out" || true
 done
 echo "bats: $(grep -c -P '\tok ' "$out") ok, $(grep -c -P '\tnot ok ' "$out") not ok"

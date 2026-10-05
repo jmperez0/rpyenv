@@ -638,6 +638,11 @@ warns when it finds one. pyenv-win has the same limitation.
   - pip is ensured for every base unless declined, through the env's own
     `ensurepip`, else a local `GET_PIP` file. rpyenv never downloads
     `get-pip.py` (§2: rpyenv is no hash authority).
+- **Hooks** (D4, allowlist D-51): pyenv-virtualenv's hook points have no
+  equivalent, so hooks a user wrote for `activate`, `deactivate` or
+  `virtualenv` (which ran when the plugin provided those commands) stop running
+  now that the commands are built in. Those commands name such hook files on
+  stderr as not run, except with `--quiet`.
 - **`virtualenv-init`** (Linux) prints upstream's auto-activation code for
   bash, zsh and fish. Its `source activate` helpers live in
   `$PYENV_ROOT/.rpyenv/virtualenv/shims` (allowlist D-102).
