@@ -19,6 +19,7 @@ pub mod shellname;
 pub mod shim;
 pub mod shimset;
 pub mod textout;
+pub mod venv;
 pub mod verfile;
 pub mod vsort;
 pub mod wincmd;
