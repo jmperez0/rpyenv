@@ -67,45 +67,59 @@ fn is_own(file: &Path) -> bool {
     f.is_some() && (f == canon(&shim) || f == canon(&shimw))
 }
 
-/// `$PYENV_ROOT/.rpyenv/libexec`, with a `pyenv-<cmd>` symlink to this binary per built-in
-/// (Decision 2): made or repaired here, `None` when the folder can't be made (a read-only
-/// root). Each link is made under a unique name and renamed over the old one, so a run in
-/// parallel never finds one missing, and a link that can't be made leaves the rest.
+/// `$PYENV_ROOT/.rpyenv/libexec` (absolute, so a plugin that changes folder still finds
+/// it), with a `pyenv-<cmd>` symlink to this binary per built-in (Decision 2): made or
+/// repaired here, `None` when the folder can't be made (a read-only root). Each link is
+/// made under a unique name and renamed over the old one, so a run in parallel never
+/// finds one missing, and a link that can't be made leaves the rest. Nothing that isn't a
+/// link to this binary is ever removed or replaced: another entry at a link's name is
+/// moved aside, and a `.rpyenv` or `libexec` that is a symlink (someone else's folder) is
+/// only read.
 #[cfg(unix)]
 fn builtin_links(ctx: &Ctx) -> Option<PathBuf> {
     if ctx.flavor != Flavor::Pyenv {
         return None;
     }
     let exe = std::env::current_exe().ok()?;
-    let dir = ctx.root.join(".rpyenv").join("libexec");
+    let own = ctx.root.join(".rpyenv");
+    let dir = std::path::absolute(own.join("libexec")).ok()?;
     std::fs::create_dir_all(&dir).ok()?;
+    let real_dir = |p: &Path| std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir());
+    if !real_dir(&own) || !real_dir(&dir) {
+        return Some(dir);
+    }
+    let ours = |p: &Path| std::fs::read_link(p).ok().as_deref() == Some(exe.as_path());
     let names = crate::commands::builtin_names(Flavor::Pyenv);
-    // Links for built-ins this binary doesn't have (an older rpyenv's): only links go.
+    // This binary's links for built-ins it no longer has. Another binary's stay.
     for e in std::fs::read_dir(&dir).ok()?.flatten() {
         let file = e.file_name();
         let stale = file
             .to_str()
             .and_then(|n| n.strip_prefix("pyenv-"))
             .is_some_and(|c| !names.contains(&c));
-        if stale && e.file_type().is_ok_and(|t| t.is_symlink()) {
+        if stale && ours(&e.path()) {
             let _ = std::fs::remove_file(e.path());
         }
     }
     for name in names {
         let link = dir.join(format!("pyenv-{name}"));
-        if std::fs::read_link(&link).ok().as_deref() != Some(exe.as_path()) {
-            // A folder in the link's place is moved aside, never deleted.
-            if std::fs::symlink_metadata(&link).is_ok_and(|m| m.is_dir()) {
-                let aside = dir.join(format!(".pyenv-{name}.{}.aside", std::process::id()));
-                let _ = std::fs::rename(&link, aside);
+        if ours(&link) {
+            continue;
+        }
+        // A file or folder in the link's place is moved aside, never deleted or replaced.
+        if std::fs::symlink_metadata(&link).is_ok_and(|m| !m.file_type().is_symlink()) {
+            let aside = dir.join(format!(".pyenv-{name}.{}.aside", std::process::id()));
+            if std::fs::rename(&link, &aside).is_ok() && ours(&aside) {
+                // A parallel run made the link in between: that was moved, so put it back.
+                let _ = std::fs::rename(&aside, &link);
+                continue;
             }
-            let tmp = dir.join(format!(".pyenv-{name}.{}.tmp", std::process::id()));
+        }
+        let tmp = dir.join(format!(".pyenv-{name}.{}.tmp", std::process::id()));
+        let _ = std::fs::remove_file(&tmp);
+        if std::os::unix::fs::symlink(&exe, &tmp).is_err() || std::fs::rename(&tmp, &link).is_err()
+        {
             let _ = std::fs::remove_file(&tmp);
-            if std::os::unix::fs::symlink(&exe, &tmp).is_err()
-                || std::fs::rename(&tmp, &link).is_err()
-            {
-                let _ = std::fs::remove_file(&tmp);
-            }
         }
     }
     Some(dir)
