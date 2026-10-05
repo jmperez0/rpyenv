@@ -507,8 +507,12 @@ fn sh_activate_prints_upstream_s_posix_code() {
     let p = e.display();
     let (out, err, code) = bash(&f, &["sh-activate", "venv1"], &[]);
     assert_eq!((err.as_str(), code), ("", 0));
+    // Upstream's nested deactivate checks `/conda-meta` and `/bin/conda` (an empty prefix), so a
+    // host with conda there (GitHub's Ubuntu runner) gets this line, from upstream too.
+    let conda = Path::new("/conda-meta").is_dir() || Path::new("/bin/conda").is_file();
+    let unset_conda = if conda { "unset CONDA_PREFIX\n" } else { "" };
     assert_eq!(out, format!(
-        "unset PYENV_VIRTUAL_ENV;\nunset VIRTUAL_ENV;\n{DEACTIVATE_TAIL}export PYENV_VERSION=\"venv1\";\nexport PYENV_ACTIVATE_SHELL=1;\nexport PYENV_VIRTUAL_ENV=\"{p}\";\nexport VIRTUAL_ENV=\"{p}\";\nexport _OLD_VIRTUAL_PS1=\"${{PS1:-}}\";\nexport PS1=\"(venv1) ${{PS1:-}}\";\n"
+        "{unset_conda}unset PYENV_VIRTUAL_ENV;\nunset VIRTUAL_ENV;\n{DEACTIVATE_TAIL}export PYENV_VERSION=\"venv1\";\nexport PYENV_ACTIVATE_SHELL=1;\nexport PYENV_VIRTUAL_ENV=\"{p}\";\nexport VIRTUAL_ENV=\"{p}\";\nexport _OLD_VIRTUAL_PS1=\"${{PS1:-}}\";\nexport PS1=\"(venv1) ${{PS1:-}}\";\n"
     ));
 }
 
@@ -672,13 +676,18 @@ fn virtualenv_init_never_writes_through_a_link() {
 /// The host's real `python3`, for the one test that runs a real `python -m venv`. CI must have
 /// one; a developer machine without it skips the test with a note.
 fn real_python3() -> Option<PathBuf> {
-    // Not a conda install's Python (GitHub's Ubuntu runner has one on PATH): rpyenv makes
-    // conda envs with `conda create`, which isn't this test's case.
+    // The real binary behind the first `python3`, unless it belongs to a conda install
+    // (`<prefix>/conda-meta`): that one isn't this test's case.
     let found = std::env::var_os("PATH").and_then(|p| {
         std::env::split_paths(&p)
-            .filter(|d| !d.join("conda").exists() && !d.join("..").join("conda-meta").exists())
             .map(|d| d.join("python3"))
-            .find(|p| p.is_file())
+            .filter(|p| p.is_file())
+            .filter_map(|p| std::fs::canonicalize(p).ok())
+            .find(|p| {
+                p.parent()
+                    .and_then(Path::parent)
+                    .is_some_and(|prefix| !prefix.join("conda-meta").exists())
+            })
     });
     if found.is_none() {
         assert!(
@@ -692,15 +701,20 @@ fn real_python3() -> Option<PathBuf> {
 
 /// A real `python3 -m venv` (side-agent note, 2026-10-05: the other tests use a fake Python).
 /// A `system` env made with `--without-pip --copies`: no network, and the interpreter is
-/// copied, so nothing links to the real install. Then `exec`, `virtualenv-prefix`, uninstall.
+/// copied, so nothing links to the real install. The `system` Python itself is a copy in a
+/// scratch `bin`, so the system prefix is that folder and not, say, a `/usr` that has a
+/// `bin/conda` (GitHub's Ubuntu runner), which would make it a conda base. Python still finds
+/// its standard library at its built-in prefix. Then `exec`, `virtualenv-prefix`, uninstall.
 #[test]
 fn a_real_python_makes_a_working_env() {
     let Some(py) = real_python3() else {
         return;
     };
     let f = Fixture::new();
-    let path =
-        std::env::join_paths([f.syspath.clone(), py.parent().unwrap().to_path_buf()]).unwrap();
+    let sys_bin = f.base.join("sys").join("bin");
+    std::fs::create_dir_all(&sys_bin).unwrap();
+    std::fs::copy(&py, sys_bin.join("python3")).unwrap();
+    let path = std::env::join_paths([f.syspath.clone(), sys_bin]).unwrap();
     let path = path.to_str().unwrap().to_string();
     let env = &[("PATH", path.as_str())];
     let r = f.pyenv_env(
