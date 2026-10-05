@@ -4,7 +4,7 @@
 mod common;
 use common::winshell::{self, host, output};
 use common::Fixture;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// A stand-in base `python.bat`: `-m venv --help`, and `-m venv DIR` (no options).
 const FAKE_PY: &str = "@echo off\r\nif \"%~1\"==\"-m\" if \"%~2\"==\"venv\" goto venv\r\nexit /b 3\r\n:venv\r\nif \"%~3\"==\"--help\" exit /b 0\r\nif defined FAKE_VENV_FAIL (echo venv failed& exit /b 5)\r\nmkdir \"%~3\\Scripts\"\r\ncopy /y \"%~dp0pyvenv.template\" \"%~3\\pyvenv.cfg\" >nul\r\ncopy /y \"%~f0\" \"%~3\\Scripts\\python.bat\" >nul\r\ntype nul > \"%~3\\Scripts\\activate\"\r\ntype nul > \"%~3\\Scripts\\pip.exe\"\r\ntype nul > \"%~3\\Scripts\\python.exe\"\r\nexit /b 0\r\n";
@@ -165,4 +165,106 @@ fn git_bash_gets_an_msys_virtual_env() {
     assert_eq!(r.code, 0, "{}", r.stderr);
     assert!(r.stdout.contains("export VIRTUAL_ENV=\"/"), "{}", r.stdout);
     assert!(!r.stdout.contains('\r'), "LF only");
+}
+
+/// A real CPython install to copy into the scratch root: `RPYENV_TEST_PYTHON` (a folder with
+/// `python.exe`), else the first `python.exe` on `PATH` that sits in a full install (it has
+/// `Lib\venv`). Never a pyenv-win shim or an install under `.pyenv`: the test copies from it
+/// and never runs it. CI must have one; a machine without one skips with a note.
+fn real_python_home() -> Option<PathBuf> {
+    let full = |d: &Path| d.join("python.exe").is_file() && d.join("Lib").join("venv").is_dir();
+    if let Some(d) = std::env::var_os("RPYENV_TEST_PYTHON").map(PathBuf::from) {
+        assert!(
+            full(&d),
+            "RPYENV_TEST_PYTHON is not a CPython folder: {}",
+            d.display()
+        );
+        return Some(d);
+    }
+    let found = std::env::var_os("PATH").and_then(|p| {
+        std::env::split_paths(&p)
+            .filter(|d| {
+                let s = d.to_string_lossy().to_ascii_lowercase();
+                !s.contains(".pyenv") && !s.contains("shims")
+            })
+            .find(|d| full(d))
+    });
+    if found.is_none() {
+        assert!(
+            std::env::var_os("CI").is_none(),
+            "CI needs a CPython install on PATH"
+        );
+        eprintln!("skipped: no CPython install on PATH (set RPYENV_TEST_PYTHON)");
+    }
+    found
+}
+
+/// Copies a CPython install into `to`, leaving out what venv doesn't need: the top-level
+/// `Scripts`, `Doc` and `tcl`, and `Lib\site-packages`. `Lib\venv\scripts` holds the launcher
+/// venv copies, so names are only skipped at those two places.
+fn copy_install(from: &Path, to: &Path) {
+    fn copy(from: &Path, to: &Path, skip: &[&str]) {
+        std::fs::create_dir_all(to).unwrap();
+        for e in std::fs::read_dir(from).unwrap().flatten() {
+            let name = e.file_name();
+            let n = name.to_string_lossy().to_ascii_lowercase();
+            if skip.contains(&n.as_str()) {
+                continue;
+            }
+            let dest = to.join(&name);
+            if e.file_type().unwrap().is_dir() {
+                let inner: &[&str] = if n == "lib" { &["site-packages"] } else { &[] };
+                copy(&e.path(), &dest, inner);
+            } else {
+                std::fs::copy(e.path(), &dest).unwrap();
+            }
+        }
+    }
+    copy(from, to, &["scripts", "doc", "tcl"]);
+}
+
+/// A real `python -m venv` (side-agent note, 2026-10-05: the other tests use a fake Python):
+/// a copy of a CPython install as `versions\3.99.0`, an env behind a junction, `exec` through
+/// it, `virtualenv-prefix`, and uninstall taking the env and the junction.
+#[test]
+fn a_real_python_makes_a_working_env() {
+    let Some(home) = real_python_home() else {
+        return;
+    };
+    let f = Fixture::new();
+    let base = f.root.join("versions").join("3.99.0");
+    copy_install(&home, &base);
+    assert_eq!(
+        run(&f, &["virtualenv", "--without-pip", "3.99.0", "realenv"]).2,
+        0
+    );
+    let env = base.join("envs").join("realenv");
+    assert_eq!(
+        std::fs::read_link(f.root.join("versions").join("realenv")).unwrap(),
+        env
+    );
+    let r = f.pyenv_env(
+        &[
+            "exec",
+            "python",
+            "-c",
+            "import sys; print(sys.prefix.isascii(), sys.base_prefix == sys.prefix)",
+        ],
+        &[
+            ("PATHEXT", ".COM;.EXE;.BAT;.CMD"),
+            ("PYENV_VERSION", "realenv"),
+        ],
+    );
+    // The fixture root isn't ASCII, so the prefix itself isn't compared through the console.
+    assert_eq!(
+        (r.stdout.as_str(), r.code),
+        ("False False\r\n", 0),
+        "{}",
+        r.stderr
+    );
+    let (out, err, code) = run(&f, &["virtualenv-prefix", "realenv"]);
+    assert_eq!((out, code), (format!("{}\r\n", base.display()), 0), "{err}");
+    assert_eq!(run(&f, &["uninstall", "-f", "realenv"]).2, 0);
+    assert!(!env.exists());
+    assert!(std::fs::symlink_metadata(f.root.join("versions").join("realenv")).is_err());
 }
