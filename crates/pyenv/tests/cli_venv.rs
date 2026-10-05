@@ -666,3 +666,76 @@ fn virtualenv_init_never_writes_through_a_link() {
     assert_eq!(run(&f, &["virtualenv-init", "-", "bash"]).2, 0);
     assert_eq!(std::fs::read_dir(&mine).unwrap().count(), 0);
 }
+
+/// The host's real `python3`, for the one test that runs a real `python -m venv`. CI must have
+/// one; a developer machine without it skips the test with a note.
+fn real_python3() -> Option<PathBuf> {
+    let found = std::env::var_os("PATH").and_then(|p| {
+        std::env::split_paths(&p)
+            .map(|d| d.join("python3"))
+            .find(|p| p.is_file())
+    });
+    if found.is_none() {
+        assert!(
+            std::env::var_os("CI").is_none(),
+            "CI needs a python3 on PATH"
+        );
+        eprintln!("skipped: no python3 on PATH");
+    }
+    found
+}
+
+/// A real `python3 -m venv` (side-agent note, 2026-10-05: the other tests use a fake Python).
+/// A `system` env made with `--without-pip --copies`: no network, and the interpreter is
+/// copied, so nothing links to the real install. Then `exec`, `virtualenv-prefix`, uninstall.
+#[test]
+fn a_real_python_makes_a_working_env() {
+    let Some(py) = real_python3() else {
+        return;
+    };
+    let f = Fixture::new();
+    let path =
+        std::env::join_paths([f.syspath.clone(), py.parent().unwrap().to_path_buf()]).unwrap();
+    let path = path.to_str().unwrap().to_string();
+    let env = &[("PATH", path.as_str())];
+    let r = f.pyenv_env(
+        &[
+            "virtualenv",
+            "--without-pip",
+            "--copies",
+            "system",
+            "realenv",
+        ],
+        env,
+    );
+    assert_eq!(r.code, 0, "{}{}", r.stdout, r.stderr);
+    let dir = f.root.join("versions/realenv");
+    assert!(dir.join("pyvenv.cfg").is_file());
+    let mut with_version = env.to_vec();
+    with_version.push(("PYENV_VERSION", "realenv"));
+    let r = f.pyenv_env(
+        &["exec", "python", "-c", "import sys; print(sys.prefix)"],
+        &with_version,
+    );
+    assert_eq!(
+        (r.stdout.trim_end(), r.code),
+        (dir.to_str().unwrap(), 0),
+        "{}",
+        r.stderr
+    );
+    let r = f.pyenv_env(&["virtualenv-prefix", "realenv"], env);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert!(
+        PathBuf::from(r.stdout.trim_end()).join("bin").is_dir(),
+        "{}",
+        r.stdout
+    );
+    let r = f.pyenv_env(&["uninstall", "-f", "realenv"], env);
+    assert_eq!(
+        (r.stdout.as_str(), r.code),
+        ("pyenv: realenv uninstalled\n", 0),
+        "{}",
+        r.stderr
+    );
+    assert!(!dir.exists());
+}
