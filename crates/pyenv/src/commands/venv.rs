@@ -347,6 +347,18 @@ pub fn virtualenv(ctx: &Ctx, args: &[&str]) -> Output {
         (full, dir, Some(versions.join(&last)))
     };
     let force = o.force || o.upgrade;
+    // A `system` env lives at `versions/<name>` itself: that may only be this env from an
+    // earlier run, never an installed version or a user's link, even with -f (final review
+    // C2; allowlist D-97).
+    if link.is_none() && std::fs::symlink_metadata(&env_dir).is_ok() {
+        let env_like = !is_link(&env_dir) && venv::is_virtualenv(&env_dir, ctx.flavor);
+        if !env_like {
+            return Output::error(format!(
+                "pyenv-virtualenv: `{}' already exists.",
+                env_dir.display()
+            ));
+        }
+    }
     if let Some(l) = &link {
         if std::fs::symlink_metadata(l).is_ok() {
             let ours =
@@ -393,6 +405,8 @@ pub fn virtualenv(ctx: &Ctx, args: &[&str]) -> Output {
         .unwrap_or_else(|| ctx.root.join("cache"));
     let conda =
         ctx.flavor == Flavor::Pyenv && pathsearch::is_runnable(&base_dir.join("bin").join("conda"));
+    // Ctrl+C reaches the child too; rpyenv stays to clean up (final review I2).
+    crate::install::watch_interrupt();
     let status = if conda {
         conda_create(&base_dir, &last, &o, &cache, &base)
     } else {
@@ -427,6 +441,9 @@ pub fn virtualenv(ctx: &Ctx, args: &[&str]) -> Output {
             return out;
         }
     };
+    if crate::install::interrupted() {
+        return cleanup(130);
+    }
     if code != 0 {
         return cleanup(code);
     }
@@ -687,8 +704,12 @@ pub struct Target {
 /// `<root>/versions/<v>/envs/<e>`, checked by structure, not by text.
 fn is_env_path(ctx: &Ctx, p: &Path) -> bool {
     let envs = p.parent();
+    let base = envs.and_then(Path::parent);
     envs.and_then(Path::file_name).is_some_and(|n| n == "envs")
-        && envs.and_then(Path::parent).and_then(Path::parent) == Some(ctx.versions_dir().as_path())
+        && base.and_then(Path::parent) == Some(ctx.versions_dir().as_path())
+        // Reached without following a link a user put there (final review C1).
+        && base.is_some_and(|b| !is_link(b))
+        && envs.is_some_and(|e| !is_link(e))
 }
 
 /// Resolves `arg` as v1.4.0 does (reference "Resolving what to delete"). `Ok(None)`: nothing to
@@ -729,7 +750,7 @@ pub fn delete_target(ctx: &Ctx, arg: &str, force: bool) -> Result<Option<Target>
             )));
         }
         (target, Some(compat))
-    } else if venv::base_prefix(ctx, &name).is_ok() {
+    } else if venv::base_prefix(ctx, &name).is_ok() && venv::is_virtualenv(&compat, ctx.flavor) {
         (compat, None)
     } else if force {
         return Ok(None);
@@ -815,8 +836,9 @@ pub fn virtualenv_delete(ctx: &Ctx, args: &[&str]) -> Output {
 
 /// What `pyenv uninstall <arg>` did for envs (v1.4.0's uninstall/envs.bash).
 pub enum Related {
-    /// `arg` was an env (long name or link): deleted with its link; nothing is left to remove.
-    Env,
+    /// `arg` was an env (long name or link): deleted with its link, or a dangling link removed
+    /// (`true`), or nothing there (`false`); nothing is left for the caller to remove.
+    Env(bool),
     /// `arg` is a base: its envs (and their links) are gone; remove the base.
     Base,
 }
@@ -829,12 +851,35 @@ pub fn uninstall_related(ctx: &Ctx, arg: &str, force: bool) -> Result<Related, O
     let link_to_env =
         is_link(&compat) && std::fs::read_link(&compat).is_ok_and(|t| is_env_path(ctx, &t));
     if long || link_to_env {
-        if let Some(t) = delete_target(ctx, arg, force)? {
-            remove_target(ctx, &t, force)?;
-        }
-        return Ok(Related::Env);
+        return match delete_target(ctx, arg, force)? {
+            Some(t) => {
+                remove_target(ctx, &t, force)?;
+                Ok(Related::Env(true))
+            }
+            // `-f` and the env is gone: the dangling link still goes (final review I3).
+            None if link_to_env => {
+                let gone = if ctx.flavor == Flavor::Pyenv {
+                    std::fs::remove_file(&compat)
+                } else {
+                    std::fs::remove_dir(&compat)
+                };
+                gone.map(|()| Related::Env(true)).map_err(|e| {
+                    Output::error(format!(
+                        "pyenv-virtualenv: cannot remove {}: {e}",
+                        compat.display()
+                    ))
+                })
+            }
+            None => Ok(Related::Env(false)),
+        };
     }
-    let envs = ctx.versions_dir().join(name).join("envs");
+    let base = ctx.versions_dir().join(name);
+    // A user's link into `versions/`, or a base whose `envs` is a link: the caller removes it
+    // as a link, and nothing behind it is followed (final review C1).
+    if is_link(&base) || is_link(&base.join("envs")) {
+        return Ok(Related::Base);
+    }
+    let envs = base.join("envs");
     let mut names: Vec<String> = std::fs::read_dir(&envs)
         .map(|rd| {
             rd.flatten()

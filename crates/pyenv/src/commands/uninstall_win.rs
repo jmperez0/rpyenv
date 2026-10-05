@@ -151,8 +151,12 @@ pub fn uninstall(ctx: &Ctx, args: &[&str]) -> Output {
     for n in &names {
         // Envs go with their junctions, and a base takes its envs (spec §10).
         match crate::commands::venv::uninstall_related(ctx, n, force) {
-            Ok(crate::commands::venv::Related::Env) => {
-                say(&format!("pyenv: Successfully uninstalled {n}"));
+            Ok(crate::commands::venv::Related::Env(removed)) => {
+                if removed {
+                    say(&format!("pyenv: Successfully uninstalled {n}"));
+                } else if single {
+                    say(&format!("pyenv: version '{n}' not installed"));
+                }
                 continue;
             }
             Ok(crate::commands::venv::Related::Base) => {}
