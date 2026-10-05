@@ -120,6 +120,13 @@ fn orig_prefix(dir: &Path) -> Option<PathBuf> {
     Some(PathBuf::from(text.trim_end_matches(['\n', '\r'])))
 }
 
+/// A venv (`pyvenv.cfg`) or an old virtualenv (`orig-prefix.txt`), never a conda install:
+/// what `virtualenv-delete` may delete by its own name (final review I1).
+pub fn is_virtualenv(dir: &Path, flavor: Flavor) -> bool {
+    (read_cfg(dir, flavor).is_some() || orig_prefix(dir).is_some())
+        && !dir.join("bin").join("conda").exists()
+}
+
 /// `pyenv virtualenv-prefix <name>` for one version (reference "virtualenv-prefix", steps 1-6).
 pub fn base_prefix(ctx: &Ctx, name: &str) -> Result<PathBuf, VenvError> {
     let not_venv = || VenvError::NotVenv(name.to_string());

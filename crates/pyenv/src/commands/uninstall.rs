@@ -79,7 +79,7 @@ pub fn uninstall(ctx: &Ctx, args: &[&str]) -> Output {
             }
         }
         match crate::commands::venv::uninstall_related(ctx, v, force) {
-            Ok(crate::commands::venv::Related::Env) => continue,
+            Ok(crate::commands::venv::Related::Env(_)) => continue,
             Ok(crate::commands::venv::Related::Base) => {}
             Err(o) => {
                 o.emit(ctx.flavor);

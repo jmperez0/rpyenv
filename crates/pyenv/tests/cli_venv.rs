@@ -23,6 +23,7 @@ if [ "$1" = "-m" ] && [ "$2" = "venv" ]; then
   for a in "$@"; do [ "$a" = "--system-site-packages" ] && ssp=true; done
   mkdir -p "$dir/bin"
   printf 'home = %s/bin\ninclude-system-site-packages = %s\n' "$here" "$ssp" > "$dir/pyvenv.cfg"
+  if [ -n "$FAKE_VENV_SLEEP" ]; then sleep 30; fi
   ln -sf "$here/bin/python" "$dir/bin/python"
   : > "$dir/bin/activate"
   case " $* " in *" --without-pip "*) ;; *) [ -z "$FAKE_NO_PIP" ] && { printf '#!/bin/sh\n' > "$dir/bin/pip"; chmod 755 "$dir/bin/pip"; } ;; esac
@@ -738,4 +739,120 @@ fn a_real_python_makes_a_working_env() {
         r.stderr
     );
     assert!(!dir.exists());
+}
+
+/// Final review C1 (and M3): uninstalling a user's link into `versions/`, or a base whose
+/// `envs` is a link, never follows it. Everything outside the root survives.
+#[test]
+fn uninstall_never_follows_a_users_link() {
+    let f = Fixture::new();
+    let outside = f.base.join("outside");
+    f.file(&outside.join("conda/envs/userenv/data.txt"), "mine");
+    std::os::unix::fs::symlink(outside.join("conda"), f.root.join("versions/conda")).unwrap();
+    assert_eq!(run(&f, &["uninstall", "-f", "conda"]).2, 0);
+    assert!(outside.join("conda/envs/userenv/data.txt").is_file());
+    assert!(std::fs::symlink_metadata(f.root.join("versions/conda")).is_err());
+    let base = fake_base(&f, "3.12.1");
+    f.file(&outside.join("moved/e1/data.txt"), "mine");
+    std::os::unix::fs::symlink(outside.join("moved"), base.join("envs")).unwrap();
+    assert_eq!(run(&f, &["uninstall", "-f", "3.12.1"]).2, 0);
+    assert!(outside.join("moved/e1/data.txt").is_file());
+    assert!(!base.exists());
+}
+
+/// Final review C2 (allowlist D-97): a `system` env never lands on an installed version or
+/// through a user's link, even with `-f`.
+#[test]
+fn a_system_env_never_lands_on_a_version_or_a_link() {
+    let f = Fixture::new();
+    exe(&f, &f.syspath.join("python3"), FAKE_PYTHON);
+    exe(&f, &f.syspath.join("python"), FAKE_PYTHON);
+    let v = fake_base(&f, "3.12.2");
+    let (_, err, code) = run(&f, &["virtualenv", "-f", "system", "3.12.2"]);
+    assert_eq!(
+        (err, code),
+        (
+            format!("pyenv-virtualenv: `{}' already exists.\n", v.display()),
+            1
+        )
+    );
+    assert!(!v.join("pyvenv.cfg").exists());
+    let outside = f.base.join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::os::unix::fs::symlink(&outside, f.root.join("versions/mylink")).unwrap();
+    assert_eq!(run(&f, &["virtualenv", "-f", "system", "mylink"]).2, 1);
+    assert!(!outside.join("pyvenv.cfg").exists());
+}
+
+/// Final review I1: `virtualenv-delete` never deletes a conda install (it isn't a venv).
+#[test]
+fn virtualenv_delete_never_deletes_a_conda_install() {
+    let f = Fixture::new();
+    let conda = f.root.join("versions/miniforge3");
+    exe(&f, &conda.join("bin/python"), "#!/bin/sh\n");
+    exe(&f, &conda.join("bin/conda"), "#!/bin/sh\n");
+    f.file(&conda.join("bin/activate"), "");
+    assert_eq!(run(&f, &["virtualenv-delete", "-f", "miniforge3"]).2, 0);
+    assert!(conda.join("bin/conda").is_file());
+    assert_eq!(
+        run(&f, &["virtualenv-delete", "miniforge3"]).1,
+        "pyenv-virtualenv: `miniforge3' is not a virtualenv.\n"
+    );
+}
+
+/// Final review I2: Ctrl+C while `python -m venv` runs leaves no half-made env, exit 130.
+#[test]
+fn ctrl_c_during_creation_cleans_up() {
+    use std::os::unix::process::CommandExt;
+    use std::time::{Duration, Instant};
+    let f = Fixture::new();
+    let base = fake_base(&f, "3.12.1");
+    let mut child = f
+        .command(
+            Path::new(env!("CARGO_BIN_EXE_pyenv")),
+            &f.work,
+            &[("FAKE_VENV_SLEEP", "1")],
+        )
+        .args(["virtualenv", "3.12.1", "half"])
+        .process_group(0)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let cfg = base.join("envs/half/pyvenv.cfg");
+    let start = Instant::now();
+    while !cfg.exists() {
+        assert!(
+            start.elapsed() < Duration::from_secs(20),
+            "venv never started"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    common::sigint_group(child.id());
+    let start = Instant::now();
+    let status = loop {
+        if let Some(st) = child.try_wait().unwrap() {
+            break Some(st);
+        }
+        if start.elapsed() > Duration::from_secs(10) {
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    if status.is_none() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    assert_eq!(status.and_then(|s| s.code()), Some(130));
+    assert!(!base.join("envs/half").exists());
+}
+
+/// Final review I3: a link to an env that is gone is removed by `uninstall -f`.
+#[test]
+fn uninstall_removes_a_dangling_env_link() {
+    let f = Fixture::new();
+    let base = fake_base(&f, "3.12.1");
+    std::os::unix::fs::symlink(base.join("envs/gone"), f.root.join("versions/gone")).unwrap();
+    assert_eq!(run(&f, &["uninstall", "-f", "gone"]).2, 0);
+    assert!(std::fs::symlink_metadata(f.root.join("versions/gone")).is_err());
 }

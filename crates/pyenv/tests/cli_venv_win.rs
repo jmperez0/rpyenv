@@ -268,3 +268,49 @@ fn a_real_python_makes_a_working_env() {
     assert!(!env.exists());
     assert!(std::fs::symlink_metadata(f.root.join("versions").join("realenv")).is_err());
 }
+
+/// Final review C1: uninstalling a user's junction into `versions` never follows it.
+#[test]
+fn uninstall_never_follows_a_users_junction() {
+    let f = Fixture::new();
+    let outside = f.base.join("outside");
+    f.file(
+        &outside
+            .join("conda")
+            .join("envs")
+            .join("userenv")
+            .join("data.txt"),
+        "mine",
+    );
+    rpyenv_core::junction::create(
+        &f.root.join("versions").join("conda"),
+        &outside.join("conda"),
+    )
+    .unwrap();
+    assert_eq!(run(&f, &["uninstall", "-f", "conda"]).2, 0);
+    assert!(outside
+        .join("conda")
+        .join("envs")
+        .join("userenv")
+        .join("data.txt")
+        .is_file());
+    assert!(std::fs::symlink_metadata(f.root.join("versions").join("conda")).is_err());
+}
+
+/// Final review I3: a junction to an env that is gone is removed, and nothing removed is never
+/// reported as uninstalled.
+#[test]
+fn uninstall_removes_a_dangling_junction_and_reports_only_what_it_removed() {
+    let f = Fixture::new();
+    let b = base(&f, "3.13.1");
+    assert_eq!(run(&f, &["virtualenv", "3.13.1", "foo"]).2, 0);
+    std::fs::remove_dir_all(b.join("envs").join("foo")).unwrap();
+    let (out, _, code) = run(&f, &["uninstall", "-f", "foo"]);
+    assert_eq!(
+        (out.as_str(), code),
+        ("pyenv: Successfully uninstalled foo\r\n", 0)
+    );
+    assert!(std::fs::symlink_metadata(f.root.join("versions").join("foo")).is_err());
+    let (out, _, _) = run(&f, &["uninstall", "-f", "3.13.1/envs/nosuch"]);
+    assert!(!out.contains("Successfully"), "{out}");
+}
