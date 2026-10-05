@@ -324,3 +324,168 @@ fn version_help_and_completion() {
         "--help\n3.12.1\n"
     );
 }
+
+/// An env made on disk (no `pyenv virtualenv`): `versions/<base>/envs/<name>` and its link.
+fn make_env(f: &Fixture, base: &str, name: &str, ssp: bool) -> PathBuf {
+    let b = fake_base(f, base);
+    let e = b.join("envs").join(name);
+    std::fs::create_dir_all(e.join("bin")).unwrap();
+    std::os::unix::fs::symlink(b.join("bin/python"), e.join("bin/python")).unwrap();
+    std::fs::write(e.join("bin/activate"), "").unwrap();
+    std::fs::write(
+        e.join("pyvenv.cfg"),
+        format!(
+            "home = {}/bin\ninclude-system-site-packages = {ssp}\n",
+            b.display()
+        ),
+    )
+    .unwrap();
+    let link = f.root.join("versions").join(name);
+    if std::fs::symlink_metadata(&link).is_err() {
+        std::os::unix::fs::symlink(&e, &link).unwrap();
+    }
+    e
+}
+
+#[test]
+fn virtualenvs_lists_long_names_then_links() {
+    let f = Fixture::new();
+    let e1 = make_env(&f, "3.12.1", "venv1", false);
+    let b = f.root.join("versions/3.12.1");
+    assert_eq!(
+        run_env(&f, &["virtualenvs"], &[("PYENV_VERSION", "venv1")]).0,
+        format!("  3.12.1/envs/venv1 (created from {})\n* venv1 --> {} (set by PYENV_VERSION environment variable)\n", b.display(), e1.display())
+    );
+    assert_eq!(
+        run(&f, &["virtualenvs", "--bare"]).0,
+        "3.12.1/envs/venv1\nvenv1\n"
+    );
+    assert_eq!(
+        run(&f, &["virtualenvs", "--bare", "--skip-aliases"]).0,
+        "3.12.1/envs/venv1\n"
+    );
+    assert_eq!(
+        run(&f, &["virtualenvs", "--foo"]),
+        (
+            String::new(),
+            "Usage: pyenv virtualenvs [--bare] [--skip-aliases]\n".into(),
+            1
+        )
+    );
+}
+
+#[test]
+fn virtualenv_prefix_as_upstream() {
+    let f = Fixture::new();
+    make_env(&f, "3.12.1", "venv1", false);
+    make_env(&f, "3.12.1", "venv2", false);
+    let b = f.root.join("versions/3.12.1").display().to_string();
+    assert_eq!(run(&f, &["virtualenv-prefix", "venv1"]).0, format!("{b}\n"));
+    assert_eq!(
+        run(&f, &["virtualenv-prefix", "venv1", "venv2"]).0,
+        format!("{b}:{b}\n")
+    );
+    assert_eq!(
+        run(&f, &["virtualenv-prefix", "3.12.1"]),
+        (
+            String::new(),
+            "pyenv-virtualenv: version `3.12.1' is not a virtualenv\n".into(),
+            1
+        )
+    );
+    assert_eq!(
+        run(&f, &["virtualenv-prefix"]).1,
+        "pyenv-virtualenv: version `system' is not a virtualenv\n"
+    );
+}
+
+#[test]
+fn delete_by_link_or_long_name_removes_both() {
+    let f = Fixture::new();
+    let e1 = make_env(&f, "3.12.1", "venv1", false);
+    let e2 = make_env(&f, "3.12.1", "venv2", false);
+    assert_eq!(
+        run(&f, &["virtualenv-delete", "-f", "venv1"]),
+        (String::new(), String::new(), 0)
+    );
+    assert!(!e1.exists() && std::fs::symlink_metadata(f.root.join("versions/venv1")).is_err());
+    assert_eq!(
+        run(&f, &["virtualenv-delete", "-f", "3.12.1/envs/venv2"]).2,
+        0
+    );
+    assert!(!e2.exists() && std::fs::symlink_metadata(f.root.join("versions/venv2")).is_err());
+    assert!(f.root.join("versions/3.12.1/bin/python").is_file());
+}
+
+#[test]
+fn delete_asks_unless_forced() {
+    let f = Fixture::new();
+    let e1 = make_env(&f, "3.12.1", "venv1", false);
+    assert_eq!(run_stdin(&f, &["virtualenv-delete", "venv1"], "n\n").2, 1);
+    assert!(e1.exists());
+    assert_eq!(run_stdin(&f, &["virtualenv-delete", "venv1"], "Yup\n").2, 0);
+    assert!(!e1.exists());
+}
+
+/// Review focus 1, 2 and 3: an escaping name, a real version, and a link pointing outside are
+/// never deleted.
+#[test]
+fn delete_refuses_what_is_not_an_env() {
+    let f = Fixture::new();
+    fake_base(&f, "3.12.1");
+    let outside = f.base.join("outside");
+    std::fs::create_dir_all(outside.join("bin")).unwrap();
+    std::os::unix::fs::symlink(&outside, f.root.join("versions/mine")).unwrap();
+    assert_eq!(
+        run(&f, &["virtualenv-delete", "3.12.1"]).1,
+        "pyenv-virtualenv: `3.12.1' is not a virtualenv.\n"
+    );
+    assert_eq!(
+        run(&f, &["virtualenv-delete", "-f", "3.12.1"]),
+        (String::new(), String::new(), 0)
+    );
+    assert!(f.root.join("versions/3.12.1/bin/python").is_file());
+    let link = f.root.join("versions/mine");
+    assert_eq!(
+        run(&f, &["virtualenv-delete", "-f", "mine"]).1,
+        format!(
+            "pyenv-virtualenv: `{}' is a symlink for unknown location.\n",
+            link.display()
+        )
+    );
+    assert!(outside.join("bin").is_dir());
+    assert_eq!(run(&f, &["virtualenv-delete", "-f", "../../outside"]).2, 0);
+    assert!(outside.join("bin").is_dir());
+    assert_eq!(
+        run(&f, &["virtualenv-delete", "3.12.1/envs/nosuch"]).1,
+        "pyenv-virtualenv: virtualenv `nosuch' not installed\n"
+    );
+}
+
+/// Spec §10 and the v1.4.0 uninstall hook: an env by link name goes with its link; a base goes
+/// with its envs and their links; refusing one env stops the whole uninstall.
+#[test]
+fn uninstall_cascades() {
+    let f = Fixture::new();
+    let e1 = make_env(&f, "3.12.1", "venv1", false);
+    assert_eq!(
+        run(&f, &["uninstall", "-f", "venv1"]),
+        (String::new(), String::new(), 0)
+    );
+    assert!(!e1.exists() && std::fs::symlink_metadata(f.root.join("versions/venv1")).is_err());
+    let e2 = make_env(&f, "3.12.1", "a", false);
+    let e3 = make_env(&f, "3.12.1", "b", false);
+    let (_, _, code) = run_stdin(&f, &["uninstall", "3.12.1"], "y\nn\n");
+    assert_eq!(code, 1);
+    assert!(e2.exists() && e3.exists() && f.root.join("versions/3.12.1").is_dir());
+    assert_eq!(
+        run(&f, &["uninstall", "-f", "3.12.1"]).0,
+        "pyenv: 3.12.1 uninstalled\n"
+    );
+    for n in ["3.12.1", "a", "b"] {
+        assert!(
+            std::fs::symlink_metadata(f.root.join("versions").join(n)).is_err(),
+            "{n}"
+        );
+    }
+}

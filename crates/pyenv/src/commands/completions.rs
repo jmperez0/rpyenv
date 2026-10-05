@@ -16,6 +16,8 @@ pub(crate) enum Tail {
     VersionsBare,
     /// `pyenv versions --bare --skip-envs`
     VersionsBareSkipEnvs,
+    /// `pyenv virtualenvs --bare`
+    VirtualenvsBare,
     /// `pyenv-shims --short`
     ShimsShort,
     /// `pyenv-commands`
@@ -53,6 +55,7 @@ const fn e(name: &'static str, marker: bool, answer: Answer) -> Entry {
 use Answer::{Itself, Words};
 use Tail::{
     Commands, InstalledNames, Nothing, Rehash, ShimsShort, VersionsBare, VersionsBareSkipEnvs,
+    VirtualenvsBare,
 };
 
 /// Linux, from upstream's scripts at 2.8.8. A command not listed has no `--complete`.
@@ -110,6 +113,12 @@ pub(crate) const TABLE_PYENV: &[Entry] = &[
     ),
     e("whence", true, Words(&["--path"], ShimsShort)),
     e("virtualenv", true, Words(&[], VersionsBareSkipEnvs)),
+    e("virtualenv-delete", true, Words(&[], VirtualenvsBare)),
+    e(
+        "virtualenvs",
+        true,
+        Words(&["--bare", "--skip-aliases"], Nothing),
+    ),
     e("which", true, Words(&[], ShimsShort)),
 ];
 
@@ -178,6 +187,12 @@ pub(crate) const TABLE_WIN: &[Entry] = &[
     ),
     e("whence", true, Words(&["--path"], ShimsShort)),
     e("virtualenv", true, Words(&[], VersionsBareSkipEnvs)),
+    e("virtualenv-delete", true, Words(&[], VirtualenvsBare)),
+    e(
+        "virtualenvs",
+        true,
+        Words(&["--bare", "--skip-aliases"], Nothing),
+    ),
     e("which", true, Words(&[], ShimsShort)),
 ];
 
@@ -193,6 +208,7 @@ fn tail(ctx: &Ctx, t: Tail) -> Output {
         Tail::Nothing => Output::new(),
         Tail::VersionsBare => commands::versions::versions(ctx, &["--bare"]),
         Tail::VersionsBareSkipEnvs => commands::versions::versions(ctx, &["--bare", "--skip-envs"]),
+        Tail::VirtualenvsBare => commands::venv::virtualenvs(ctx, &["--bare"]),
         Tail::ShimsShort => commands::rehash::shims(ctx, &["--short"]),
         Tail::Commands => commands::misc::commands(ctx, &[]),
         Tail::InstalledNames => {

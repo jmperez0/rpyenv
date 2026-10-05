@@ -542,3 +542,300 @@ fn conda_create(
     let _ = std::fs::remove_file(&list);
     r
 }
+
+pub const DELETE_HELP: &str = "Usage: pyenv virtualenv-delete [-f|--force] <virtualenv>\n\n   -f  Attempt to remove the specified virtualenv without prompting\n       for confirmation. If the virtualenv does not exist, do not\n       display an error message.\n\nSee `pyenv virtualenvs` for a complete list of installed versions.\n\n";
+
+fn eol_name(ctx: &Ctx, name: &str) -> String {
+    match ctx.flavor {
+        Flavor::Pyenv => name.to_string(),
+        Flavor::PyenvWin => name.replace('/', "\\"),
+    }
+}
+
+/// `pyenv virtualenvs [--bare] [--skip-aliases]` (reference "pyenv virtualenvs").
+pub fn virtualenvs(ctx: &Ctx, args: &[&str]) -> Output {
+    let mut o = Output::new();
+    if args.contains(&"--complete") {
+        o.out("--bare");
+        o.out("--skip-aliases");
+        return o;
+    }
+    let (mut bare, mut skip_aliases) = (false, false);
+    for a in args {
+        match *a {
+            "--bare" => bare = true,
+            "--skip-aliases" => skip_aliases = true,
+            _ => return Output::error("Usage: pyenv virtualenvs [--bare] [--skip-aliases]"),
+        }
+    }
+    let current = if bare { Vec::new() } else { current_names(ctx) };
+    let origin = match ctx.flavor {
+        Flavor::Pyenv => select::version_origin(ctx),
+        Flavor::PyenvWin => select::win_origin(ctx),
+    };
+    let line = |name: &str, text: String| -> String {
+        if bare {
+            name.to_string()
+        } else if current
+            .iter()
+            .any(|c| c.replace('\\', "/") == name.replace('\\', "/"))
+        {
+            format!("* {text} (set by {origin})")
+        } else {
+            format!("  {text}")
+        }
+    };
+    let created = |name: &str| {
+        format!(
+            "{name} (created from {})",
+            venv::base_prefix(ctx, name)
+                .map(|p| p.display().to_string())
+                .unwrap_or_default()
+        )
+    };
+    let tops = rpyenv_core::installed::top_level(&ctx.versions_dir(), ctx.flavor);
+    for t in &tops {
+        if t.link.is_some() {
+            continue;
+        }
+        for e in rpyenv_core::installed::envs_of(t) {
+            let n = eol_name(ctx, &e.name);
+            o.out(line(&n, created(&n)));
+        }
+    }
+    for t in &tops {
+        match &t.link {
+            Some(target) if !skip_aliases => o.out(line(
+                &t.name,
+                format!("{} --> {}", t.name, target.display()),
+            )),
+            Some(_) => {}
+            None if t.path.join(bin_name(ctx)).join("activate").is_file() => {
+                o.out(line(&t.name, created(&t.name)))
+            }
+            None => {}
+        }
+    }
+    o
+}
+
+/// `pyenv virtualenv-prefix [<virtualenv>...]` (reference "pyenv virtualenv-prefix").
+pub fn virtualenv_prefix(ctx: &Ctx, args: &[&str]) -> Output {
+    let names: Vec<String> = if args.is_empty() {
+        let c = current_names(ctx);
+        if c.is_empty() {
+            vec!["system".into()]
+        } else {
+            c
+        }
+    } else {
+        select::split_colon(&args.join(":"))
+    };
+    let mut found = Vec::new();
+    for n in &names {
+        match venv::base_prefix(ctx, n) {
+            Ok(p) => found.push(p.display().to_string()),
+            Err(e) => return Output::error(e.message()),
+        }
+    }
+    let mut o = Output::new();
+    o.out(found.join(if ctx.flavor == Flavor::Pyenv {
+        ":"
+    } else {
+        ";"
+    }));
+    o
+}
+
+/// What `virtualenv-delete <arg>` removes.
+#[derive(Debug)]
+pub struct Target {
+    pub env: PathBuf,
+    pub link: Option<PathBuf>,
+}
+
+/// `<root>/versions/<v>/envs/<e>`, checked by structure, not by text.
+fn is_env_path(ctx: &Ctx, p: &Path) -> bool {
+    let envs = p.parent();
+    envs.and_then(Path::file_name).is_some_and(|n| n == "envs")
+        && envs.and_then(Path::parent).and_then(Path::parent) == Some(ctx.versions_dir().as_path())
+}
+
+/// Resolves `arg` as v1.4.0 does (reference "Resolving what to delete"). `Ok(None)`: nothing to
+/// delete, silently (`-f`). Every name segment must be plain (review focus 1).
+pub fn delete_target(ctx: &Ctx, arg: &str, force: bool) -> Result<Option<Target>, Output> {
+    let sep = |c: char| c == '/' || (ctx.flavor == Flavor::PyenvWin && c == '\\');
+    let name = arg.rsplit(sep).next().unwrap_or("").to_string();
+    let not_venv = || Output::error(format!("pyenv-virtualenv: `{arg}' is not a virtualenv."));
+    let missing = |force: bool| {
+        if force {
+            Ok(None)
+        } else {
+            Err(Output::error(format!(
+                "pyenv-virtualenv: virtualenv `{name}' not installed"
+            )))
+        }
+    };
+    if !arg.split(sep).all(|s| plain(s, ctx)) {
+        return if force { Ok(None) } else { Err(not_venv()) };
+    }
+    let compat = ctx.versions_dir().join(&name);
+    let long = arg.replace('\\', "/").contains("/envs/");
+    let (env, link) = if long {
+        let env = venv::version_dir(ctx, arg);
+        if !is_env_path(ctx, &env) {
+            return if force { Ok(None) } else { Err(not_venv()) };
+        }
+        let link = (is_link(&compat)
+            && std::fs::read_link(&compat).ok().as_deref() == Some(env.as_path()))
+        .then_some(compat);
+        (env, link)
+    } else if is_link(&compat) {
+        let target = std::fs::read_link(&compat).unwrap_or_default();
+        if !is_env_path(ctx, &target) {
+            return Err(Output::error(format!(
+                "pyenv-virtualenv: `{}' is a symlink for unknown location.",
+                compat.display()
+            )));
+        }
+        (target, Some(compat))
+    } else if venv::base_prefix(ctx, &name).is_ok() {
+        (compat, None)
+    } else if force {
+        return Ok(None);
+    } else {
+        return Err(not_venv());
+    };
+    if !env.is_dir() {
+        return missing(force);
+    }
+    Ok(Some(Target { env, link }))
+}
+
+/// Asks unless forced, removes the env (never following a link inside it), then its link,
+/// then rehashes.
+pub fn remove_target(ctx: &Ctx, t: &Target, force: bool) -> Result<(), Output> {
+    if !force {
+        match prompt(&format!(
+            "pyenv-virtualenv: remove {}? (y/N) ",
+            t.env.display()
+        )) {
+            Reply::Line(r) if r.starts_with(['y', 'Y']) => {}
+            Reply::Interrupted => return Err(Output::new().with_code(130)),
+            _ => return Err(Output::new().with_code(1)),
+        }
+    }
+    let gone = if is_link(&t.env) {
+        if ctx.flavor == Flavor::Pyenv {
+            std::fs::remove_file(&t.env)
+        } else {
+            std::fs::remove_dir(&t.env)
+        }
+    } else {
+        std::fs::remove_dir_all(&t.env)
+    };
+    if let Err(e) = gone {
+        return Err(Output::error(format!(
+            "pyenv-virtualenv: cannot remove {}: {e}",
+            t.env.display()
+        )));
+    }
+    if let Some(l) = &t.link {
+        let _ = if ctx.flavor == Flavor::Pyenv {
+            std::fs::remove_file(l)
+        } else {
+            std::fs::remove_dir(l)
+        };
+    }
+    let r = crate::commands::rehash::rehash(ctx, &[]);
+    if r.code != 0 {
+        return Err(r);
+    }
+    Ok(())
+}
+
+pub fn virtualenv_delete(ctx: &Ctx, args: &[&str]) -> Output {
+    match args.first() {
+        Some(&"--complete") => return virtualenvs(ctx, &["--bare"]),
+        Some(&"-h" | &"--help") => {
+            return Output {
+                stdout: DELETE_HELP.into(),
+                ..Output::new()
+            }
+        }
+        _ => {}
+    }
+    let (force, rest) = match args.first() {
+        Some(&"-f" | &"--force") => (true, &args[1..]),
+        _ => (false, args),
+    };
+    if rest.len() != 1 || rest[0].is_empty() || rest[0].starts_with('-') {
+        return Output {
+            stderr: DELETE_HELP.into(),
+            code: 1,
+            ..Output::new()
+        };
+    }
+    match delete_target(ctx, rest[0], force) {
+        Err(o) => o,
+        Ok(None) => Output::new(),
+        Ok(Some(t)) => remove_target(ctx, &t, force).err().unwrap_or_default(),
+    }
+}
+
+/// What `pyenv uninstall <arg>` did for envs (v1.4.0's uninstall/envs.bash).
+// Used by `uninstall_win` from Task 7 on.
+#[cfg_attr(not(unix), allow(dead_code))]
+pub enum Related {
+    /// `arg` was an env (long name or link): deleted with its link; nothing is left to remove.
+    Env,
+    /// `arg` is a base: its envs (and their links) are gone; remove the base.
+    Base,
+}
+
+// Used by `uninstall_win` from Task 7 on.
+#[cfg_attr(not(unix), allow(dead_code))]
+pub fn uninstall_related(ctx: &Ctx, arg: &str, force: bool) -> Result<Related, Output> {
+    let sep = |c: char| c == '/' || (ctx.flavor == Flavor::PyenvWin && c == '\\');
+    let name = arg.rsplit(sep).next().unwrap_or("");
+    let compat = ctx.versions_dir().join(name);
+    let long = arg.replace('\\', "/").contains("/envs/");
+    let link_to_env =
+        is_link(&compat) && std::fs::read_link(&compat).is_ok_and(|t| is_env_path(ctx, &t));
+    if long || link_to_env {
+        if let Some(t) = delete_target(ctx, arg, force)? {
+            remove_target(ctx, &t, force)?;
+        }
+        return Ok(Related::Env);
+    }
+    let envs = ctx.versions_dir().join(name).join("envs");
+    let mut names: Vec<String> = std::fs::read_dir(&envs)
+        .map(|rd| {
+            rd.flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    names.sort();
+    for n in names {
+        let long = format!("{name}/envs/{n}");
+        if let Some(mut t) = delete_target(ctx, &long, force)? {
+            // The link may have any name: find the ones that point here (Windows: no dangling junctions).
+            if t.link.is_none() {
+                t.link = links_to(ctx, &t.env);
+            }
+            remove_target(ctx, &t, force)?;
+        }
+    }
+    Ok(Related::Base)
+}
+
+/// A top-level link of `versions/` whose target is `env`.
+// Used by `uninstall_win` from Task 7 on.
+#[cfg_attr(not(unix), allow(dead_code))]
+fn links_to(ctx: &Ctx, env: &Path) -> Option<PathBuf> {
+    rpyenv_core::installed::top_level(&ctx.versions_dir(), ctx.flavor)
+        .into_iter()
+        .find(|t| t.link.as_deref() == Some(env))
+        .map(|t| t.path)
+}
