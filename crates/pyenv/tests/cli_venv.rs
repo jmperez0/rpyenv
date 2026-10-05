@@ -894,3 +894,77 @@ fn dash_p_finds_a_system_python() {
     assert_eq!(r.code, 0, "{}", r.stderr);
     assert!(calls(&sys).contains(&base.join("envs/pv2").display().to_string()));
 }
+
+/// Re-review C1: a link whose target climbs with `..` is no env path, so nothing behind it is
+/// deleted. Every target stays inside this fixture's root (checked first), so even a failing
+/// run can only touch the test's own scratch tree.
+#[test]
+fn dot_dot_link_targets_are_not_envs() {
+    let mut broken = Vec::new();
+    for case in ["whole", "base", "out"] {
+        // A fresh root per case, so each one is judged on its own.
+        let f = Fixture::new();
+        let base = fake_base(&f, "3.12.1");
+        std::fs::create_dir_all(base.join("envs")).unwrap();
+        f.file(&f.root.join("envs/e/data.txt"), "mine");
+        let v = f.root.join("versions");
+        let target = match case {
+            "whole" => v.join("..").join("envs").join(".."),
+            "base" => v.join("3.12.1").join("envs").join(".."),
+            _ => v.join("..").join("envs").join("e"),
+        };
+        let resolved = std::fs::canonicalize(&target).unwrap();
+        assert!(
+            resolved.starts_with(std::fs::canonicalize(&f.root).unwrap()),
+            "{case}"
+        );
+        std::os::unix::fs::symlink(&target, v.join(case)).unwrap();
+        run(&f, &["virtualenv-delete", "-f", case]);
+        run(&f, &["uninstall", "-f", case]);
+        if !base.join("bin/python").is_file() || !f.root.join("envs/e/data.txt").is_file() {
+            broken.push(case);
+        }
+    }
+    assert!(broken.is_empty(), "deleted through a `..` link: {broken:?}");
+}
+
+/// Re-review I2: `uninstall -f <base>/envs/<e>` for a missing env never removes the link of
+/// another env named `<e>`.
+#[test]
+fn a_missing_long_name_leaves_another_envs_link() {
+    let f = Fixture::new();
+    make_env(&f, "3.11.1", "e", false);
+    fake_base(&f, "3.12.1");
+    assert_eq!(run(&f, &["uninstall", "-f", "3.12.1/envs/e"]).2, 0);
+    assert!(std::fs::read_link(f.root.join("versions/e")).is_ok());
+}
+
+/// Re-review M3: a failed `-f` re-create keeps the env and its link.
+#[test]
+fn a_failed_recreate_keeps_the_link() {
+    let f = Fixture::new();
+    fake_base(&f, "3.12.1");
+    assert_eq!(run(&f, &["virtualenv", "3.12.1", "keep"]).2, 0);
+    assert_eq!(
+        run_env(
+            &f,
+            &["virtualenv", "-f", "3.12.1", "keep"],
+            &[("FAKE_VENV_FAIL", "1")]
+        )
+        .2,
+        5
+    );
+    assert!(std::fs::read_link(f.root.join("versions/keep")).is_ok());
+}
+
+/// Re-review M6: a stray file in `envs/` doesn't stop a base's uninstall.
+#[test]
+fn a_stray_file_in_envs_is_skipped() {
+    let f = Fixture::new();
+    let e = make_env(&f, "3.12.1", "e1", false);
+    f.file(&f.root.join("versions/3.12.1/envs/.DS_Store"), "");
+    f.file(&f.root.join("versions/3.12.1/envs/notes.txt"), "");
+    let (_, err, code) = run_stdin(&f, &["uninstall", "3.12.1"], "y\ny\n");
+    assert_eq!(code, 0, "{err}");
+    assert!(!e.exists() && !f.root.join("versions/3.12.1").exists());
+}

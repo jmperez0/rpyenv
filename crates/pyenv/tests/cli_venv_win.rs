@@ -341,3 +341,16 @@ fn cmd_reactivation_does_not_stack_prompts() {
         r.stdout
     );
 }
+
+/// Re-review I2: `uninstall -f <base>/envs/<e>` for a missing env never removes another env's
+/// junction, nor reports it as uninstalled.
+#[test]
+fn a_missing_long_name_leaves_another_envs_junction() {
+    let f = Fixture::new();
+    base(&f, "3.13.1");
+    base(&f, "3.12.0");
+    assert_eq!(run(&f, &["virtualenv", "3.12.0", "e"]).2, 0);
+    let (out, _, _) = run(&f, &["uninstall", "-f", "3.13.1/envs/e"]);
+    assert!(!out.contains("Successfully"), "{out}");
+    assert!(std::fs::read_link(f.root.join("versions").join("e")).is_ok());
+}

@@ -8,7 +8,7 @@ use crate::output::Output;
 use rpyenv_core::ctx::Ctx;
 use rpyenv_core::flavor::Flavor;
 use rpyenv_core::{lookup, pathsearch, prefix, select, venv};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 
 pub const VERSION: &str = "1.4.0";
@@ -379,6 +379,10 @@ pub fn virtualenv(ctx: &Ctx, args: &[&str]) -> Output {
         }
     }
     let existed = env_dir.is_dir();
+    // A link from an earlier run stays when this one fails (re-review M3).
+    let link_existed = link.as_ref().is_some_and(|l| {
+        is_link(l) && std::fs::read_link(l).ok().as_deref() == Some(env_dir.as_path())
+    });
     if env_dir.join(bin_name(ctx)).exists() && !force {
         rpyenv_core::textout::write(
             true,
@@ -391,7 +395,7 @@ pub fn virtualenv(ctx: &Ctx, args: &[&str]) -> Output {
         }
     }
     let cleanup = |code: i32| -> Output {
-        if let Some(l) = &link {
+        if let Some(l) = link.as_ref().filter(|_| !link_existed) {
             if is_link(l) && std::fs::read_link(l).ok().as_deref() == Some(env_dir.as_path()) {
                 let _ = if ctx.flavor == Flavor::Pyenv {
                     std::fs::remove_file(l)
@@ -470,16 +474,27 @@ pub fn virtualenv(ctx: &Ctx, args: &[&str]) -> Output {
         }
     }
     if !o.no_pip && !conda {
-        if let Err(msg) = ensure_pip(ctx, &full, &env_dir) {
+        let pip = ensure_pip(ctx, &full, &env_dir);
+        // Ctrl+C during ensurepip (re-review M4).
+        if crate::install::interrupted() {
+            return cleanup(130);
+        }
+        if let Err(msg) = pip {
             let mut out = cleanup(1);
             out.err(msg);
             return out;
         }
     }
     let r = crate::commands::rehash::rehash(ctx, &[]);
+    // The env is complete; a Ctrl+C during the rehash still ends with 130.
+    let code = if crate::install::interrupted() {
+        130
+    } else {
+        r.code
+    };
     Output {
         stderr: r.stderr,
-        code: r.code,
+        code,
         ..Output::new()
     }
 }
@@ -731,13 +746,21 @@ pub struct Target {
 
 /// `<root>/versions/<v>/envs/<e>`, checked by structure, not by text.
 fn is_env_path(ctx: &Ctx, p: &Path) -> bool {
-    let envs = p.parent();
-    let base = envs.and_then(Path::parent);
-    envs.and_then(Path::file_name).is_some_and(|n| n == "envs")
-        && base.and_then(Path::parent) == Some(ctx.versions_dir().as_path())
+    let versions = ctx.versions_dir();
+    let Ok(rel) = p.strip_prefix(&versions) else {
+        return false;
+    };
+    // Exactly `<v>/envs/<e>`, three plain names: a `..` anywhere would climb out
+    // (re-review C1: `versions/../envs/..` is the root itself).
+    let parts: Vec<Component> = rel.components().collect();
+    let [Component::Normal(base), Component::Normal(envs), Component::Normal(_)] = parts[..] else {
+        return false;
+    };
+    let base = versions.join(base);
+    envs == "envs"
         // Reached without following a link a user put there (final review C1).
-        && base.is_some_and(|b| !is_link(b))
-        && envs.is_some_and(|e| !is_link(e))
+        && !is_link(&base)
+        && !is_link(&base.join("envs"))
 }
 
 /// Resolves `arg` as v1.4.0 does (reference "Resolving what to delete"). `Ok(None)`: nothing to
@@ -885,7 +908,13 @@ pub fn uninstall_related(ctx: &Ctx, arg: &str, force: bool) -> Result<Related, O
                 Ok(Related::Env(true))
             }
             // `-f` and the env is gone: the dangling link still goes (final review I3).
-            None if link_to_env => {
+            // Only for a short name whose link's target is gone: never another env's link
+            // (re-review I2).
+            None if !long
+                && link_to_env
+                && std::fs::read_link(&compat)
+                    .is_ok_and(|t| std::fs::symlink_metadata(t).is_err()) =>
+            {
                 let gone = if ctx.flavor == Flavor::Pyenv {
                     std::fs::remove_file(&compat)
                 } else {
@@ -908,10 +937,13 @@ pub fn uninstall_related(ctx: &Ctx, arg: &str, force: bool) -> Result<Related, O
         return Ok(Related::Base);
     }
     let envs = base.join("envs");
+    // Folders and links only, no dot names, as upstream's `envs/*` glob (re-review M6).
     let mut names: Vec<String> = std::fs::read_dir(&envs)
         .map(|rd| {
             rd.flatten()
+                .filter(|e| e.file_type().is_ok_and(|t| t.is_dir() || t.is_symlink()))
                 .map(|e| e.file_name().to_string_lossy().into_owned())
+                .filter(|n| !n.starts_with('.'))
                 .collect()
         })
         .unwrap_or_default();
