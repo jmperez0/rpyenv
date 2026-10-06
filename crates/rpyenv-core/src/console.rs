@@ -110,6 +110,16 @@ impl Hold {
         }
     }
 
+    /// How long to wait for a key, in milliseconds: `u32::MAX` (Windows' `INFINITE`) for
+    /// `Key`, never reached by a number of seconds, however large.
+    pub fn wait_ms(self) -> u32 {
+        match self {
+            Hold::Off => 0,
+            Hold::Key => u32::MAX,
+            Hold::Seconds(n) => n.saturating_mul(1000).min(u32::MAX - 1),
+        }
+    }
+
     pub fn name(self) -> String {
         match self {
             Hold::Off => "off".to_string(),
@@ -147,10 +157,11 @@ pub fn hold_wait(
 /// `STATUS_CONTROL_C_EXIT`: how a program ended by Ctrl+C exits.
 pub const STATUS_CONTROL_C_EXIT: u32 = 0xC000_013A;
 
-/// Whether an exit code is a failure worth keeping the window open for: non-zero, and
-/// not Ctrl+C's.
+/// Whether an exit code is a failure worth keeping the window open for: non-zero, and not
+/// an interruption (Ctrl+C's `STATUS_CONTROL_C_EXIT`, or 130, which programs that catch
+/// Ctrl+C commonly exit with).
 pub fn should_hold(code: u32) -> bool {
-    code != 0 && code != STATUS_CONTROL_C_EXIT
+    code != 0 && code != STATUS_CONTROL_C_EXIT && code != 130
 }
 
 #[cfg(test)]
@@ -283,6 +294,15 @@ mod tests {
         assert_eq!(choose(lazy), ConsoleMode::Eager);
     }
 
+    /// Final review minor 12: a huge N waits long, never forever (INFINITE is u32::MAX).
+    #[test]
+    fn hold_wait_times() {
+        assert_eq!(Hold::Key.wait_ms(), u32::MAX);
+        assert_eq!(Hold::Seconds(3).wait_ms(), 3000);
+        assert!(Hold::Seconds(u32::MAX).wait_ms() < u32::MAX);
+        assert_eq!(Hold::Off.wait_ms(), 0);
+    }
+
     /// Review focus 4: an exit from Ctrl+C isn't a failure to hold a window for.
     #[test]
     fn only_a_real_failure_holds_the_window() {
@@ -290,5 +310,7 @@ mod tests {
         assert!(should_hold(1));
         assert!(should_hold(0xC000_0005));
         assert!(!should_hold(STATUS_CONTROL_C_EXIT));
+        // Final review minor 14: 130, the usual exit after an interruption, isn't either.
+        assert!(!should_hold(130));
     }
 }

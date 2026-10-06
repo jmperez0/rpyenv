@@ -752,7 +752,6 @@ warns when it finds one. pyenv-win has the same limitation.
 | `PYENV_SHELL` | upstream | Set by `pyenv init` |
 | `PYENV_DEBUG` | upstream | Trace output |
 | `PYTHON_BUILD_MIRROR_URL`, `PYTHON_CONFIGURE_OPTS`, `PYTHON_CFLAGS`, `MAKE_OPTS`, `PYTHON_MAKE_OPTS` | upstream | Installer options |
-| `RPYENV_CONSOLE` | rpyenv | `lazy` or `eager` (Windows, when the shim has no console) |
 | `RPYENV_LIVE_REHASH` | rpyenv | `1` enables the live watcher |
 | `RPYENV_CONSOLE` | rpyenv | Windows: `lazy` (default) or `eager`, for a shim started without a console |
 | `RPYENV_CONSOLE_HOLD` | rpyenv | Windows: after a failure, a window the shim opened stays until a key (default); `0` closes it at once; a positive whole number N closes it after N seconds |

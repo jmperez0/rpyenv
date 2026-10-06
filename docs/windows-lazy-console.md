@@ -225,8 +225,9 @@ on all versions, because older Windows ignores the setting.
 
    If `AllocConsoleWithOptions` reports that the caller wanted no console (a
    `DETACHED_PROCESS` caller whose parent has none), the shim keeps draining the output
-   and drops it. A program that then reads input before printing anything waits, as in
-   the deferred case below.
+   and drops it. A program that then reads input waits for it, whether or not it printed
+   first, where `python.exe` started that way would get end-of-file. The workaround is
+   the same as for the deferred case below: `RPYENV_CONSOLE=eager`.
 5. **Relay input.** An input thread waits on the console input and a stop event, then
    calls `ReadConsoleInputW`. Processed, line and echo input are off, so Ctrl+C arrives
    as a key.
@@ -240,8 +241,17 @@ on all versions, because older Windows ignores the setting.
    Limitation: Ctrl+Break in the window reaches the shim, which ignores it, not the program.
    A program that inherited "ignore Ctrl+C" from its caller (a parent's
    `SetConsoleCtrlHandler(NULL, TRUE)`) ignores it here too, as it would without the shim.
-6. **Shut down.** When the child exits, keep reading the output pipe until it
-   closes, and call `ClosePseudoConsole` from a thread other than the reader.
+6. **Shut down.** When the child exits, keep the pseudo-console while processes it
+   left running still use it, as `python.exe`'s console stays for them. ConPTY never
+   closes on its own, even with no process left (probed: 10 s each, three cases).
+   - A process snapshot first looks for the child's live descendants; usually there are
+     none.
+   - Otherwise the shim starts a watcher on the pseudo-console (its own binary, flagged by
+     an internal variable). The watcher exits once it is the only process there, so
+     descendants on another console, or with none, don't keep the shim.
+
+   Then keep reading the output pipe until it closes, and call `ClosePseudoConsole` from a
+   thread other than the reader.
    Before 24H2, `ClosePseudoConsole` waits until the output is drained. The
    shim then returns the child's exit code.
    - **User closes the window, logs off or shuts down:** the shim gets
@@ -255,7 +265,8 @@ on all versions, because older Windows ignores the setting.
      in EAGER or LAZY): print the exit code and keep the window, so a traceback from a
      double-clicked script stays readable. `RPYENV_CONSOLE_HOLD` sets how long
      (Configuration). There is no hold:
-     - for a program ended by Ctrl+C (`0xC000013A`);
+     - for a program ended by Ctrl+C (`0xC000013A`), or that exits 130, as programs that
+       catch Ctrl+C commonly do;
      - when the window station isn't visible (a scheduled task that runs whether or not a
        user is logged on, a service), because nobody could press the key;
      - when a console parent asked for the window (`start /wait` in a script), which
@@ -265,7 +276,8 @@ on all versions, because older Windows ignores the setting.
      caller.
    - **The shim's own error, with nowhere to print it** (a version that isn't installed,
      say): the console shim asks for the caller's console the same way, prints the
-     message, and holds the window.
+     message, and holds the window. The same goes for a program EAGER can't start after
+     opening a window for it.
 
 What the child sees in LAZY mode:
 
@@ -389,7 +401,7 @@ sampled after 4 s.
    - on an inherited console: 86 ms.
 
    A launch with no console gets a fresh console either way, so LAZY's extra cost on that
-   host is about 20–70 ms.
+   host is about 66 ms (715 − 649).
 4. **Hold on error.** Resolved: on by default, configurable with `RPYENV_CONSOLE_HOLD`.
 
 ## References
