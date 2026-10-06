@@ -17,6 +17,8 @@
 //! until the program is running and set up. `ARGV_ECHO_CONSOLE=1` prints `console=<n>`,
 //! the number of processes on its console (0 without one), and `window=0` or `window=1`,
 //! whether a console window is visible.
+//! `ARGV_ECHO_OUT=<path>` also writes what it prints to that file, and `ARGV_ECHO_QUIET=1`
+//! prints nothing to stdout.
 //!
 //! Before anything else, `ARGV_ECHO_FIRST=<path>` creates that file and
 //! `ARGV_ECHO_DELAY_MS` waits before any output. Helper modes, on Windows, each exiting

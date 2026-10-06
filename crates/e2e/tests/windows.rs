@@ -521,6 +521,94 @@ fn win_an_error_with_nowhere_to_print_gets_a_window_that_waits() {
     assert_ne!(explorer_exit(helper, &exit), 0);
 }
 
+/// LAZY, review focus 2: a program that never prints never gets a window. Its arguments
+/// arrive unchanged, the variables too, and its exit code comes back.
+#[test]
+fn win_lazy_a_silent_program_never_shows_a_window() {
+    let f = Fixture::new();
+    f.install("3.9.1/python.exe");
+    f.rehash();
+    let log = f.base.join("debug.log");
+    let out = f.base.join("out.txt");
+    let (helper, exit) = launch_like_explorer(
+        &f,
+        "python",
+        &[
+            ("PYENV_VERSION", v("3.9.1")),
+            ("RPYENV_DEBUG_LOG", log.as_os_str()),
+            // A regression that shows a window must fail here, not wait for a key.
+            ("RPYENV_CONSOLE_HOLD", v("0")),
+            ("ARGV_ECHO_QUIET", v("1")),
+            ("ARGV_ECHO_OUT", out.as_os_str()),
+            ("ARGV_ECHO_ENV", v("MARKER")),
+            ("MARKER", v("ñ x")),
+            ("ARGV_ECHO_EXIT", v("7")),
+        ],
+        &["a b", "ñ"],
+    );
+    assert_eq!(explorer_exit(helper, &exit), 7);
+    if !api() {
+        assert_eq!(mode_in(&log), "INHERIT");
+        return;
+    }
+    let text = std::fs::read_to_string(&log).unwrap();
+    assert_eq!(mode_in(&log), "LAZY");
+    assert!(!text.contains("console="), "{text}");
+    let got = std::fs::read_to_string(&out).unwrap();
+    assert!(got.contains(&line("arg", "a b")), "{got}");
+    assert!(got.contains(&line("arg", "ñ")), "{got}");
+    assert!(got.contains("env MARKER=\"ñ x\""), "{got}");
+}
+
+/// Review focus 5: killing a LAZY shim ends its program, through the Job Object.
+#[test]
+fn win_lazy_killing_the_shim_kills_the_child() {
+    let f = Fixture::new();
+    f.install("3.9.1/python.exe");
+    f.rehash();
+    let log = f.base.join("debug.log");
+    let ready = f.base.join("ready");
+    let after = f.base.join("after");
+    let (mut helper, _exit) = launch_like_explorer(
+        &f,
+        "python",
+        &[
+            ("PYENV_VERSION", v("3.9.1")),
+            ("RPYENV_DEBUG_LOG", log.as_os_str()),
+            ("ARGV_ECHO_QUIET", v("1")),
+            ("ARGV_ECHO_READY", ready.as_os_str()),
+            // Long enough that the kill lands while it sleeps, even under a loaded suite.
+            ("ARGV_ECHO_SLEEP_MS", v("8000")),
+            ("ARGV_ECHO_AFTER", after.as_os_str()),
+        ],
+        &[],
+    );
+    wait_for(&ready);
+    let pid = shim_pid(&std::fs::read_to_string(&log).unwrap());
+    // Directly, not through taskkill: starting a process from a busy test harness was
+    // seen to take 14 s, long enough for the program to finish on its own.
+    terminate(pid);
+    let _ = helper.wait();
+    std::thread::sleep(Duration::from_millis(8500));
+    assert!(
+        !after.exists(),
+        "the child kept running after the shim was killed"
+    );
+}
+
+/// Ends process `pid` at once, as `taskkill /F` does.
+fn terminate(pid: u32) {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
+    // SAFETY: opens a process by id for termination and closes the handle after.
+    unsafe {
+        let h = OpenProcess(PROCESS_TERMINATE, 0, pid);
+        assert!(!h.is_null(), "process {pid} is already gone");
+        assert!(TerminateProcess(h, 1) != 0, "cannot end process {pid}");
+        CloseHandle(h);
+    }
+}
+
 /// No console, output redirected → a windowless console for the child.
 #[test]
 fn win_no_console_with_redirected_output_gets_no_window() {

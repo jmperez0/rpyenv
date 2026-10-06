@@ -1,5 +1,7 @@
 //! Version resolution and `PYENV_ROOT` layout, shared by the `pyenv` CLI and the shims.
 
+#[cfg(windows)]
+pub mod conpty;
 pub mod console;
 pub mod ctx;
 pub mod debuglog;
