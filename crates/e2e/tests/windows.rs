@@ -391,6 +391,20 @@ fn screen(pid: u32) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
+/// The text on process `pid`'s console once it contains `needle` (10 s at most). Output
+/// passes through the pseudo-console's relay on its way to the window, so it can show a
+/// moment after the program wrote it.
+fn screen_until(pid: u32, needle: &str) -> String {
+    let start = std::time::Instant::now();
+    loop {
+        let shown = screen(pid);
+        if shown.contains(needle) || start.elapsed() > Duration::from_secs(10) {
+            return shown;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
 /// Types `text` into process `pid`'s console.
 fn type_keys(pid: u32, text: &str) {
     let status = Command::new(built("argv-echo"))
@@ -924,7 +938,7 @@ fn win_lazy_shows_the_window_on_first_output() {
     wait_for(&ready);
     let text = wait_log(&log, "console=new");
     let pid = shim_pid(&text);
-    let shown = screen(pid);
+    let shown = screen_until(pid, "ñ 漢");
     terminate(pid);
     let _ = explorer_exit(helper, &exit);
     assert!(shown.contains("argv0="), "{shown}");
@@ -960,7 +974,7 @@ fn win_lazy_relays_typed_input() {
     let pid = shim_pid(&wait_log(&log, "console=new"));
     type_keys(pid, "abc\r\x1a\r");
     wait_for(&ready);
-    let shown = screen(pid);
+    let shown = screen_until(pid, r#"stdin="abc\r\n""#);
     terminate(pid);
     let _ = explorer_exit(helper, &exit);
     assert!(shown.contains(r#"stdin="abc\r\n""#), "{shown}");
