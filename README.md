@@ -155,7 +155,10 @@ integration.
 
 rpyenv-only settings use the `RPYENV_` prefix, for example
 `RPYENV_LIVE_REHASH=1` to rehash while long-running programs such as Jupyter
-install packages. The full list is in the design spec (§13).
+install packages. On Windows, `RPYENV_CONSOLE` and `RPYENV_CONSOLE_HOLD` set
+whether a program started without a console (from Explorer, say) gets a window
+only once it prints, and how long that window stays after a failure. The full
+list is in the design spec (§13).
 
 ## Installing (planned)
 

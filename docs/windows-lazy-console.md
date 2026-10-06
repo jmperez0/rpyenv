@@ -1,6 +1,8 @@
 # Avoiding unnecessary console windows on Windows
 
-**Status:** design. Nothing here is implemented yet.
+**Status:** implemented in M5a: EAGER, LAZY, the manifest entry, holding a window,
+and waiting for the program when a window closes. Detecting input without prior output
+stays deferred.
 **Scope:** Windows shims only. Linux shims `execv` into the target and never
 deal with consoles.
 
@@ -116,18 +118,38 @@ shim starts
 ├─ attached to a console? ─────────────── yes → INHERIT
 └─ no
    ├─ stdout and stderr both redirected? ─ yes → NO-WINDOW
-   ├─ 24H2 APIs unavailable? ──────────── yes → MIRROR
-   ├─ RPYENV_CONSOLE=eager, or
+   ├─ not the console shim, or 24H2
+   │  APIs unavailable? ───────────────── yes → MIRROR
+   ├─ the parent has a console, or
+   │  RPYENV_CONSOLE=eager, or
    │  only some handles redirected? ────── yes → EAGER
    └─ otherwise ─────────────────────────────── → LAZY
 ```
+
+**The parent-console rule.** With the manifest entry, a shim the caller started with
+`DETACHED_PROCESS` and one started with no flags by a caller without a console (Explorer)
+look the same at startup. Both have no console, and the process parameters'
+`ConsoleHandle` is 0 for both. That was probed on build 26200, by logging it in a child
+started each way. Only `AllocConsoleWithOptions(DEFAULT)` tells them apart. So a shim
+whose parent has a console takes EAGER:
+- a `DETACHED_PROCESS` caller gets no console, and the child then starts with
+  `DETACHED_PROCESS`, exactly as MIRROR;
+- a `CREATE_NEW_CONSOLE` caller (cmd's `start`) gets its new window at once, as with
+  `python.exe`.
+
+The shim checks for the parent's console with `AttachConsole(ATTACH_PARENT_PROCESS)` and
+leaves it at once, keeping its standard handles as they were. A caller that passes
+`CREATE_NO_WINDOW` still gives the shim a windowless console at startup, so the shim takes
+INHERIT.
+
+`pyenv exec` and the GUI shim don't carry the manifest entry and keep the first three modes.
 
 | Mode | Child is started with | Window appears |
 |---|---|---|
 | INHERIT | The shim's console and std handles, inherited | Whatever the caller arranged. This is the normal case in a terminal. |
 | NO-WINDOW | `CREATE_NO_WINDOW`; the caller's redirected handles; stdin set to `NUL` if the caller didn't provide it | Never |
 | MIRROR | `DETACHED_PROCESS` | Never. Same as `python.exe` started with that flag. |
-| EAGER | `AllocConsoleWithOptions(DEFAULT)` at startup, then INHERIT | At startup, exactly as with `python.exe` |
+| EAGER | `AllocConsoleWithOptions(DEFAULT)` at startup, then INHERIT, or `DETACHED_PROCESS` when that gives no console | At startup, exactly as with `python.exe` |
 | LAZY | A pseudo-console (ConPTY), relayed by the shim | On the first printable output (see below) |
 
 How the shim checks each condition:
@@ -154,9 +176,20 @@ on all versions, because older Windows ignores the setting.
 ### LAZY mode: pseudo-console relay
 
 1. **Create the pseudo-console.** Create two pipes and call
-   `CreatePseudoConsole` with an initial size. Start the child with
-   `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE`, inside the shim's Job Object (the
-   same one that kills the child if the shim dies).
+   `CreatePseudoConsole` with an initial size of 120×30. That is Windows 11's default
+   console size, for both conhost and Windows Terminal, and it lasts only until a window
+   appears.
+
+   Start the child with `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE`, inside the shim's Job Object
+   (the same one that kills the child if the shim dies):
+   - **`CreateProcessW` directly**, with `"<program>"` followed by the shim's own
+     command-line tail, unchanged. std's attribute-list API (`raw_attribute`) is still
+     unstable.
+   - **`STARTF_USESTDHANDLES` with null handles.** Without it, the child inherited the
+     shim's own standard handles, and its output bypassed the pseudo-console (probed on
+     build 26200).
+   - **A batch target takes EAGER instead,** because only std's batch-file escaping makes
+     starting one safe.
 2. **Always drain the output.** A dedicated thread reads the pseudo-console's
    output pipe continuously. If the pipe fills up, the child blocks. Until the
    window is shown, the bytes are buffered in memory.
@@ -166,9 +199,11 @@ on all versions, because older Windows ignores the setting.
    - skip C0 control characters and whitespace.
 
    The first character left over is the trigger. ConPTY emits its own setup
-   sequences (modes, title, cursor), so "first byte" would fire immediately.
-   Capture ConPTY's actual startup output during implementation and use it as
-   a test fixture.
+   sequences, so "first byte" would fire immediately. On build 26200 it starts with
+   `ESC[?9001h ESC[?1004h` (win32-input-mode, focus events). Then come
+   `ESC[?25l ESC[2J ESC[m ESC[H`, the program's text, `ESC]0;<program path> BEL` and
+   `ESC[?25h`. A program that prints nothing produces only sequences. These captures
+   are the scanner's test fixtures (`rpyenv_core::vtscan`).
 4. **Show the window.** Call `AllocConsoleWithOptions` with
    `ALLOC_CONSOLE_MODE_DEFAULT`. This gives the console the caller would have
    given `python.exe`, so a `CREATE_NO_WINDOW` caller still gets no window.
@@ -179,25 +214,49 @@ on all versions, because older Windows ignores the setting.
      echo input turned off, so keys, including Ctrl+C as `0x03`, pass through
      as raw bytes
    - `ResizePseudoConsole` to the new window's size
-   - write the buffered output, then keep relaying
-   - set the window title to the command name
-5. **Relay input.** An input thread calls `ReadConsoleInputW`. It forwards key
-   characters (VT sequences, because of VT input mode) to the pseudo-console's
-   input pipe. It turns `WINDOW_BUFFER_SIZE_EVENT` into `ResizePseudoConsole`.
-   ConPTY converts `0x03` into a `CTRL_C_EVENT` for the child. The shim itself
-   ignores Ctrl+C.
+   - write the buffered output, then keep relaying, holding back a UTF-8 character that
+     a read cut in two until it is whole
+   - the window title comes from ConPTY's own `OSC 0` (the program's path), as when
+     `python.exe` runs directly
+
+   If `AllocConsoleWithOptions` reports that the caller wanted no console (a
+   `DETACHED_PROCESS` caller whose parent has none), the shim keeps draining the output
+   and drops it. A program that then reads input before printing anything waits, as in
+   the deferred case below.
+5. **Relay input.** An input thread waits on the console input and a stop event, then
+   calls `ReadConsoleInputW`. Processed, line and echo input are off, so Ctrl+C arrives
+   as a key.
+   - **While ConPTY asks for win32-input-mode** (`?9001h`, at startup), each
+     `KEY_EVENT_RECORD` goes as `ESC[Vk;Sc;Uc;Kd;Cs;Rc_`. This is lossless: key-ups,
+     modifiers, and Ctrl+C, which ConPTY turns into `CTRL_C_EVENT` for the program.
+   - **Otherwise** the key-downs' characters go as text, with
+     `ENABLE_VIRTUAL_TERMINAL_INPUT`.
+   - `WINDOW_BUFFER_SIZE_EVENT` becomes `ResizePseudoConsole`.
+
+   Limitation: Ctrl+Break in the window reaches the shim, which ignores it, not the program.
+   A program that inherited "ignore Ctrl+C" from its caller (a parent's
+   `SetConsoleCtrlHandler(NULL, TRUE)`) ignores it here too, as it would without the shim.
 6. **Shut down.** When the child exits, keep reading the output pipe until it
    closes, and call `ClosePseudoConsole` from a thread other than the reader.
    Before 24H2, `ClosePseudoConsole` waits until the output is drained. The
    shim then returns the child's exit code.
-   - **User closes the window:** the shim gets `CTRL_CLOSE_EVENT` and calls
-     `ClosePseudoConsole`, which sends `CTRL_CLOSE_EVENT` to the child. The
-     Job Object cleans up anything left.
-   - **Non-zero exit after the shim opened a new window**
-     (`ALLOC_CONSOLE_RESULT_NEW_CONSOLE`): print the exit code and wait for a
-     key before closing, so a traceback from a double-clicked script stays
-     readable. In INHERIT mode this never happens, because the terminal belongs
-     to the caller.
+   - **User closes the window, logs off or shuts down:** the shim gets
+     `CTRL_CLOSE_EVENT` (or LOGOFF or SHUTDOWN). It calls `ClosePseudoConsole`, which
+     sends `CTRL_CLOSE_EVENT` to the child, then waits for the child before returning,
+     until Windows' own timeout ends both. Returning at once would let Windows end the
+     shim and the job end the child in the middle of its cleanup. The handler does the
+     same in every mode. On a shared console the child is usually done first anyway: the
+     console host closes the most recently attached process first.
+   - **Failure after the shim opened a new window** (`ALLOC_CONSOLE_RESULT_NEW_CONSOLE`,
+     in EAGER or LAZY): print the exit code and keep the window, so a traceback from a
+     double-clicked script stays readable. `RPYENV_CONSOLE_HOLD` sets how long
+     (Configuration). A program ended by Ctrl+C (`0xC000013A`) isn't held. A modifier or
+     lock key pressed alone (Ctrl, as the start of Ctrl+C to copy the text) doesn't close
+     the window. In INHERIT mode this never happens, because the terminal belongs to the
+     caller.
+   - **The shim's own error, with nowhere to print it** (a version that isn't installed,
+     say): the console shim asks for the caller's console the same way, prints the
+     message, and holds the window.
 
 What the child sees in LAZY mode:
 
@@ -216,10 +275,16 @@ EAGER.
 
 `RPYENV_CONSOLE` selects the behavior when the shim has no console:
 
-- `lazy`: as described above. This is the intended default when the 24H2 APIs
-  are available, but it is decided only after the cost is measured (open
+- `lazy`: as described above. This is the default (decided 2026-10-06; cost in open
   question 3).
 - `eager`: behave like `python.exe` and create the console at startup
+
+`RPYENV_CONSOLE_HOLD` selects what happens to a window the shim opened after the program
+fails:
+
+- unset, or anything other than a whole number: wait for a key
+- `0`: close at once, as `python.exe` does
+- a positive whole number N: close after N seconds, or sooner on a key
 
 This setting is specific to rpyenv; upstream pyenv has no equivalent. The
 `RPYENV_` prefix keeps rpyenv-only settings from colliding with any future
@@ -302,15 +367,21 @@ sampled after 4 s.
 
 ## Open questions
 
-1. **Explorer launches with `ALLOC_CONSOLE_MODE_DEFAULT`.** The docs imply a
-   launch with no flags and no console gets a visible window. Confirm on a real
-   Explorer launch.
-2. **Initial pseudo-console size.** Use a fixed 120×30, or read the default
-   console size from `HKCU\Console`?
-3. **Cost of ConPTY startup.** LAZY mode starts an extra headless conhost for
-   each launch. Measure it before making `lazy` the default.
-4. **Hold on error.** Should keeping the window open after a failure be
-   configurable, or always on?
+1. **Explorer launches with `ALLOC_CONSOLE_MODE_DEFAULT`.** A launch with no flags from a
+   process with no console got a new window (result 1) in the probe and in the e2e tests,
+   which start the shim that way. Still to confirm on a real Explorer double-click
+   (manual checklist).
+2. **Initial pseudo-console size.** Resolved: a fixed 120×30 (LAZY step 1).
+3. **Cost of ConPTY startup.** Resolved: `lazy` is the default. Measured on build 26200
+   as the median of 30 launches of a trivial program, from start to exit (probe
+   `conpty time`):
+   - on a pseudo-console: 715 ms;
+   - with `CREATE_NO_WINDOW` (a fresh windowless conhost): 649 ms;
+   - on an inherited console: 86 ms.
+
+   A launch with no console gets a fresh console either way, so LAZY's extra cost on that
+   host is about 20–70 ms.
+4. **Hold on error.** Resolved: on by default, configurable with `RPYENV_CONSOLE_HOLD`.
 
 ## References
 
