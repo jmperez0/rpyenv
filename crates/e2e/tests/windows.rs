@@ -615,6 +615,39 @@ fn win_lazy_a_silent_program_never_shows_a_window() {
     assert!(got.contains("env MARKER=\"ñ x\""), "{got}");
 }
 
+/// Final review I4 (user decision 2026-10-06): a program that leaves a console process
+/// running on the pseudo-console when it exits doesn't take it down. The process runs to
+/// the end, as it would in python.exe's console, and the shim stays until it's done.
+#[test]
+fn win_lazy_a_process_left_running_finishes() {
+    let _windows = one_window_test_at_a_time();
+    let f = Fixture::new();
+    f.install("3.9.1/python.exe");
+    f.rehash();
+    let log = f.base.join("debug.log");
+    let left = f.base.join("left");
+    let (helper, exit) = launch_like_explorer(
+        &f,
+        "python",
+        &[
+            ("PYENV_VERSION", v("3.9.1")),
+            ("RPYENV_DEBUG_LOG", log.as_os_str()),
+            ("ARGV_ECHO_QUIET", v("1")),
+            ("ARGV_ECHO_LEAVE", left.as_os_str()),
+        ],
+        &[],
+    );
+    assert_eq!(explorer_exit(helper, &exit), 0);
+    if !api() {
+        return;
+    }
+    assert!(
+        left.exists(),
+        "the process left running was ended with the program:\n{}",
+        std::fs::read_to_string(&log).unwrap_or_default()
+    );
+}
+
 /// Review focus 5: killing a LAZY shim ends its program, through the Job Object.
 #[test]
 fn win_lazy_killing_the_shim_kills_the_child() {

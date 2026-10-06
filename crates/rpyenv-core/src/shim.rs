@@ -16,6 +16,11 @@ pub const SHIMW_NAME: &str = "pyenv-shimw";
 
 /// The console shim's main. Returns the exit code, unless the command replaced this process.
 pub fn main() -> i32 {
+    // The watcher a LAZY shim starts on its pseudo-console (plan M5a, final review I4).
+    #[cfg(windows)]
+    if std::env::var_os(crate::conpty::WATCH_VAR).is_some() {
+        return crate::conpty::watch_main();
+    }
     #[cfg(windows)]
     crate::winproc::set_console_shim();
     run(false)

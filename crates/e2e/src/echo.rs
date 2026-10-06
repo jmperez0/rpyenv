@@ -409,6 +409,27 @@ pub fn main() {
             windows_sys::Win32::System::Console::SetConsoleCtrlHandler(Some(catch), 1);
         }
     }
+    if let Some(p) = std::env::var_os("ARGV_ECHO_LEAVE") {
+        // A process left running on this console: a quiet copy of this program that sleeps,
+        // then creates the file. Not waited for.
+        let mut copy = std::process::Command::new(std::env::current_exe().unwrap());
+        for k in [
+            "ARGV_ECHO_LEAVE",
+            "ARGV_ECHO_EXIT",
+            "ARGV_ECHO_READY",
+            "ARGV_ECHO_FIRST",
+            "ARGV_ECHO_DELAY_MS",
+            "ARGV_ECHO_PROMPT",
+            "ARGV_ECHO_OUT",
+        ] {
+            copy.env_remove(k);
+        }
+        let _ = copy
+            .env("ARGV_ECHO_QUIET", "1")
+            .env("ARGV_ECHO_SLEEP_MS", "1500")
+            .env("ARGV_ECHO_AFTER", &p)
+            .spawn();
+    }
     if let Some(p) = std::env::var_os("ARGV_ECHO_FIRST") {
         let _ = std::fs::write(&p, b"");
     }
