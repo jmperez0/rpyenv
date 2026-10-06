@@ -474,6 +474,48 @@ fn win_a_new_console_request_gets_a_window() {
     }
 }
 
+/// Final review I2: `start /wait python x.py` in a script (`CREATE_NEW_CONSOLE` from a
+/// console parent): a failing program's window closes at once and the exit code comes
+/// back, as with python.exe, instead of waiting for a key nobody may press.
+#[test]
+fn win_a_new_console_request_is_not_held_after_a_failure() {
+    let _windows = one_window_test_at_a_time();
+    let f = Fixture::new();
+    f.install("3.9.1/python.exe");
+    f.rehash();
+    let log = f.base.join("debug.log");
+    let mut shim = f
+        .shim_command(
+            "python",
+            &[
+                ("PYENV_VERSION", v("3.9.1")),
+                ("RPYENV_DEBUG_LOG", log.as_os_str()),
+                ("ARGV_ECHO_EXIT", v("3")),
+            ],
+        )
+        .creation_flags(CREATE_NEW_CONSOLE)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let start = std::time::Instant::now();
+    let status = loop {
+        if let Some(status) = shim.try_wait().unwrap() {
+            break status;
+        }
+        if start.elapsed() > Duration::from_secs(15) {
+            let _ = shim.kill();
+            panic!(
+                "the shim held the window:\n{}",
+                std::fs::read_to_string(&log).unwrap_or_default()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert_eq!(status.code(), Some(3));
+}
+
 /// A failed program in a window EAGER opened: the window stays for the seconds
 /// `RPYENV_CONSOLE_HOLD` sets, and the exit code comes back.
 #[test]

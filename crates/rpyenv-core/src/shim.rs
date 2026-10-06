@@ -129,7 +129,7 @@ fn fail(gui: bool, flavor: Flavor, lines: &[String], to_stderr: bool, code: i32)
     let made = say(gui, flavor, lines, to_stderr);
     #[cfg(windows)]
     if made {
-        crate::winproc::hold_after(code as u32);
+        crate::winproc::hold_after(code as u32, false);
     }
     let _ = made;
     code
