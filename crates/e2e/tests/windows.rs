@@ -291,6 +291,236 @@ fn console_env(log: &std::path::Path) -> [(&'static str, &OsStr); 3] {
     ]
 }
 
+const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+
+/// Whether this Windows honors the shim's manifest (build 26100 or later).
+fn api() -> bool {
+    rpyenv_core::winproc::alloc_console_available()
+}
+
+static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// A path under `base` that no other call in this test process returns.
+fn unique(base: &std::path::Path, stem: &str) -> std::path::PathBuf {
+    base.join(format!(
+        "{stem}-{}",
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+    ))
+}
+
+/// Starts shim `name` as Explorer does (docs/windows-lazy-console.md, "Testing"): a helper
+/// started with `DETACHED_PROCESS` has no console, clears its standard handles and starts
+/// the shim with no flags and `args`. Returns the helper and the file the shim's exit code
+/// goes to.
+fn launch_like_explorer(
+    f: &Fixture,
+    name: &str,
+    env: &[(&str, &OsStr)],
+    args: &[&str],
+) -> (std::process::Child, std::path::PathBuf) {
+    let exit = unique(&f.base, "exit");
+    let helper = f
+        .command(&built("argv-echo"), env)
+        .env("ARGV_ECHO_SPAWN", f.shim(name))
+        .env("ARGV_ECHO_SPAWN_EXIT", &exit)
+        .args(args)
+        .creation_flags(DETACHED_PROCESS)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    (helper, exit)
+}
+
+/// Waits for the helper; the shim's exit code, as a DWORD.
+fn explorer_exit(mut helper: std::process::Child, exit: &std::path::Path) -> i64 {
+    helper.wait().unwrap();
+    std::fs::read_to_string(exit)
+        .unwrap_or_else(|_| panic!("{} was never written", exit.display()))
+        .trim()
+        .parse()
+        .unwrap()
+}
+
+/// Polls the debug log until it contains `needle` (20 s at most); returns the log.
+fn wait_log(log: &std::path::Path, needle: &str) -> String {
+    let start = std::time::Instant::now();
+    loop {
+        let text = std::fs::read_to_string(log).unwrap_or_default();
+        if text.contains(needle) {
+            return text;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(20),
+            "no {needle:?} in:\n{text}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// The shim's process ID: the first `pid=` in its log.
+fn shim_pid(log_text: &str) -> u32 {
+    log_text
+        .split_whitespace()
+        .find_map(|w| w.strip_prefix("pid="))
+        .and_then(|p| p.parse().ok())
+        .unwrap_or_else(|| panic!("no pid= in:\n{log_text}"))
+}
+
+/// The text on process `pid`'s console.
+fn screen(pid: u32) -> String {
+    let out = Command::new(built("argv-echo"))
+        .env("ARGV_ECHO_SCREEN_PID", pid.to_string())
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "cannot read the console of {pid}"
+    );
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// Types `text` into process `pid`'s console.
+fn type_keys(pid: u32, text: &str) {
+    let status = Command::new(built("argv-echo"))
+        .env("ARGV_ECHO_TYPE_PID", pid.to_string())
+        .env("ARGV_ECHO_TYPE", text)
+        .stdin(Stdio::null())
+        .status()
+        .unwrap();
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "cannot type into the console of {pid}"
+    );
+}
+
+/// Explorer-like start with `RPYENV_CONSOLE=eager`: the window is there before the
+/// program prints anything.
+#[test]
+fn win_eager_makes_the_window_at_startup() {
+    let f = Fixture::new();
+    f.install("3.9.1/python.exe");
+    f.rehash();
+    let log = f.base.join("debug.log");
+    let first = f.base.join("first");
+    let (helper, exit) = launch_like_explorer(
+        &f,
+        "python",
+        &[
+            ("PYENV_VERSION", v("3.9.1")),
+            ("RPYENV_DEBUG_LOG", log.as_os_str()),
+            ("RPYENV_CONSOLE", v("eager")),
+            ("ARGV_ECHO_FIRST", first.as_os_str()),
+            ("ARGV_ECHO_DELAY_MS", v("1500")),
+        ],
+        &[],
+    );
+    wait_for(&first);
+    if !api() {
+        assert_eq!(explorer_exit(helper, &exit), 0);
+        assert_eq!(mode_in(&log), "INHERIT");
+        return;
+    }
+    let text = std::fs::read_to_string(&log).unwrap();
+    assert_eq!(mode_in(&log), "EAGER");
+    assert!(text.contains("console=new"), "{text}");
+    assert_eq!(explorer_exit(helper, &exit), 0);
+}
+
+/// Review focus 1: `start python` from a terminal (`CREATE_NEW_CONSOLE`) gets its new
+/// window at once, as `python.exe` does.
+#[test]
+fn win_a_new_console_request_gets_a_window() {
+    let f = Fixture::new();
+    f.install("3.9.1/python.exe");
+    f.rehash();
+    let log = f.base.join("debug.log");
+    let status = f
+        .shim_command(
+            "python",
+            &[
+                ("PYENV_VERSION", v("3.9.1")),
+                ("RPYENV_DEBUG_LOG", log.as_os_str()),
+            ],
+        )
+        .creation_flags(CREATE_NEW_CONSOLE)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .unwrap();
+    assert_eq!(status.code(), Some(0));
+    if api() {
+        assert_eq!(mode_in(&log), "EAGER");
+        assert!(std::fs::read_to_string(&log)
+            .unwrap()
+            .contains("console=new"));
+    } else {
+        assert_eq!(mode_in(&log), "INHERIT");
+    }
+}
+
+/// A failed program in a window EAGER opened: the window stays for the seconds
+/// `RPYENV_CONSOLE_HOLD` sets, and the exit code comes back.
+#[test]
+fn win_eager_holds_a_failed_programs_window_for_the_set_seconds() {
+    let f = Fixture::new();
+    f.install("3.9.1/python.exe");
+    f.rehash();
+    let log = f.base.join("debug.log");
+    let start = std::time::Instant::now();
+    let (helper, exit) = launch_like_explorer(
+        &f,
+        "python",
+        &[
+            ("PYENV_VERSION", v("3.9.1")),
+            ("RPYENV_DEBUG_LOG", log.as_os_str()),
+            ("RPYENV_CONSOLE", v("eager")),
+            ("RPYENV_CONSOLE_HOLD", v("1")),
+            ("ARGV_ECHO_EXIT", v("3")),
+        ],
+        &[],
+    );
+    assert_eq!(explorer_exit(helper, &exit), 3);
+    if api() {
+        assert!(start.elapsed() >= Duration::from_secs(1));
+        assert!(std::fs::read_to_string(&log).unwrap().contains("hold=1s"));
+    }
+}
+
+/// A double-clicked script whose version isn't installed: the shim asks for the window
+/// the caller wanted, shows why, and waits for a key.
+#[test]
+fn win_an_error_with_nowhere_to_print_gets_a_window_that_waits() {
+    let f = Fixture::new();
+    f.install("3.9.1/python.exe");
+    f.rehash();
+    let log = f.base.join("debug.log");
+    let (helper, exit) = launch_like_explorer(
+        &f,
+        "python",
+        &[
+            ("PYENV_VERSION", v("9.9.9")),
+            ("RPYENV_DEBUG_LOG", log.as_os_str()),
+        ],
+        &[],
+    );
+    if !api() {
+        assert_ne!(explorer_exit(helper, &exit), 0);
+        return;
+    }
+    let text = wait_log(&log, "hold=key");
+    let pid = shim_pid(&text);
+    let shown = screen(pid);
+    assert!(shown.contains("9.9.9"), "{shown}");
+    type_keys(pid, "x");
+    assert_ne!(explorer_exit(helper, &exit), 0);
+}
+
 /// No console, output redirected → a windowless console for the child.
 #[test]
 fn win_no_console_with_redirected_output_gets_no_window() {
@@ -324,7 +554,9 @@ fn win_no_console_without_both_outputs_redirected_mirrors() {
         .stderr(Stdio::null())
         .output()
         .unwrap();
-    assert_eq!(mode_in(&log), "MIRROR");
+    // R1: a console parent detached the shim; EAGER asks, gets no console, and starts the
+    // child as MIRROR would.
+    assert_eq!(mode_in(&log), if api() { "EAGER" } else { "MIRROR" });
     assert_eq!(console_count(&out), 0);
     assert!(!has_window(&out), "the child should have no console at all");
 }

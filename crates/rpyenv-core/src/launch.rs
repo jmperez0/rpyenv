@@ -428,7 +428,7 @@ pub fn run(plan: &LaunchPlan, ctx: &Ctx, rehash_with: Option<&Path>) -> Result<i
 /// A `.bat` or `.cmd` file: std starts it through cmd.exe with its batch-file escaping,
 /// so it gets CRT-split arguments rather than the raw tail (spec §5.3).
 #[cfg(windows)]
-fn is_batch(p: &Path) -> bool {
+pub(crate) fn is_batch(p: &Path) -> bool {
     p.extension()
         .and_then(|e| e.to_str())
         .is_some_and(|e| e.eq_ignore_ascii_case("bat") || e.eq_ignore_ascii_case("cmd"))
