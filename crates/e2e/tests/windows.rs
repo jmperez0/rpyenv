@@ -748,6 +748,41 @@ fn win_lazy_a_process_left_running_finishes() {
     );
 }
 
+/// The leftover wait counts only processes on the pseudo-console: a process the program
+/// left running with no console (`DETACHED_PROCESS`, as daemons start; a GUI program is
+/// the same case) neither delays the shim's exit, which a waiting caller such as Task
+/// Scheduler would see as a stuck task, nor dies with it.
+#[test]
+fn win_lazy_a_detached_process_left_running_does_not_delay_the_exit() {
+    let _windows = one_window_test_at_a_time();
+    let f = Fixture::new();
+    f.install("3.9.1/python.exe");
+    f.rehash();
+    let log = f.base.join("debug.log");
+    let left = f.base.join("left");
+    let (helper, exit) = launch_like_explorer(
+        &f,
+        "python",
+        &[
+            ("PYENV_VERSION", v("3.9.1")),
+            ("RPYENV_DEBUG_LOG", log.as_os_str()),
+            ("ARGV_ECHO_QUIET", v("1")),
+            ("ARGV_ECHO_LEAVE", left.as_os_str()),
+            ("ARGV_ECHO_LEAVE_DETACHED", v("1")),
+            ("ARGV_ECHO_LEAVE_MS", v("4000")),
+        ],
+        &[],
+    );
+    assert_eq!(explorer_exit(helper, &exit), 0);
+    assert!(
+        !left.exists(),
+        "the shim waited for a process that isn't on its pseudo-console:\n{}",
+        std::fs::read_to_string(&log).unwrap_or_default()
+    );
+    // ...and that process wasn't ended with the shim.
+    wait_for(&left);
+}
+
 /// Review focus 5: killing a LAZY shim ends its program, through the Job Object.
 #[test]
 fn win_lazy_killing_the_shim_kills_the_child() {

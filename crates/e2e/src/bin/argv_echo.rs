@@ -21,7 +21,8 @@
 //! prints nothing to stdout.
 //!
 //! `ARGV_ECHO_LEAVE=<path>` starts a quiet copy of this program that it doesn't wait
-//! for, which sleeps 1.5 s and then creates that file.
+//! for, which sleeps `ARGV_ECHO_LEAVE_MS` (default 1500) and then creates that file; with
+//! `ARGV_ECHO_LEAVE_DETACHED=1` the copy has no console (`DETACHED_PROCESS`).
 //!
 //! Before anything else, `ARGV_ECHO_FIRST=<path>` creates that file and
 //! `ARGV_ECHO_DELAY_MS` waits before any output, after which
