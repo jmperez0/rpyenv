@@ -21,7 +21,8 @@
 //! prints nothing to stdout.
 //!
 //! Before anything else, `ARGV_ECHO_FIRST=<path>` creates that file and
-//! `ARGV_ECHO_DELAY_MS` waits before any output. Helper modes, on Windows, each exiting
+//! `ARGV_ECHO_DELAY_MS` waits before any output, after which
+//! `ARGV_ECHO_PROMPT` is printed, before stdin is read. Helper modes, on Windows, each exiting
 //! when done: `ARGV_ECHO_SPAWN=<exe>` starts that program as Explorer does (no console,
 //! null standard handles, no creation flags, this helper's own arguments) and writes its
 //! exit code to `ARGV_ECHO_SPAWN_EXIT=<path>`; `ARGV_ECHO_SCREEN_PID=<pid>` prints the

@@ -609,6 +609,168 @@ fn terminate(pid: u32) {
     }
 }
 
+/// LAZY: no window while the program is quiet; it appears when the program prints, and
+/// shows the output intact (review focus 3: non-ASCII).
+#[test]
+fn win_lazy_shows_the_window_on_first_output() {
+    let f = Fixture::new();
+    f.install("3.9.1/python.exe");
+    f.rehash();
+    let log = f.base.join("debug.log");
+    let first = f.base.join("first");
+    let ready = f.base.join("ready");
+    let (helper, exit) = launch_like_explorer(
+        &f,
+        "python",
+        &[
+            ("PYENV_VERSION", v("3.9.1")),
+            ("RPYENV_DEBUG_LOG", log.as_os_str()),
+            ("ARGV_ECHO_FIRST", first.as_os_str()),
+            ("ARGV_ECHO_DELAY_MS", v("1500")),
+            ("ARGV_ECHO_READY", ready.as_os_str()),
+            // Long enough to read the screen from a busy test harness; ended below.
+            ("ARGV_ECHO_SLEEP_MS", v("20000")),
+        ],
+        &["ñ 漢"],
+    );
+    wait_for(&first);
+    if !api() {
+        assert_eq!(explorer_exit(helper, &exit), 0);
+        return;
+    }
+    assert!(
+        !std::fs::read_to_string(&log).unwrap().contains("console="),
+        "a window before any output"
+    );
+    wait_for(&ready);
+    let text = wait_log(&log, "console=new");
+    let pid = shim_pid(&text);
+    let shown = screen(pid);
+    terminate(pid);
+    let _ = explorer_exit(helper, &exit);
+    assert!(shown.contains("argv0="), "{shown}");
+    assert!(shown.contains("ñ 漢"), "{shown}");
+}
+
+/// LAZY: what's typed in the window reaches the program's stdin.
+#[test]
+fn win_lazy_relays_typed_input() {
+    let f = Fixture::new();
+    f.install("3.9.1/python.exe");
+    f.rehash();
+    if !api() {
+        return;
+    }
+    let log = f.base.join("debug.log");
+    let ready = f.base.join("ready");
+    let (helper, exit) = launch_like_explorer(
+        &f,
+        "python",
+        &[
+            ("PYENV_VERSION", v("3.9.1")),
+            ("RPYENV_DEBUG_LOG", log.as_os_str()),
+            ("ARGV_ECHO_PROMPT", v("name? ")),
+            ("ARGV_ECHO_STDIN", v("1")),
+            ("ARGV_ECHO_READY", ready.as_os_str()),
+            // Long enough to read the screen from a busy test harness; ended below.
+            ("ARGV_ECHO_SLEEP_MS", v("20000")),
+        ],
+        &[],
+    );
+    let pid = shim_pid(&wait_log(&log, "console=new"));
+    type_keys(pid, "abc\r\x1a\r");
+    wait_for(&ready);
+    let shown = screen(pid);
+    terminate(pid);
+    let _ = explorer_exit(helper, &exit);
+    assert!(shown.contains(r#"stdin="abc\r\n""#), "{shown}");
+}
+
+/// LAZY: Ctrl+C typed in the window reaches the program as Ctrl+C.
+#[test]
+fn win_lazy_ctrl_c_reaches_the_program() {
+    let f = Fixture::new();
+    f.install("3.9.1/python.exe");
+    f.rehash();
+    if !api() {
+        return;
+    }
+    let log = f.base.join("debug.log");
+    let (helper, exit) = launch_like_explorer(
+        &f,
+        "python",
+        &[
+            ("PYENV_VERSION", v("3.9.1")),
+            ("RPYENV_DEBUG_LOG", log.as_os_str()),
+            ("RPYENV_CONSOLE_HOLD", v("0")),
+            ("ARGV_ECHO_CATCH_BREAK", v("1")),
+            ("ARGV_ECHO_PROMPT", v("go")),
+            ("ARGV_ECHO_SLEEP_MS", v("20000")),
+        ],
+        &[],
+    );
+    let pid = shim_pid(&wait_log(&log, "console=new"));
+    type_keys(pid, "\x03");
+    assert_eq!(explorer_exit(helper, &exit), 5);
+}
+
+/// LAZY: a failed program's window waits for a key (the default hold).
+#[test]
+fn win_lazy_holds_a_failed_programs_window_until_a_key() {
+    let f = Fixture::new();
+    f.install("3.9.1/python.exe");
+    f.rehash();
+    let log = f.base.join("debug.log");
+    let (helper, exit) = launch_like_explorer(
+        &f,
+        "python",
+        &[
+            ("PYENV_VERSION", v("3.9.1")),
+            ("RPYENV_DEBUG_LOG", log.as_os_str()),
+            ("ARGV_ECHO_PROMPT", v("x")),
+            ("ARGV_ECHO_EXIT", v("3")),
+        ],
+        &[],
+    );
+    if !api() {
+        assert_eq!(explorer_exit(helper, &exit), 3);
+        return;
+    }
+    let pid = shim_pid(&wait_log(&log, "hold=key"));
+    let shown = screen(pid);
+    assert!(shown.contains("exited with code 3"), "{shown}");
+    type_keys(pid, "x");
+    assert_eq!(explorer_exit(helper, &exit), 3);
+}
+
+/// LAZY can't start a batch file with the raw command line safely, so it takes EAGER.
+#[test]
+fn win_lazy_a_batch_target_takes_eager() {
+    let f = Fixture::new();
+    f.install("3.9.1/python.exe");
+    let scripts = f.root.join("versions").join("3.9.1").join("Scripts");
+    std::fs::create_dir_all(&scripts).unwrap();
+    std::fs::write(scripts.join("tool.bat"), "@exit /b 4\r\n").unwrap();
+    f.rehash();
+    let log = f.base.join("debug.log");
+    let (helper, exit) = launch_like_explorer(
+        &f,
+        "tool",
+        &[
+            ("PYENV_VERSION", v("3.9.1")),
+            ("RPYENV_DEBUG_LOG", log.as_os_str()),
+            ("RPYENV_CONSOLE_HOLD", v("0")),
+        ],
+        &[],
+    );
+    assert_eq!(explorer_exit(helper, &exit), 4);
+    if api() {
+        let text = std::fs::read_to_string(&log).unwrap();
+        assert!(text.contains("lazy=batch"), "{text}");
+        assert_eq!(mode_in(&log), "EAGER");
+    }
+}
+
 /// No console, output redirected → a windowless console for the child.
 #[test]
 fn win_no_console_with_redirected_output_gets_no_window() {

@@ -245,8 +245,11 @@ pub fn main() {
     }
     #[cfg(windows)]
     if std::env::var("ARGV_ECHO_CATCH_BREAK").as_deref() == Ok("1") {
-        // SAFETY: the handler only stores to an atomic.
+        // SAFETY: the handler only stores to an atomic. The first call clears an inherited
+        // "ignore Ctrl+C" (a parent's `SetConsoleCtrlHandler(NULL, TRUE)`), as a program
+        // that handles Ctrl+C itself would.
         unsafe {
+            windows_sys::Win32::System::Console::SetConsoleCtrlHandler(None, 0);
             windows_sys::Win32::System::Console::SetConsoleCtrlHandler(Some(catch), 1);
         }
     }
@@ -258,6 +261,11 @@ pub fn main() {
         .and_then(|v| v.parse().ok())
     {
         std::thread::sleep(std::time::Duration::from_millis(ms));
+    }
+    if let Some(prompt) = std::env::var_os("ARGV_ECHO_PROMPT") {
+        let mut stdout = std::io::stdout().lock();
+        let _ = stdout.write_all(prompt.to_string_lossy().as_bytes());
+        let _ = stdout.flush();
     }
     let mut out = String::new();
     let mut args = std::env::args_os();
