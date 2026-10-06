@@ -227,6 +227,7 @@ fn start(line: &mut [u16], env: &[u16], hpc: HPCON, job: Option<&Job>) -> io::Re
         if !job.is_some_and(|j| j.assign_handle(pi.hProcess)) {
             debuglog::append("job=none");
         }
+        winproc::watch_child(pi.hProcess);
         ResumeThread(pi.hThread);
         CloseHandle(pi.hThread);
         Ok(Owned(pi.hProcess))
@@ -466,6 +467,61 @@ fn relay_input(conin: HANDLE, conout: HANDLE, input: HANDLE, stop: HANDLE, win32
 mod tests {
     use super::*;
     use std::ffi::OsString;
+    use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+    use windows_sys::Win32::System::Console::CTRL_CLOSE_EVENT;
+
+    /// R8 in LAZY: when the shim's own window closes, the console handler closes the
+    /// pseudo-console (the program gets its own CTRL_CLOSE_EVENT) and returns only once the
+    /// program has ended, so the job doesn't cut its cleanup short.
+    #[test]
+    fn the_close_handler_closes_the_pseudo_console_and_waits_for_the_program() {
+        let (in_read, _in_write) = pipe().unwrap();
+        let (out_read, out_write) = pipe().unwrap();
+        let mut hpc: HPCON = 0;
+        // SAFETY: valid pipe ends and an out-pointer, as in `run`.
+        let hr = unsafe { CreatePseudoConsole(START_SIZE, in_read.0, out_write.0, 0, &mut hpc) };
+        assert_eq!(hr, 0);
+        drop(in_read);
+        drop(out_write);
+        let out = out_read.0 as usize;
+        let drain = std::thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            loop {
+                let mut n = 0u32;
+                // SAFETY: reads into a local buffer of the length given.
+                let ok = unsafe {
+                    ReadFile(
+                        out as HANDLE,
+                        buf.as_mut_ptr(),
+                        buf.len() as u32,
+                        &mut n,
+                        std::ptr::null_mut(),
+                    )
+                };
+                if ok == 0 || n == 0 {
+                    break;
+                }
+            }
+        });
+        winproc::set_pty(hpc);
+        let cmd =
+            std::env::var("ComSpec").unwrap_or_else(|_| r"C:\Windows\System32\cmd.exe".into());
+        let mut line = command_line(Path::new(&cmd), Some(OsStr::new("/d /c pause")));
+        let env = env_block(&std::env::vars_os().collect::<Vec<_>>());
+        let process = start(&mut line, &env, hpc, None).unwrap();
+        winproc::watch_child(process.0);
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        // SAFETY: calls the handler as Windows would, on this thread.
+        unsafe { winproc::on_console_event(CTRL_CLOSE_EVENT) };
+        // SAFETY: polls the program's process handle, which `process` owns.
+        let ended = unsafe { WaitForSingleObject(process.0, 0) } == WAIT_OBJECT_0;
+        winproc::close_pty();
+        let _ = drain.join();
+        assert!(
+            ended,
+            "the handler returned while the program was still running"
+        );
+    }
 
     fn os(s: &str) -> OsString {
         OsString::from(s)

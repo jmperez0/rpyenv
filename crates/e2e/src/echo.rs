@@ -12,9 +12,42 @@ fn caught() -> bool {
 }
 
 #[cfg(windows)]
-unsafe extern "system" fn catch(_event: u32) -> windows_sys::core::BOOL {
+unsafe extern "system" fn catch(event: u32) -> windows_sys::core::BOOL {
+    if event == windows_sys::Win32::System::Console::CTRL_CLOSE_EVENT {
+        // Cleanup that takes a while: Windows ends this process when the handler returns.
+        if let Some(p) = std::env::var_os("ARGV_ECHO_ON_CLOSE") {
+            std::thread::sleep(std::time::Duration::from_millis(1000));
+            let _ = std::fs::write(p, b"");
+        }
+        return 1;
+    }
     CAUGHT.store(true, std::sync::atomic::Ordering::SeqCst);
     1
+}
+
+/// Posts `WM_CLOSE` to process `pid`'s console window, as clicking its close button does.
+/// Exits 4 when the window isn't conhost's (Windows Terminal hosts it elsewhere).
+#[cfg(windows)]
+fn close_window(pid: u32) -> i32 {
+    use windows_sys::Win32::System::Console::{AttachConsole, FreeConsole, GetConsoleWindow};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetClassNameW, PostMessageW, WM_CLOSE};
+    // SAFETY: console attachment of this helper only; reads a class name into a local.
+    unsafe {
+        FreeConsole();
+        if AttachConsole(pid) == 0 {
+            return 2;
+        }
+        let hwnd = GetConsoleWindow();
+        let mut class = [0u16; 64];
+        let n = GetClassNameW(hwnd, class.as_mut_ptr(), 64);
+        if String::from_utf16_lossy(&class[..n.max(0) as usize]) != "ConsoleWindowClass" {
+            return 4;
+        }
+        if PostMessageW(hwnd, WM_CLOSE, 0, 0) == 0 {
+            return 3;
+        }
+    }
+    0
 }
 
 /// Sends Ctrl+Break to process group `pid`, which must own a console: this helper leaves
@@ -207,6 +240,116 @@ fn type_keys(pid: u32, text: &str) -> i32 {
     }
 }
 
+/// Runs `exe` on a pseudo-console this helper owns, as a terminal tab would, draining its
+/// output. Once the file `ARGV_ECHO_PTY_CLOSE_AFTER` exists, closes the pseudo-console, as
+/// closing the tab does: everything on it gets `CTRL_CLOSE_EVENT`. Then waits for `exe`.
+#[cfg(windows)]
+fn run_in_pty(exe: &std::ffi::OsStr) -> i32 {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::Storage::FileSystem::ReadFile;
+    use windows_sys::Win32::System::Console::{
+        ClosePseudoConsole, CreatePseudoConsole, COORD, HPCON,
+    };
+    use windows_sys::Win32::System::Pipes::CreatePipe;
+    use windows_sys::Win32::System::Threading::{
+        CreateProcessW, InitializeProcThreadAttributeList, UpdateProcThreadAttribute,
+        WaitForSingleObject, EXTENDED_STARTUPINFO_PRESENT, LPPROC_THREAD_ATTRIBUTE_LIST,
+        PROCESS_INFORMATION, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, STARTF_USESTDHANDLES,
+        STARTUPINFOEXW,
+    };
+    let close_after = std::env::var_os("ARGV_ECHO_PTY_CLOSE_AFTER");
+    // The program on the pseudo-console must not run this mode itself.
+    std::env::remove_var("ARGV_ECHO_PTY_RUN");
+    std::env::remove_var("ARGV_ECHO_PTY_CLOSE_AFTER");
+    let mut line: Vec<u16> = vec![u16::from(b'"')];
+    line.extend(exe.encode_wide());
+    line.extend([u16::from(b'"'), 0]);
+    // SAFETY: pipe, pseudo-console and process calls with locals for every out-pointer;
+    // the attribute list lives in `attrs` while used. Handles leak until this helper exits.
+    unsafe {
+        let (mut in_r, mut in_w, mut out_r, mut out_w) = (
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        );
+        if CreatePipe(&mut in_r, &mut in_w, std::ptr::null(), 0) == 0
+            || CreatePipe(&mut out_r, &mut out_w, std::ptr::null(), 0) == 0
+        {
+            return 2;
+        }
+        let mut hpc: HPCON = 0;
+        if CreatePseudoConsole(COORD { X: 120, Y: 30 }, in_r, out_w, 0, &mut hpc) != 0 {
+            return 2;
+        }
+        CloseHandle(in_r);
+        CloseHandle(out_w);
+        let out = out_r as usize;
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            loop {
+                let mut n = 0u32;
+                let ok = ReadFile(
+                    out as HANDLE,
+                    buf.as_mut_ptr(),
+                    buf.len() as u32,
+                    &mut n,
+                    std::ptr::null_mut(),
+                );
+                if ok == 0 || n == 0 {
+                    break;
+                }
+            }
+        });
+        let mut size = 0usize;
+        InitializeProcThreadAttributeList(std::ptr::null_mut(), 1, 0, &mut size);
+        let mut attrs = vec![0u8; size];
+        let list = attrs.as_mut_ptr() as LPPROC_THREAD_ATTRIBUTE_LIST;
+        if InitializeProcThreadAttributeList(list, 1, 0, &mut size) == 0
+            || UpdateProcThreadAttribute(
+                list,
+                0,
+                PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE as usize,
+                hpc as *const core::ffi::c_void,
+                std::mem::size_of::<HPCON>(),
+                std::ptr::null_mut(),
+                std::ptr::null(),
+            ) == 0
+        {
+            return 3;
+        }
+        let mut si: STARTUPINFOEXW = std::mem::zeroed();
+        si.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
+        si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+        si.lpAttributeList = list;
+        let mut pi: PROCESS_INFORMATION = std::mem::zeroed();
+        if CreateProcessW(
+            std::ptr::null(),
+            line.as_mut_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            0,
+            EXTENDED_STARTUPINFO_PRESENT,
+            std::ptr::null(),
+            std::ptr::null(),
+            &si.StartupInfo,
+            &mut pi,
+        ) == 0
+        {
+            return 3;
+        }
+        if let Some(p) = close_after {
+            while !std::path::Path::new(&p).exists() {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
+        ClosePseudoConsole(hpc);
+        WaitForSingleObject(pi.hProcess, 30_000);
+    }
+    0
+}
+
 pub fn main() {
     #[cfg(windows)]
     if let Some(pid) = std::env::var("ARGV_ECHO_BREAK_PID")
@@ -221,6 +364,17 @@ pub fn main() {
         .and_then(|p| p.parse::<u32>().ok())
     {
         std::process::exit(send_ctrl_c(pid));
+    }
+    #[cfg(windows)]
+    if let Some(pid) = std::env::var("ARGV_ECHO_CLOSE_PID")
+        .ok()
+        .and_then(|p| p.parse::<u32>().ok())
+    {
+        std::process::exit(close_window(pid));
+    }
+    #[cfg(windows)]
+    if let Some(exe) = std::env::var_os("ARGV_ECHO_PTY_RUN") {
+        std::process::exit(run_in_pty(&exe));
     }
     #[cfg(windows)]
     if let Some(exe) = std::env::var_os("ARGV_ECHO_SPAWN") {
@@ -244,7 +398,9 @@ pub fn main() {
         ));
     }
     #[cfg(windows)]
-    if std::env::var("ARGV_ECHO_CATCH_BREAK").as_deref() == Ok("1") {
+    if std::env::var("ARGV_ECHO_CATCH_BREAK").as_deref() == Ok("1")
+        || std::env::var_os("ARGV_ECHO_ON_CLOSE").is_some()
+    {
         // SAFETY: the handler only stores to an atomic. The first call clears an inherited
         // "ignore Ctrl+C" (a parent's `SetConsoleCtrlHandler(NULL, TRUE)`), as a program
         // that handles Ctrl+C itself would.
