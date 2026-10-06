@@ -311,10 +311,14 @@ pub fn main() {
             let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755));
         }
     }
-    let mut stdout = std::io::stdout().lock();
-    let _ = stdout.write_all(out.as_bytes());
-    let _ = stdout.flush();
-    drop(stdout);
+    if let Some(p) = std::env::var_os("ARGV_ECHO_OUT") {
+        let _ = std::fs::write(&p, out.as_bytes());
+    }
+    if var("ARGV_ECHO_QUIET").as_deref() != Some("1") {
+        let mut stdout = std::io::stdout().lock();
+        let _ = stdout.write_all(out.as_bytes());
+        let _ = stdout.flush();
+    }
     if let Some(p) = std::env::var_os("ARGV_ECHO_READY") {
         let _ = std::fs::write(&p, b"");
     }

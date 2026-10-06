@@ -10,7 +10,7 @@ use std::os::windows::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use windows_sys::core::{BOOL, HRESULT};
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE, TRUE};
 use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE, WAIT_OBJECT_0};
@@ -24,6 +24,7 @@ use windows_sys::Win32::System::Console::{
     AttachConsole, FlushConsoleInputBuffer, FreeConsole, ReadConsoleInputW, SetConsoleMode,
     SetStdHandle, WriteConsoleW, ATTACH_PARENT_PROCESS, INPUT_RECORD, KEY_EVENT,
 };
+use windows_sys::Win32::System::Console::{ClosePseudoConsole, ResizePseudoConsole, COORD, HPCON};
 use windows_sys::Win32::System::Console::{
     GetConsoleMode, GetConsoleProcessList, GetStdHandle, SetConsoleCtrlHandler, STD_ERROR_HANDLE,
     STD_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
@@ -76,8 +77,40 @@ impl Job {
     /// Puts `child` in the job. False when Windows refuses, for example when the shim runs
     /// in a job that forbids it; the child then runs without one.
     pub fn assign(&self, child: &Child) -> bool {
+        self.assign_handle(child.as_raw_handle())
+    }
+
+    /// `assign`, for a process this crate started itself.
+    pub fn assign_handle(&self, process: HANDLE) -> bool {
         // SAFETY: both handles are valid for the duration of the call.
-        unsafe { AssignProcessToJobObject(self.0, child.as_raw_handle()) != 0 }
+        unsafe { AssignProcessToJobObject(self.0, process) != 0 }
+    }
+}
+
+/// The running pseudo-console, if any: LAZY's main thread, its input relay and the
+/// console handler all reach it through this lock, so it's never used after closing.
+static PTY: Mutex<HPCON> = Mutex::new(0);
+
+pub fn set_pty(hpc: HPCON) {
+    *PTY.lock().unwrap_or_else(|e| e.into_inner()) = hpc;
+}
+
+/// Closes the pseudo-console once, whichever thread gets here first.
+pub fn close_pty() {
+    let mut pty = PTY.lock().unwrap_or_else(|e| e.into_inner());
+    if *pty != 0 {
+        // SAFETY: a pseudo-console from CreatePseudoConsole, closed once under the lock.
+        unsafe { ClosePseudoConsole(*pty) };
+        *pty = 0;
+    }
+}
+
+/// Resizes the pseudo-console, if it's still open.
+pub fn resize_pty(size: COORD) {
+    let pty = PTY.lock().unwrap_or_else(|e| e.into_inner());
+    if *pty != 0 {
+        // SAFETY: an open pseudo-console, held open by the lock.
+        unsafe { ResizePseudoConsole(*pty, size) };
     }
 }
 
@@ -425,6 +458,24 @@ pub fn spawn_and_wait(cmd: &mut Command, program: &Path) -> io::Result<ExitStatu
         std::process::id(),
         program.display()
     ));
+    ignore_console_events();
+    let job = Job::new();
+    if mode == ConsoleMode::Lazy {
+        match crate::conpty::run(cmd, program, job.as_ref()) {
+            Ok(o) => {
+                drop(job);
+                if o.new_window {
+                    hold_after(o.code);
+                }
+                return Ok(std::os::windows::process::ExitStatusExt::from_raw(o.code));
+            }
+            Err(crate::conpty::LazyError::Start(e)) => return Err(e),
+            Err(crate::conpty::LazyError::Setup(e)) => {
+                debuglog::append(&format!("lazy=failed {e}"));
+                mode = ConsoleMode::Eager;
+            }
+        }
+    }
     let mut new_window = false;
     match mode {
         ConsoleMode::Inherit => {}
@@ -437,17 +488,15 @@ pub fn spawn_and_wait(cmd: &mut Command, program: &Path) -> io::Result<ExitStatu
         ConsoleMode::Mirror => {
             cmd.creation_flags(DETACHED_PROCESS);
         }
-        // LAZY is EAGER until Task 4 adds the pseudo-console.
-        ConsoleMode::Eager | ConsoleMode::Lazy => match alloc_default() {
+        ConsoleMode::Eager => match alloc_default() {
             Alloc::New => new_window = true,
             Alloc::Existing => {}
             Alloc::None => {
                 cmd.creation_flags(DETACHED_PROCESS);
             }
         },
+        ConsoleMode::Lazy => unreachable!("LAZY returned or fell back above"),
     }
-    ignore_console_events();
-    let job = Job::new();
     let mut child = cmd.spawn()?;
     // Without the job, killing the shim leaves the child running (D-45); say so in the log.
     if !job.as_ref().is_some_and(|j| j.assign(&child)) {
