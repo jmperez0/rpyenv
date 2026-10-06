@@ -3,7 +3,7 @@
 //! caller wanted only when the child first prints something.
 
 use crate::debuglog;
-use crate::vtscan::Scanner;
+use crate::vtscan::{self, Scanner, VtKeys};
 use crate::winproc::{self, Alloc, Job};
 use std::ffi::{OsStr, OsString};
 use std::io;
@@ -12,14 +12,21 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
-use windows_sys::Win32::Storage::FileSystem::ReadFile;
-use windows_sys::Win32::System::Console::{CreatePseudoConsole, COORD, HPCON};
+use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
+use windows_sys::Win32::Globalization::CP_UTF8;
+use windows_sys::Win32::Storage::FileSystem::{ReadFile, WriteFile};
+use windows_sys::Win32::System::Console::{
+    CreatePseudoConsole, GetConsoleScreenBufferInfo, ReadConsoleInputW, SetConsoleMode,
+    SetConsoleOutputCP, CONSOLE_SCREEN_BUFFER_INFO, COORD, DISABLE_NEWLINE_AUTO_RETURN,
+    ENABLE_PROCESSED_OUTPUT, ENABLE_VIRTUAL_TERMINAL_INPUT, ENABLE_VIRTUAL_TERMINAL_PROCESSING,
+    ENABLE_WINDOW_INPUT, ENABLE_WRAP_AT_EOL_OUTPUT, HPCON, INPUT_RECORD, KEY_EVENT,
+    WINDOW_BUFFER_SIZE_EVENT,
+};
 use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Threading::{
-    CreateProcessW, DeleteProcThreadAttributeList, GetExitCodeProcess,
-    InitializeProcThreadAttributeList, ResumeThread, UpdateProcThreadAttribute,
-    WaitForSingleObject, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT,
+    CreateEventW, CreateProcessW, DeleteProcThreadAttributeList, GetExitCodeProcess,
+    InitializeProcThreadAttributeList, ResumeThread, SetEvent, UpdateProcThreadAttribute,
+    WaitForMultipleObjects, WaitForSingleObject, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT,
     EXTENDED_STARTUPINFO_PRESENT, INFINITE, LPPROC_THREAD_ATTRIBUTE_LIST, PROCESS_INFORMATION,
     PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, STARTF_USESTDHANDLES, STARTUPINFOEXW,
 };
@@ -226,21 +233,39 @@ fn start(line: &mut [u16], env: &[u16], hpc: HPCON, job: Option<&Job>) -> io::Re
     }
 }
 
-/// What the output relay did: whether it asked for a console.
+/// What the output relay did: whether it asked for a console, and the input relay it
+/// started, to stop once the child is gone.
 #[derive(Default)]
 struct Shown {
     alloc: Option<Alloc>,
+    conout: usize,
+    input: Option<(std::thread::JoinHandle<()>, usize)>,
 }
 
 impl Shown {
-    /// Stops what the relay started.
-    fn finish(self) {}
+    /// Stops the input relay and closes the screen handle.
+    fn finish(self) {
+        if let Some((thread, stop)) = self.input {
+            // SAFETY: an event this module created; set, then closed after the thread
+            // that waits on it has ended.
+            unsafe { SetEvent(stop as HANDLE) };
+            let _ = thread.join();
+            unsafe { CloseHandle(stop as HANDLE) };
+        }
+        if self.conout != 0 {
+            // SAFETY: the screen handle `reveal` opened, closed once.
+            unsafe { CloseHandle(self.conout as HANDLE) };
+        }
+    }
 }
 
 /// Reads the pseudo-console's output until it closes. Until the first printable
-/// character the bytes are held; then the console the caller wanted is asked for.
-fn relay_output(out: HANDLE, _input: HANDLE, win32: Arc<AtomicBool>) -> Shown {
+/// character the bytes are held. Then the console the caller wanted is asked for, and
+/// they and everything after go to it, or nowhere if the caller wanted none (plan M5a, R2).
+fn relay_output(out: HANDLE, input: HANDLE, win32: Arc<AtomicBool>) -> Shown {
     let mut scanner = Scanner::new();
+    let mut held: Vec<u8> = Vec::new();
+    let mut pending: Vec<u8> = Vec::new();
     let mut shown = Shown::default();
     let mut buf = vec![0u8; 16 * 1024];
     loop {
@@ -258,14 +283,183 @@ fn relay_output(out: HANDLE, _input: HANDLE, win32: Arc<AtomicBool>) -> Shown {
         if ok == 0 || n == 0 {
             break;
         }
-        let trigger = scanner.feed(&buf[..n as usize]);
+        let chunk = &buf[..n as usize];
+        let trigger = scanner.feed(chunk);
         win32.store(scanner.win32_input(), Ordering::SeqCst);
-        if shown.alloc.is_none() && trigger.is_some() {
-            // The next task shows the window here; until then the output is dropped.
-            shown.alloc = Some(Alloc::None);
+        match shown.alloc {
+            None => {
+                held.extend_from_slice(chunk);
+                if trigger.is_some() {
+                    shown = reveal(input, win32.clone());
+                    if shown.conout != 0 {
+                        write_console(shown.conout as HANDLE, &mut pending, &held);
+                    }
+                    held = Vec::new();
+                }
+            }
+            Some(_) if shown.conout != 0 => {
+                write_console(shown.conout as HANDLE, &mut pending, chunk)
+            }
+            Some(_) => {}
         }
     }
     shown
+}
+
+/// Asks for the caller's console and gets it ready for the relays (console doc, LAZY
+/// step 4): UTF-8 VT output sized to the pseudo-console, and an input relay.
+fn reveal(input: HANDLE, win32: Arc<AtomicBool>) -> Shown {
+    let alloc = winproc::alloc_default();
+    let mut shown = Shown {
+        alloc: Some(alloc),
+        ..Shown::default()
+    };
+    if alloc == Alloc::None {
+        return shown;
+    }
+    let (Some(conin), Some(conout)) = (
+        winproc::open_console("CONIN$"),
+        winproc::open_console("CONOUT$"),
+    ) else {
+        return shown;
+    };
+    // SAFETY: console calls on the handles just opened.
+    unsafe {
+        SetConsoleOutputCP(CP_UTF8);
+        SetConsoleMode(
+            conout,
+            ENABLE_PROCESSED_OUTPUT
+                | ENABLE_WRAP_AT_EOL_OUTPUT
+                | ENABLE_VIRTUAL_TERMINAL_PROCESSING
+                | DISABLE_NEWLINE_AUTO_RETURN,
+        );
+    }
+    if let Some(size) = window_size(conout) {
+        winproc::resize_pty(size);
+    }
+    // SAFETY: a manual-reset event, initially unset, unnamed; `Shown::finish` closes it.
+    let stop = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
+    let (ci, co, inp, st) = (
+        conin as usize,
+        conout as usize,
+        input as usize,
+        stop as usize,
+    );
+    let thread = std::thread::spawn(move || {
+        relay_input(
+            ci as HANDLE,
+            co as HANDLE,
+            inp as HANDLE,
+            st as HANDLE,
+            win32,
+        )
+    });
+    shown.conout = conout as usize;
+    shown.input = Some((thread, st));
+    shown
+}
+
+/// The window's size in character cells.
+fn window_size(conout: HANDLE) -> Option<COORD> {
+    // SAFETY: reads into a zeroed local of the documented layout.
+    unsafe {
+        let mut info: CONSOLE_SCREEN_BUFFER_INFO = std::mem::zeroed();
+        (GetConsoleScreenBufferInfo(conout, &mut info) != 0).then(|| COORD {
+            X: info.srWindow.Right - info.srWindow.Left + 1,
+            Y: info.srWindow.Bottom - info.srWindow.Top + 1,
+        })
+    }
+}
+
+/// Writes whole UTF-8 characters; a character cut by the read waits in `pending`.
+fn write_console(conout: HANDLE, pending: &mut Vec<u8>, bytes: &[u8]) {
+    pending.extend_from_slice(bytes);
+    let n = vtscan::complete_utf8_len(pending);
+    write_all(conout, &pending[..n]);
+    pending.drain(..n);
+}
+
+/// Writes all of `b`; false when the handle stops taking it.
+fn write_all(h: HANDLE, mut b: &[u8]) -> bool {
+    while !b.is_empty() {
+        let mut w = 0u32;
+        // SAFETY: writes from a live slice of the length given.
+        let ok = unsafe { WriteFile(h, b.as_ptr(), b.len() as u32, &mut w, std::ptr::null_mut()) };
+        if ok == 0 || w == 0 {
+            return false;
+        }
+        b = &b[w as usize..];
+    }
+    true
+}
+
+/// Relays the window's keys to the pseudo-console (console doc, LAZY step 5; plan M5a,
+/// R3), and its size changes, until `stop` is set or the pseudo-console stops reading.
+fn relay_input(conin: HANDLE, conout: HANDLE, input: HANDLE, stop: HANDLE, win32: Arc<AtomicBool>) {
+    let mut mode = None;
+    let mut keys = VtKeys::default();
+    // SAFETY: a zeroed INPUT_RECORD array is valid.
+    let mut records: [INPUT_RECORD; 64] = unsafe { std::mem::zeroed() };
+    loop {
+        let want = win32.load(Ordering::SeqCst);
+        if mode != Some(want) {
+            // Processed, line and echo input off: Ctrl+C arrives as a key, for the child.
+            let m = if want {
+                ENABLE_WINDOW_INPUT
+            } else {
+                ENABLE_WINDOW_INPUT | ENABLE_VIRTUAL_TERMINAL_INPUT
+            };
+            // SAFETY: sets the mode of the input handle this thread owns.
+            unsafe { SetConsoleMode(conin, m) };
+            mode = Some(want);
+        }
+        let handles = [stop, conin];
+        // SAFETY: waits on two live handles.
+        if unsafe { WaitForMultipleObjects(2, handles.as_ptr(), 0, INFINITE) } != WAIT_OBJECT_0 + 1
+        {
+            break;
+        }
+        let mut n = 0u32;
+        // SAFETY: reads into the local array, at most its length.
+        if unsafe { ReadConsoleInputW(conin, records.as_mut_ptr(), records.len() as u32, &mut n) }
+            == 0
+        {
+            break;
+        }
+        let mut bytes = Vec::new();
+        for r in &records[..n as usize] {
+            match u32::from(r.EventType) {
+                KEY_EVENT => {
+                    // SAFETY: the record is tagged KEY_EVENT.
+                    let k = unsafe { r.Event.KeyEvent };
+                    // SAFETY: both union members are a character of the same size.
+                    let uc = unsafe { k.uChar.UnicodeChar };
+                    vtscan::key_bytes(
+                        k.wVirtualKeyCode,
+                        k.wVirtualScanCode,
+                        uc,
+                        k.bKeyDown != 0,
+                        k.dwControlKeyState,
+                        k.wRepeatCount,
+                        want,
+                        &mut keys,
+                        &mut bytes,
+                    );
+                }
+                WINDOW_BUFFER_SIZE_EVENT => {
+                    if let Some(size) = window_size(conout) {
+                        winproc::resize_pty(size);
+                    }
+                }
+                _ => {}
+            }
+        }
+        if !bytes.is_empty() && !write_all(input, &bytes) {
+            break;
+        }
+    }
+    // SAFETY: the input handle `reveal` opened for this thread, closed once.
+    unsafe { CloseHandle(conin) };
 }
 
 #[cfg(test)]

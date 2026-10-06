@@ -133,6 +133,28 @@ pub fn win32_key(vk: u16, sc: u16, uc: u16, down: bool, state: u32, repeat: u16)
     format!("\x1b[{vk};{sc};{uc};{};{state};{repeat}_", u8::from(down))
 }
 
+/// The bytes one key event sends to the pseudo-console: a win32-input-mode sequence while
+/// that mode is on (key-ups and Ctrl+C included, which ConPTY turns into Ctrl+C for the
+/// program), else the key-down's characters (Ctrl+C as the byte 0x03).
+#[allow(clippy::too_many_arguments)]
+pub fn key_bytes(
+    vk: u16,
+    sc: u16,
+    uc: u16,
+    down: bool,
+    state: u32,
+    repeat: u16,
+    win32: bool,
+    keys: &mut VtKeys,
+    out: &mut Vec<u8>,
+) {
+    if win32 {
+        out.extend_from_slice(win32_key(vk, sc, uc, down, state, repeat).as_bytes());
+    } else if down {
+        keys.push(uc, repeat, out);
+    }
+}
+
 /// Turns key-down characters (UTF-16 units, as `KEY_EVENT_RECORD` carries them) into
 /// UTF-8, joining surrogate pairs that arrive as two records.
 #[derive(Debug, Default)]
@@ -249,6 +271,26 @@ mod tests {
             "\x1b[67;46;3;1;8;1_"
         );
         assert_eq!(win32_key(0x41, 30, 97, false, 0, 1), "\x1b[65;30;97;0;0;1_");
+    }
+
+    #[test]
+    fn key_events_by_input_mode() {
+        let mut keys = VtKeys::default();
+        let mut out = Vec::new();
+        key_bytes(0x43, 46, 3, true, 0x0008, 1, true, &mut keys, &mut out);
+        key_bytes(0x43, 46, 3, false, 0x0008, 1, true, &mut keys, &mut out);
+        assert_eq!(out, b"\x1b[67;46;3;1;8;1_\x1b[67;46;3;0;8;1_");
+        out.clear();
+        key_bytes(0x43, 46, 3, true, 0x0008, 1, false, &mut keys, &mut out);
+        assert_eq!(out, b"\x03");
+        out.clear();
+        key_bytes(0x41, 30, 97, true, 0, 1, true, &mut keys, &mut out);
+        key_bytes(0x41, 30, 97, false, 0, 1, true, &mut keys, &mut out);
+        assert_eq!(out, b"\x1b[65;30;97;1;0;1_\x1b[65;30;97;0;0;1_");
+        out.clear();
+        key_bytes(0x41, 30, 97, true, 0, 1, false, &mut keys, &mut out);
+        key_bytes(0x41, 30, 97, false, 0, 1, false, &mut keys, &mut out);
+        assert_eq!(out, b"a");
     }
 
     #[test]
