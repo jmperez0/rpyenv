@@ -107,11 +107,18 @@ fn spawn_like_explorer(exe: &std::ffi::OsStr) -> i32 {
             SetStdHandle(h, std::ptr::null_mut());
         }
     }
-    let status = std::process::Command::new(exe)
-        .args(std::env::args_os().skip(1))
+    let mut cmd = std::process::Command::new(exe);
+    cmd.args(std::env::args_os().skip(1))
         .env_remove("ARGV_ECHO_SPAWN")
         .env_remove("ARGV_ECHO_SPAWN_EXIT")
-        .status();
+        .env_remove("ARGV_ECHO_SPAWN_STDOUT");
+    // Some callers give a file for stdout only.
+    if let Some(p) = std::env::var_os("ARGV_ECHO_SPAWN_STDOUT") {
+        if let Ok(f) = std::fs::File::create(p) {
+            cmd.stdout(f);
+        }
+    }
+    let status = cmd.status();
     let code = match status {
         Ok(s) => i64::from(s.code().unwrap_or(-1) as u32),
         Err(_) => -2,

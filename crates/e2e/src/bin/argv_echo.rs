@@ -28,7 +28,8 @@
 //! `ARGV_ECHO_PROMPT` is printed, before stdin is read. Helper modes, on Windows, each exiting
 //! when done: `ARGV_ECHO_SPAWN=<exe>` starts that program as Explorer does (no console,
 //! null standard handles, no creation flags, this helper's own arguments) and writes its
-//! exit code to `ARGV_ECHO_SPAWN_EXIT=<path>`; `ARGV_ECHO_SCREEN_PID=<pid>` prints the
+//! exit code to `ARGV_ECHO_SPAWN_EXIT=<path>` (with `ARGV_ECHO_SPAWN_STDOUT=<path>`, stdout
+//! goes to that file); `ARGV_ECHO_SCREEN_PID=<pid>` prints the
 //! text on that process's console; `ARGV_ECHO_TYPE_PID=<pid>` types `ARGV_ECHO_TYPE` into
 //! that process's console (`\x03` is Ctrl+C, `\x1a` Ctrl+Z, `\r` Enter).
 //! `ARGV_ECHO_CLOSE_PID=<pid>` posts `WM_CLOSE` to that process's console window (exit 4

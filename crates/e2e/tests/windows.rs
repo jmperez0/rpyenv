@@ -615,6 +615,67 @@ fn win_lazy_a_silent_program_never_shows_a_window() {
     assert!(got.contains("env MARKER=\"ñ x\""), "{got}");
 }
 
+/// Final review minor 10: a program EAGER can't start, after EAGER opened a window: the
+/// message stays on screen until a key, as for a version that isn't installed.
+#[test]
+fn win_eager_a_start_failure_keeps_its_window() {
+    let _windows = one_window_test_at_a_time();
+    let f = Fixture::new();
+    let python = f.install("3.9.1/python.exe");
+    std::fs::write(&python, b"not a program").unwrap();
+    f.rehash();
+    let log = f.base.join("debug.log");
+    let (helper, exit) = launch_like_explorer(
+        &f,
+        "python",
+        &[
+            ("PYENV_VERSION", v("3.9.1")),
+            ("RPYENV_DEBUG_LOG", log.as_os_str()),
+            ("RPYENV_CONSOLE", v("eager")),
+        ],
+        &[],
+    );
+    if !api() {
+        assert_ne!(explorer_exit(helper, &exit), 0);
+        return;
+    }
+    let pid = shim_pid(&wait_log(&log, "hold=key"));
+    let shown = screen(pid);
+    assert!(shown.contains("python"), "{shown}");
+    type_keys(pid, "x");
+    assert_ne!(explorer_exit(helper, &exit), 0);
+}
+
+/// Final review minor 17: a caller that gives only stdout (a file) gets EAGER. The window
+/// is made at once, and the program's output still goes to the file.
+#[test]
+fn win_a_given_stdout_takes_eager_and_keeps_the_file() {
+    let _windows = one_window_test_at_a_time();
+    let f = Fixture::new();
+    f.install("3.9.1/python.exe");
+    f.rehash();
+    let log = f.base.join("debug.log");
+    let out = f.base.join("stdout.txt");
+    let (helper, exit) = launch_like_explorer(
+        &f,
+        "python",
+        &[
+            ("PYENV_VERSION", v("3.9.1")),
+            ("RPYENV_DEBUG_LOG", log.as_os_str()),
+            ("ARGV_ECHO_SPAWN_STDOUT", out.as_os_str()),
+        ],
+        &[],
+    );
+    assert_eq!(explorer_exit(helper, &exit), 0);
+    let got = std::fs::read_to_string(&out).unwrap_or_default();
+    assert!(got.contains("argv0="), "{got:?}");
+    if api() {
+        let text = std::fs::read_to_string(&log).unwrap();
+        assert_eq!(mode_in(&log), "EAGER");
+        assert!(text.contains("console=new"), "{text}");
+    }
+}
+
 /// Final review I4 (user decision 2026-10-06): a program that leaves a console process
 /// running on the pseudo-console when it exits doesn't take it down. The process runs to
 /// the end, as it would in python.exe's console, and the shim stays until it's done.
@@ -674,6 +735,7 @@ fn win_lazy_killing_the_shim_kills_the_child() {
     );
     wait_for(&ready);
     let pid = shim_pid(&std::fs::read_to_string(&log).unwrap());
+    let hosts = children_named(pid, "conhost.exe");
     // Directly, not through taskkill: starting a process from a busy test harness was
     // seen to take 14 s, long enough for the program to finish on its own.
     terminate(pid);
@@ -683,6 +745,59 @@ fn win_lazy_killing_the_shim_kills_the_child() {
         !after.exists(),
         "the child kept running after the shim was killed"
     );
+    // Final review minor 15: the pseudo-console's own conhost is gone too.
+    if api() {
+        assert!(!hosts.is_empty(), "no conhost found under the LAZY shim");
+        for h in hosts {
+            assert!(gone(h), "conhost {h} was left behind");
+        }
+    }
+}
+
+/// Process IDs of `parent`'s children named `name` (case-insensitive).
+fn children_named(parent: u32, name: &str) -> Vec<u32> {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
+    let mut found = Vec::new();
+    // SAFETY: a process snapshot walked with a correctly sized entry and closed after.
+    unsafe {
+        let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        assert!(snap != INVALID_HANDLE_VALUE);
+        let mut e: PROCESSENTRY32W = std::mem::zeroed();
+        e.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        let mut more = Process32FirstW(snap, &mut e) != 0;
+        while more {
+            let len = e.szExeFile.iter().position(|&c| c == 0).unwrap_or(0);
+            let exe = String::from_utf16_lossy(&e.szExeFile[..len]);
+            if e.th32ParentProcessID == parent && exe.eq_ignore_ascii_case(name) {
+                found.push(e.th32ProcessID);
+            }
+            more = Process32NextW(snap, &mut e) != 0;
+        }
+        CloseHandle(snap);
+    }
+    found
+}
+
+/// Whether process `pid` has ended (within 5 s).
+fn gone(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
+    };
+    // SAFETY: opens a process by ID only to wait on it, and closes the handle.
+    unsafe {
+        let h = OpenProcess(PROCESS_SYNCHRONIZE, 0, pid);
+        if h.is_null() {
+            return true;
+        }
+        let ended = WaitForSingleObject(h, 5000) == WAIT_OBJECT_0;
+        CloseHandle(h);
+        ended
+    }
 }
 
 /// Ends process `pid` at once, as `taskkill /F` does.

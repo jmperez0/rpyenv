@@ -417,11 +417,7 @@ pub fn hold_after(code: u32, asked_by_console_parent: bool) {
         });
         return;
     };
-    let wait_ms = match hold {
-        console::Hold::Off => return,
-        console::Hold::Key => INFINITE,
-        console::Hold::Seconds(n) => n.saturating_mul(1000),
-    };
+    let wait_ms = hold.wait_ms();
     let shown = if code > 0xFFFF {
         format!("0x{code:08X}")
     } else {
@@ -488,6 +484,10 @@ pub fn hold_after(code: u32, asked_by_console_parent: bool) {
 /// True when that made a new window the caller may hold open: not when a console parent
 /// asked for it (`hold_wait`).
 pub fn console_for_message(stderr: bool) -> bool {
+    // A window EAGER already opened for the program: hold it for this message too.
+    if OPENED_WINDOW.load(Ordering::SeqCst) {
+        return true;
+    }
     if !console_shim() || std_handle_usable(stderr) || attached() || !alloc_console_available() {
         return false;
     }
@@ -495,9 +495,23 @@ pub fn console_for_message(stderr: bool) -> bool {
     alloc_default() == Alloc::New && !parent
 }
 
+/// Set when EAGER opened a new window that a failure may hold (no console parent asked
+/// for it), so a later message, such as "cannot run", is held there too.
+static OPENED_WINDOW: AtomicBool = AtomicBool::new(false);
+
 /// Starts `cmd` inside a job, with console events ignored, and waits for it. The child
-/// joins the job right after it starts (plan decision 2).
-pub fn spawn_and_wait(cmd: &mut Command, program: &Path) -> io::Result<ExitStatus> {
+/// joins the job right after it starts (plan decision 2). LAZY starts the child itself,
+/// from `raw_tail` (the caller's arguments, unchanged) and `env` (the plan's variable
+/// changes); `cmd` carries the same for every other mode.
+pub fn spawn_and_wait(
+    cmd: &mut Command,
+    program: &Path,
+    raw_tail: Option<&std::ffi::OsStr>,
+    env: &[(std::ffi::OsString, Option<std::ffi::OsString>)],
+) -> io::Result<ExitStatus> {
+    // Before the parent-console check, which attaches to the parent's console for a moment:
+    // a Ctrl+C typed there then can't end the shim.
+    ignore_console_events();
     let p = probe();
     let policy = console_shim() && alloc_console_available();
     let parent = policy
@@ -525,10 +539,9 @@ pub fn spawn_and_wait(cmd: &mut Command, program: &Path) -> io::Result<ExitStatu
         std::process::id(),
         program.display()
     ));
-    ignore_console_events();
     let job = Job::new();
     if mode == ConsoleMode::Lazy {
-        match crate::conpty::run(cmd, program, job.as_ref()) {
+        match crate::conpty::run(env, raw_tail, program, job.as_ref()) {
             Ok(o) => {
                 drop(job);
                 if o.new_window {
@@ -557,7 +570,10 @@ pub fn spawn_and_wait(cmd: &mut Command, program: &Path) -> io::Result<ExitStatu
             cmd.creation_flags(DETACHED_PROCESS);
         }
         ConsoleMode::Eager => match alloc_default() {
-            Alloc::New => new_window = true,
+            Alloc::New => {
+                new_window = true;
+                OPENED_WINDOW.store(!parent, Ordering::SeqCst);
+            }
             Alloc::Existing => {}
             Alloc::None => {
                 cmd.creation_flags(DETACHED_PROCESS);

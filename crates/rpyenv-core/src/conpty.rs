@@ -9,7 +9,6 @@ use std::ffi::{OsStr, OsString};
 use std::io;
 use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
-use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use windows_sys::Win32::Foundation::{
@@ -236,9 +235,14 @@ fn pipe() -> io::Result<(Owned, Owned)> {
     Ok((Owned(r), Owned(w)))
 }
 
-/// Runs `cmd`'s program on a pseudo-console and waits for it. `cmd` supplies the variable
-/// changes; the arguments are the shim's own raw tail.
-pub fn run(cmd: &Command, program: &Path, job: Option<&Job>) -> Result<Outcome, LazyError> {
+/// Runs `program` on a pseudo-console and waits for it, with this process's variables
+/// changed by `changes` (`None` removes) and `tail` as its arguments, unchanged.
+pub fn run(
+    changes: &[(OsString, Option<OsString>)],
+    tail: Option<&OsStr>,
+    program: &Path,
+    job: Option<&Job>,
+) -> Result<Outcome, LazyError> {
     let (in_read, in_write) = pipe().map_err(LazyError::Setup)?;
     let (out_read, out_write) = pipe().map_err(LazyError::Setup)?;
     let mut hpc: HPCON = 0;
@@ -251,18 +255,13 @@ pub fn run(cmd: &Command, program: &Path, job: Option<&Job>) -> Result<Outcome, 
     drop(in_read);
     drop(out_write);
     winproc::set_pty(hpc);
-    let changes: Vec<(OsString, Option<OsString>)> = cmd
-        .get_envs()
-        .map(|(k, v)| (k.to_owned(), v.map(OsStr::to_owned)))
-        .collect();
-    let env = env_block(&merge_env(std::env::vars_os().collect(), &changes));
-    let tail = crate::wincmd::own_tail(1);
-    let mut line = command_line(program, tail.as_deref());
+    let env = env_block(&merge_env(std::env::vars_os().collect(), changes));
+    let mut line = command_line(program, tail);
     let process = match start(&mut line, &env, hpc, job) {
         Ok(p) => p,
         Err(e) => {
             winproc::close_pty();
-            return Err(LazyError::Start(e));
+            return Err(e);
         }
     };
     let win32 = Arc::new(AtomicBool::new(false));
@@ -279,7 +278,18 @@ pub fn run(cmd: &Command, program: &Path, job: Option<&Job>) -> Result<Outcome, 
     wait_for_leftovers(process.0, hpc, job);
     // Closing the pseudo-console ends its output once drained; the reader then returns.
     winproc::close_pty();
-    let shown = reader.join().unwrap_or_default();
+    let shown = match reader.join() {
+        Ok(shown) => shown,
+        Err(_) => {
+            // The input relay may still be writing to `in_write`: leave it open rather than
+            // close a handle in use.
+            std::mem::forget(in_write);
+            return Ok(Outcome {
+                code,
+                new_window: false,
+            });
+        }
+    };
     let new_window = shown.alloc == Some(Alloc::New);
     shown.finish();
     drop(in_write);
@@ -288,17 +298,20 @@ pub fn run(cmd: &Command, program: &Path, job: Option<&Job>) -> Result<Outcome, 
 }
 
 /// Starts the child suspended on the pseudo-console, puts it in the job, then lets it run.
-fn start(line: &mut [u16], env: &[u16], hpc: HPCON, job: Option<&Job>) -> io::Result<Owned> {
+/// A failure to set up the attribute list is `Setup` (the caller falls back to EAGER); a
+/// program that can't start is `Start`.
+fn start(line: &mut [u16], env: &[u16], hpc: HPCON, job: Option<&Job>) -> Result<Owned, LazyError> {
     // SAFETY: the attribute list lives in `attrs` for the whole call and is deleted on
     // every path; all other pointers are to locals or to the caller's NUL-terminated
     // buffers; the thread handle is closed here and the process handle returned owned.
     unsafe {
         let mut size = 0usize;
         InitializeProcThreadAttributeList(std::ptr::null_mut(), 1, 0, &mut size);
-        let mut attrs = vec![0u8; size];
+        // `usize` elements: the list is pointer-aligned, as Windows expects.
+        let mut attrs = vec![0usize; size.div_ceil(std::mem::size_of::<usize>())];
         let list = attrs.as_mut_ptr() as LPPROC_THREAD_ATTRIBUTE_LIST;
         if InitializeProcThreadAttributeList(list, 1, 0, &mut size) == 0 {
-            return Err(io::Error::last_os_error());
+            return Err(LazyError::Setup(io::Error::last_os_error()));
         }
         let ok = UpdateProcThreadAttribute(
             list,
@@ -312,7 +325,7 @@ fn start(line: &mut [u16], env: &[u16], hpc: HPCON, job: Option<&Job>) -> io::Re
         if ok == 0 {
             let e = io::Error::last_os_error();
             DeleteProcThreadAttributeList(list);
-            return Err(e);
+            return Err(LazyError::Setup(e));
         }
         let mut si: STARTUPINFOEXW = std::mem::zeroed();
         si.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
@@ -336,7 +349,7 @@ fn start(line: &mut [u16], env: &[u16], hpc: HPCON, job: Option<&Job>) -> io::Re
         let err = io::Error::last_os_error();
         DeleteProcThreadAttributeList(list);
         if ok == 0 {
-            return Err(err);
+            return Err(LazyError::Start(err));
         }
         if !job.is_some_and(|j| j.assign_handle(pi.hProcess)) {
             debuglog::append("job=none");
@@ -454,6 +467,15 @@ fn reveal(input: HANDLE, win32: Arc<AtomicBool>) -> Shown {
     }
     // SAFETY: a manual-reset event, initially unset, unnamed; `Shown::finish` closes it.
     let stop = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
+    shown.conout = conout as usize;
+    if stop.is_null() {
+        // No way to stop an input relay: the window shows output, but keys don't reach
+        // the program.
+        debuglog::append("input=none");
+        // SAFETY: the input handle opened above, unused without a relay.
+        unsafe { CloseHandle(conin) };
+        return shown;
+    }
     let (ci, co, inp, st) = (
         conin as usize,
         conout as usize,
@@ -469,7 +491,6 @@ fn reveal(input: HANDLE, win32: Arc<AtomicBool>) -> Shown {
             win32,
         )
     });
-    shown.conout = conout as usize;
     shown.input = Some((thread, st));
     shown
 }

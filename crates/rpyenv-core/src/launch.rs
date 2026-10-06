@@ -413,7 +413,12 @@ pub fn run(plan: &LaunchPlan, ctx: &Ctx, rehash_with: Option<&Path>) -> Result<i
     #[cfg(unix)]
     let status = sig::spawn_and_wait(&mut cmd);
     #[cfg(windows)]
-    let status = crate::winproc::spawn_and_wait(&mut cmd, &plan.program);
+    let status = crate::winproc::spawn_and_wait(
+        &mut cmd,
+        &plan.program,
+        plan.raw_tail.as_deref(),
+        &plan.env,
+    );
     #[cfg(not(any(unix, windows)))]
     let status = cmd.status();
     if let Some(exe) = rehash_with {
