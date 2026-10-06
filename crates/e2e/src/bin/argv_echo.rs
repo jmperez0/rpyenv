@@ -20,6 +20,9 @@
 //! `ARGV_ECHO_OUT=<path>` also writes what it prints to that file, and `ARGV_ECHO_QUIET=1`
 //! prints nothing to stdout.
 //!
+//! `ARGV_ECHO_LEAVE=<path>` starts a quiet copy of this program that it doesn't wait
+//! for, which sleeps 1.5 s and then creates that file.
+//!
 //! Before anything else, `ARGV_ECHO_FIRST=<path>` creates that file and
 //! `ARGV_ECHO_DELAY_MS` waits before any output, after which
 //! `ARGV_ECHO_PROMPT` is printed, before stdin is read. Helper modes, on Windows, each exiting

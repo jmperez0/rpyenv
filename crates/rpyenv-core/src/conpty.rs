@@ -12,22 +12,28 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
+use windows_sys::Win32::Foundation::{
+    CloseHandle, FILETIME, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0,
+};
 use windows_sys::Win32::Globalization::CP_UTF8;
 use windows_sys::Win32::Storage::FileSystem::{ReadFile, WriteFile};
 use windows_sys::Win32::System::Console::{
-    CreatePseudoConsole, GetConsoleScreenBufferInfo, ReadConsoleInputW, SetConsoleMode,
-    SetConsoleOutputCP, CONSOLE_SCREEN_BUFFER_INFO, COORD, DISABLE_NEWLINE_AUTO_RETURN,
-    ENABLE_PROCESSED_OUTPUT, ENABLE_VIRTUAL_TERMINAL_INPUT, ENABLE_VIRTUAL_TERMINAL_PROCESSING,
-    ENABLE_WINDOW_INPUT, ENABLE_WRAP_AT_EOL_OUTPUT, HPCON, INPUT_RECORD, KEY_EVENT,
-    WINDOW_BUFFER_SIZE_EVENT,
+    CreatePseudoConsole, GetConsoleProcessList, GetConsoleScreenBufferInfo, ReadConsoleInputW,
+    SetConsoleMode, SetConsoleOutputCP, CONSOLE_SCREEN_BUFFER_INFO, COORD,
+    DISABLE_NEWLINE_AUTO_RETURN, ENABLE_PROCESSED_OUTPUT, ENABLE_VIRTUAL_TERMINAL_INPUT,
+    ENABLE_VIRTUAL_TERMINAL_PROCESSING, ENABLE_WINDOW_INPUT, ENABLE_WRAP_AT_EOL_OUTPUT, HPCON,
+    INPUT_RECORD, KEY_EVENT, WINDOW_BUFFER_SIZE_EVENT,
+};
+use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
 };
 use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Threading::{
-    CreateEventW, CreateProcessW, DeleteProcThreadAttributeList, GetExitCodeProcess,
-    InitializeProcThreadAttributeList, ResumeThread, SetEvent, UpdateProcThreadAttribute,
-    WaitForMultipleObjects, WaitForSingleObject, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT,
-    EXTENDED_STARTUPINFO_PRESENT, INFINITE, LPPROC_THREAD_ATTRIBUTE_LIST, PROCESS_INFORMATION,
+    CreateEventW, CreateProcessW, DeleteProcThreadAttributeList, GetExitCodeProcess, GetProcessId,
+    GetProcessTimes, InitializeProcThreadAttributeList, OpenProcess, ResumeThread, SetEvent,
+    UpdateProcThreadAttribute, WaitForMultipleObjects, WaitForSingleObject, CREATE_SUSPENDED,
+    CREATE_UNICODE_ENVIRONMENT, EXTENDED_STARTUPINFO_PRESENT, INFINITE,
+    LPPROC_THREAD_ATTRIBUTE_LIST, PROCESS_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION,
     PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, STARTF_USESTDHANDLES, STARTUPINFOEXW,
 };
 
@@ -102,6 +108,113 @@ pub fn command_line(program: &Path, tail: Option<&OsStr>) -> Vec<u16> {
     line
 }
 
+/// Set, in its own environment only, on the shim copy that watches the pseudo-console for
+/// processes the program left running (`watch_main`).
+pub const WATCH_VAR: &str = "RPYENV_INTERNAL_PTY_WATCH";
+
+/// The watcher's main: waits until it is the only process on its console (the
+/// pseudo-console), checking every 200 ms, then exits 0.
+pub fn watch_main() -> i32 {
+    let mut ids = [0u32; 64];
+    loop {
+        // SAFETY: fills a local buffer of the length given with process IDs.
+        let n = unsafe { GetConsoleProcessList(ids.as_mut_ptr(), ids.len() as u32) };
+        if n <= 1 {
+            return 0;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+}
+
+/// The program's live descendants in `procs` (`(pid, parent pid, creation time)`), found
+/// by parent ID. A process created before the one its parent ID names is skipped: that ID
+/// was reused. The root itself never counts.
+pub fn descendants(procs: &[(u32, u32, u64)], root: u32, root_created: u64) -> Vec<u32> {
+    let mut found = Vec::new();
+    let mut frontier = vec![(root, root_created)];
+    while let Some((pid, created)) = frontier.pop() {
+        for &(p, pp, c) in procs {
+            if pp == pid && p != root && c >= created && !found.contains(&p) {
+                found.push(p);
+                frontier.push((p, c));
+            }
+        }
+    }
+    found.sort_unstable();
+    found
+}
+
+/// A process's creation time, or `None` when it can't be read.
+fn created(process: HANDLE) -> Option<u64> {
+    let zero = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let (mut c, mut e, mut k, mut u) = (zero, zero, zero, zero);
+    // SAFETY: four valid FILETIME out-pointers and a process handle.
+    let ok = unsafe { GetProcessTimes(process, &mut c, &mut e, &mut k, &mut u) };
+    (ok != 0).then(|| (u64::from(c.dwHighDateTime) << 32) | u64::from(c.dwLowDateTime))
+}
+
+/// Every running process: `(pid, parent pid, creation time)`, leaving out those whose
+/// creation time can't be read.
+fn process_table() -> Vec<(u32, u32, u64)> {
+    let mut table = Vec::new();
+    // SAFETY: a process snapshot walked with a correctly sized entry and closed after;
+    // each process opened for its times is closed at once.
+    unsafe {
+        let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snap == INVALID_HANDLE_VALUE {
+            return table;
+        }
+        let mut entry: PROCESSENTRY32W = std::mem::zeroed();
+        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        let mut more = Process32FirstW(snap, &mut entry) != 0;
+        while more {
+            let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, entry.th32ProcessID);
+            if !h.is_null() {
+                if let Some(c) = created(h) {
+                    table.push((entry.th32ProcessID, entry.th32ParentProcessID, c));
+                }
+                CloseHandle(h);
+            }
+            more = Process32NextW(snap, &mut entry) != 0;
+        }
+        CloseHandle(snap);
+    }
+    table
+}
+
+/// Final review I4 (user decision 2026-10-06): when the program has exited but left
+/// descendants running, keeps the pseudo-console (and the window) until no process is
+/// left on it, as python.exe's console stays for them. A watcher, this shim's own binary
+/// started on the pseudo-console, counts the processes on it, so descendants on other
+/// consoles, or with none (GUI programs), don't make the shim wait.
+fn wait_for_leftovers(program: HANDLE, hpc: HPCON, job: Option<&Job>) {
+    // SAFETY: reads the exited program's ID from the handle this module owns.
+    let pid = unsafe { GetProcessId(program) };
+    let Some(born) = created(program) else {
+        return;
+    };
+    let left = descendants(&process_table(), pid, born);
+    if left.is_empty() {
+        return;
+    }
+    debuglog::append(&format!("lazy=leftovers {}", left.len()));
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let env = env_block(&merge_env(
+        std::env::vars_os().collect(),
+        &[(OsString::from(WATCH_VAR), Some(OsString::from("1")))],
+    ));
+    let mut line = command_line(&exe, None);
+    if let Ok(watcher) = start(&mut line, &env, hpc, job) {
+        // SAFETY: waits on the watcher's process handle, which `watcher` owns.
+        unsafe { WaitForSingleObject(watcher.0, INFINITE) };
+    }
+}
+
 /// A handle closed on drop.
 struct Owned(HANDLE);
 
@@ -163,6 +276,7 @@ pub fn run(cmd: &Command, program: &Path, job: Option<&Job>) -> Result<Outcome, 
         WaitForSingleObject(process.0, INFINITE);
         GetExitCodeProcess(process.0, &mut code);
     }
+    wait_for_leftovers(process.0, hpc, job);
     // Closing the pseudo-console ends its output once drained; the reader then returns.
     winproc::close_pty();
     let shown = reader.join().unwrap_or_default();
@@ -526,6 +640,23 @@ mod tests {
 
     fn os(s: &str) -> OsString {
         OsString::from(s)
+    }
+
+    /// Final review I4: the program's descendants, by parent ID, skipping a process whose
+    /// "parent" ID was reused (created before that parent) and the program itself.
+    #[test]
+    fn descendants_follow_parents_and_skip_reused_ids() {
+        let procs = [
+            (10, 1, 100),
+            (11, 10, 110),
+            (12, 11, 120),
+            (13, 10, 90),
+            (14, 99, 130),
+            (15, 12, 125),
+        ];
+        assert_eq!(descendants(&procs, 10, 100), vec![11, 12, 15]);
+        assert_eq!(descendants(&procs, 15, 125), Vec::<u32>::new());
+        assert_eq!(descendants(&[(10, 10, 100)], 10, 100), Vec::<u32>::new());
     }
 
     #[test]
