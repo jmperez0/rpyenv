@@ -509,7 +509,8 @@ mod tests {
         let mut line = command_line(Path::new(&cmd), Some(OsStr::new("/d /c pause")));
         let env = env_block(&std::env::vars_os().collect::<Vec<_>>());
         let process = start(&mut line, &env, hpc, None).unwrap();
-        winproc::watch_child(process.0);
+        // SAFETY: `process` owns the program's process handle.
+        unsafe { winproc::watch_child(process.0) };
         std::thread::sleep(std::time::Duration::from_millis(500));
         // SAFETY: calls the handler as Windows would, on this thread.
         unsafe { winproc::on_console_event(CTRL_CLOSE_EVENT) };

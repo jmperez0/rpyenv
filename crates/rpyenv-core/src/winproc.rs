@@ -82,12 +82,17 @@ impl Job {
     /// Puts `child` in the job. False when Windows refuses, for example when the shim runs
     /// in a job that forbids it; the child then runs without one.
     pub fn assign(&self, child: &Child) -> bool {
-        self.assign_handle(child.as_raw_handle())
+        // SAFETY: `child` owns its process handle for the duration of the call.
+        unsafe { self.assign_handle(child.as_raw_handle()) }
     }
 
     /// `assign`, for a process this crate started itself.
-    pub fn assign_handle(&self, process: HANDLE) -> bool {
-        // SAFETY: both handles are valid for the duration of the call.
+    ///
+    /// # Safety
+    ///
+    /// `process` must be a valid process handle for the duration of the call.
+    pub unsafe fn assign_handle(&self, process: HANDLE) -> bool {
+        // SAFETY: the job handle is ours; the caller vouches for `process`.
         unsafe { AssignProcessToJobObject(self.0, process) != 0 }
     }
 }
@@ -192,10 +197,14 @@ pub fn probe() -> Probe {
 static CHILD: AtomicUsize = AtomicUsize::new(0);
 
 /// Remembers the child for the console handler (plan M5a, R8).
-pub fn watch_child(process: HANDLE) {
+///
+/// # Safety
+///
+/// `process` must be a valid process handle for the duration of the call.
+pub unsafe fn watch_child(process: HANDLE) {
     let mut copy: HANDLE = std::ptr::null_mut();
-    // SAFETY: duplicates a live process handle within this process; the copy is kept for
-    // the life of the process.
+    // SAFETY: duplicates the caller's live process handle within this process; the copy
+    // is kept for the life of the process.
     unsafe {
         let me = GetCurrentProcess();
         if DuplicateHandle(me, process, me, &mut copy, 0, 0, DUPLICATE_SAME_ACCESS) != 0 {
@@ -270,7 +279,7 @@ fn alloc_fn() -> Option<AllocConsoleWithOptionsFn> {
             if k.is_null() {
                 return None;
             }
-            GetProcAddress(k, b"AllocConsoleWithOptions\0".as_ptr()).map(|f| f as usize)
+            GetProcAddress(k, c"AllocConsoleWithOptions".as_ptr().cast()).map(|f| f as usize)
         }
     }))?;
     // SAFETY: the address is kernel32's AllocConsoleWithOptions, whose signature this type
@@ -534,7 +543,8 @@ pub fn spawn_and_wait(cmd: &mut Command, program: &Path) -> io::Result<ExitStatu
         ConsoleMode::Lazy => unreachable!("LAZY returned or fell back above"),
     }
     let mut child = cmd.spawn()?;
-    watch_child(child.as_raw_handle() as HANDLE);
+    // SAFETY: `child` owns its process handle for the duration of the call.
+    unsafe { watch_child(child.as_raw_handle() as HANDLE) };
     // Without the job, killing the shim leaves the child running (D-45); say so in the log.
     if !job.as_ref().is_some_and(|j| j.assign(&child)) {
         debuglog::append("job=none");

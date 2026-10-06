@@ -182,15 +182,13 @@ adding them later must not change the shim's interface.
   including status codes like `0xC000013A`.
 - **Console:** see [windows-lazy-console.md](../windows-lazy-console.md) for
   the shim type rule and the modes (INHERIT, NO-WINDOW, MIRROR, EAGER, LAZY).
-  Milestone M1 implements INHERIT, NO-WINDOW, MIRROR, and the GUI shim. EAGER
-  and LAZY come in M5.
-
-  The M1 shims ship **without** the `consoleAllocationPolicy=detached`
-  manifest entry, so Windows gives them a console at startup, just as it does
-  `python.exe`. Without the entry, the shim can only lack a console when the
-  caller passed `DETACHED_PROCESS`, and NO-WINDOW and MIRROR cover that case.
-  The entry is added in M5, together with the EAGER and LAZY modes that handle
-  a shim launched with no console and nothing redirected.
+  M1 implemented INHERIT, NO-WINDOW, MIRROR, and the GUI shim. M5a added EAGER
+  and LAZY, and the `consoleAllocationPolicy=detached` manifest entry on
+  `pyenv-shim.exe`. With the entry, Windows 11 24H2 and later (build 26100)
+  give the shim no console when its caller has none, and the shim asks for the
+  caller's console itself, at once (EAGER) or on the program's first output
+  (LAZY, the default). Before build 26100 the entry is ignored and M1's
+  behavior stands. `pyenv exec` and the GUI shim keep M1's modes.
 - **Batch targets** (`.bat`/`.cmd` in `Scripts`) get the same console exe
   shim as any other command:
   - The shim splits its command-line tail into arguments using the C
@@ -756,6 +754,8 @@ warns when it finds one. pyenv-win has the same limitation.
 | `PYTHON_BUILD_MIRROR_URL`, `PYTHON_CONFIGURE_OPTS`, `PYTHON_CFLAGS`, `MAKE_OPTS`, `PYTHON_MAKE_OPTS` | upstream | Installer options |
 | `RPYENV_CONSOLE` | rpyenv | `lazy` or `eager` (Windows, when the shim has no console) |
 | `RPYENV_LIVE_REHASH` | rpyenv | `1` enables the live watcher |
+| `RPYENV_CONSOLE` | rpyenv | Windows: `lazy` (default) or `eager`, for a shim started without a console |
+| `RPYENV_CONSOLE_HOLD` | rpyenv | Windows: after a failure, a window the shim opened stays until a key (default); `0` closes it at once; a positive whole number N closes it after N seconds |
 | `RPYENV_DEBUG_LOG` | rpyenv | File for diagnostics from shims and `pyenv exec` when there is no console |
 | `RPYENV_BATCH_FORWARD` | rpyenv | `;`-separated batch-target names that get a `.cmd` forwarder instead of an exe shim (Windows) |
 | `RPYENV_CATALOG_URL` | rpyenv (M7, only if kept) | Alternative location for the PyPy/conda listing, if M7 keeps one (§15.1); not used for CPython |
@@ -1021,7 +1021,8 @@ that an administrator later runs.
 2. **Code signing** for the shim executables and the MSI, which affects
    SmartScreen warnings and machines that only allow signed code. Options and
    cost to be evaluated before M6.
-3. **Default for `RPYENV_CONSOLE`,** decided after measuring the cost of
-   LAZY mode (lazy-console open question 3).
-4. **The lazy-console doc's other open questions** (Explorer launches with
-   `ALLOC_CONSOLE_MODE_DEFAULT`, initial pseudo-console size, hold on error).
+3. **Default for `RPYENV_CONSOLE`.** Resolved in M5a: `lazy`, with the measured
+   cost in the lazy-console doc (its open question 3).
+4. **The lazy-console doc's other open questions.** The initial pseudo-console
+   size and hold on error are resolved in M5a. Explorer launches with
+   `ALLOC_CONSOLE_MODE_DEFAULT` await the manual check.
