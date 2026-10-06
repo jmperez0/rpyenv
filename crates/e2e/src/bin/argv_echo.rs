@@ -17,6 +17,14 @@
 //! until the program is running and set up. `ARGV_ECHO_CONSOLE=1` prints `console=<n>`,
 //! the number of processes on its console (0 without one), and `window=0` or `window=1`,
 //! whether a console window is visible.
+//!
+//! Before anything else, `ARGV_ECHO_FIRST=<path>` creates that file and
+//! `ARGV_ECHO_DELAY_MS` waits before any output. Helper modes, on Windows, each exiting
+//! when done: `ARGV_ECHO_SPAWN=<exe>` starts that program as Explorer does (no console,
+//! null standard handles, no creation flags, this helper's own arguments) and writes its
+//! exit code to `ARGV_ECHO_SPAWN_EXIT=<path>`; `ARGV_ECHO_SCREEN_PID=<pid>` prints the
+//! text on that process's console; `ARGV_ECHO_TYPE_PID=<pid>` types `ARGV_ECHO_TYPE` into
+//! that process's console (`\x03` is Ctrl+C, `\x1a` Ctrl+Z, `\r` Enter).
 
 #[path = "../echo.rs"]
 mod echo;

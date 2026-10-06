@@ -16,6 +16,8 @@ pub const SHIMW_NAME: &str = "pyenv-shimw";
 
 /// The console shim's main. Returns the exit code, unless the command replaced this process.
 pub fn main() -> i32 {
+    #[cfg(windows)]
+    crate::winproc::set_console_shim();
     run(false)
 }
 
@@ -33,22 +35,19 @@ fn run(gui: bool) -> i32 {
     let args: Vec<OsString> = argv.collect();
     let own = std::env::current_exe().ok();
     let Some(program) = command_name(flavor, &argv0, own.as_deref()) else {
-        say(
+        return fail(
             gui,
             flavor,
             &[format!(
                 "{SHIM_NAME}: run this through a shim (such as `python`), not directly"
             )],
             true,
+            1,
         );
-        return 1;
     };
     let mut ctx = match Ctx::from_process() {
         Ok(ctx) => ctx,
-        Err(e) => {
-            say(gui, flavor, &[e.message()], true);
-            return 1;
-        }
+        Err(e) => return fail(gui, flavor, &[e.message()], true, 1),
     };
     // Upstream bakes PYENV_ROOT into each shim; rpyenv's shims share one binary, so they
     // find the root from where they live, not the caller's PYENV_ROOT / HOME. Everything
@@ -74,10 +73,7 @@ fn run(gui: bool) -> i32 {
     };
     let env = ExecEnv::from_process(&program, own);
     match launch::plan(&ctx, Mode::Shim, &program, args, &env) {
-        Err(report) => {
-            say(gui, flavor, &report.lines, report.stderr);
-            report.code
-        }
+        Err(report) => fail(gui, flavor, &report.lines, report.stderr, report.code),
         Ok(plan) => {
             #[cfg(windows)]
             let plan = launch::LaunchPlan {
@@ -86,13 +82,10 @@ fn run(gui: bool) -> i32 {
             };
             // A warning is non-fatal; it shouldn't force every GUI launch through an OK
             // click. It's still in the debug log, from `say` itself.
-            say(false, flavor, &plan.warnings, true);
+            let _ = say(false, flavor, &plan.warnings, true);
             match launch::run(&plan, &ctx, rehash_with.as_deref()) {
                 Ok(code) => code,
-                Err(r) => {
-                    say(gui, flavor, &r.lines, r.stderr);
-                    r.code
-                }
+                Err(r) => fail(gui, flavor, &r.lines, r.stderr, r.code),
             }
         }
     }
@@ -100,10 +93,11 @@ fn run(gui: bool) -> i32 {
 
 /// Prints what the shim has to say on its stream, and logs it to `RPYENV_DEBUG_LOG`. The
 /// GUI shim, when that stream isn't a usable handle, shows a message box instead
-/// (plan decision 4).
-fn say(gui: bool, flavor: Flavor, lines: &[String], to_stderr: bool) {
+/// (plan decision 4). The console shim asks for the caller's console (plan M5a, R7); true
+/// when that made a new one.
+fn say(gui: bool, flavor: Flavor, lines: &[String], to_stderr: bool) -> bool {
     if lines.is_empty() {
-        return;
+        return false;
     }
     for line in lines {
         crate::debuglog::append(line);
@@ -111,15 +105,34 @@ fn say(gui: bool, flavor: Flavor, lines: &[String], to_stderr: bool) {
     #[cfg(windows)]
     if gui && !crate::winproc::std_handle_usable(to_stderr) {
         crate::winproc::message_box(&lines.join("\r\n"));
-        return;
+        return false;
     }
-    let _ = gui;
+    #[cfg(windows)]
+    let made = !gui && crate::winproc::console_for_message(to_stderr);
+    #[cfg(not(windows))]
+    let made = {
+        let _ = gui;
+        false
+    };
     crate::lookup::Report {
         lines: lines.to_vec(),
         stderr: to_stderr,
         code: 0,
     }
     .emit(flavor);
+    made
+}
+
+/// A fatal message: printed as `say` does, then the window it opened held (plan M5a, R7).
+/// Returns `code`.
+fn fail(gui: bool, flavor: Flavor, lines: &[String], to_stderr: bool, code: i32) -> i32 {
+    let made = say(gui, flavor, lines, to_stderr);
+    #[cfg(windows)]
+    if made {
+        crate::winproc::hold_after(code as u32);
+    }
+    let _ = made;
+    code
 }
 
 /// The command a shim stands for: `argv[0]`'s last component on Linux, where every shim

@@ -60,6 +60,153 @@ fn send_ctrl_c(pid: u32) -> i32 {
     0
 }
 
+/// Starts `exe` as Explorer does: from this console-less helper (the test starts it with
+/// `DETACHED_PROCESS`), with null standard handles and no creation flags, passing this
+/// helper's own arguments on. Writes the exit code to `ARGV_ECHO_SPAWN_EXIT`.
+#[cfg(windows)]
+fn spawn_like_explorer(exe: &std::ffi::OsStr) -> i32 {
+    use windows_sys::Win32::System::Console::{
+        SetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+    };
+    // SAFETY: clears this helper's own standard handles; std then passes null handles on.
+    unsafe {
+        for h in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+            SetStdHandle(h, std::ptr::null_mut());
+        }
+    }
+    let status = std::process::Command::new(exe)
+        .args(std::env::args_os().skip(1))
+        .env_remove("ARGV_ECHO_SPAWN")
+        .env_remove("ARGV_ECHO_SPAWN_EXIT")
+        .status();
+    let code = match status {
+        Ok(s) => i64::from(s.code().unwrap_or(-1) as u32),
+        Err(_) => -2,
+    };
+    if let Some(p) = std::env::var_os("ARGV_ECHO_SPAWN_EXIT") {
+        let _ = std::fs::write(p, code.to_string());
+    }
+    0
+}
+
+/// Leaves this helper's console and attaches to process `pid`'s, keeping stdout (the
+/// test's pipe) as it was. Returns that console's handle named `name` (`CONOUT$` or
+/// `CONIN$`), or an exit code.
+#[cfg(windows)]
+fn attach_to(pid: u32, name: &str) -> Result<windows_sys::Win32::Foundation::HANDLE, i32> {
+    use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    };
+    use windows_sys::Win32::System::Console::{
+        AttachConsole, FreeConsole, GetStdHandle, SetStdHandle, STD_OUTPUT_HANDLE,
+    };
+    let wide: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
+    // SAFETY: console attachment and standard-handle calls on this helper only; the name
+    // is NUL-terminated.
+    unsafe {
+        let out = GetStdHandle(STD_OUTPUT_HANDLE);
+        FreeConsole();
+        if AttachConsole(pid) == 0 {
+            return Err(2);
+        }
+        SetStdHandle(STD_OUTPUT_HANDLE, out);
+        let h = CreateFileW(
+            wide.as_ptr(),
+            GENERIC_READ | GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            0,
+            std::ptr::null_mut(),
+        );
+        if h == INVALID_HANDLE_VALUE {
+            return Err(3);
+        }
+        Ok(h)
+    }
+}
+
+/// Prints the text on process `pid`'s console, row by row up to the cursor, each row's
+/// trailing blanks removed.
+#[cfg(windows)]
+fn read_screen(pid: u32) -> i32 {
+    use windows_sys::Win32::System::Console::{
+        GetConsoleScreenBufferInfo, ReadConsoleOutputCharacterW, CONSOLE_SCREEN_BUFFER_INFO, COORD,
+    };
+    let out = match attach_to(pid, "CONOUT$") {
+        Ok(h) => h,
+        Err(code) => return code,
+    };
+    let mut text = String::new();
+    // SAFETY: reads the attached console's buffer into a local of the width it reports.
+    unsafe {
+        let mut info: CONSOLE_SCREEN_BUFFER_INFO = std::mem::zeroed();
+        if GetConsoleScreenBufferInfo(out, &mut info) == 0 {
+            return 4;
+        }
+        let width = info.dwSize.X as usize;
+        let mut row = vec![0u16; width];
+        for y in 0..=info.dwCursorPosition.Y {
+            let mut n = 0u32;
+            ReadConsoleOutputCharacterW(
+                out,
+                row.as_mut_ptr(),
+                width as u32,
+                COORD { X: 0, Y: y },
+                &mut n,
+            );
+            text.push_str(String::from_utf16_lossy(&row[..n as usize]).trim_end());
+            text.push('\n');
+        }
+    }
+    print!("{text}");
+    0
+}
+
+/// Writes `text` as key presses into process `pid`'s console: `\x03` is Ctrl+C, `\x1a`
+/// Ctrl+Z, `\r` Enter, anything else that character.
+#[cfg(windows)]
+fn type_keys(pid: u32, text: &str) -> i32 {
+    use windows_sys::Win32::System::Console::{
+        WriteConsoleInputW, INPUT_RECORD, KEY_EVENT, LEFT_CTRL_PRESSED,
+    };
+    let conin = match attach_to(pid, "CONIN$") {
+        Ok(h) => h,
+        Err(code) => return code,
+    };
+    let mut records = Vec::new();
+    for c in text.encode_utf16() {
+        let (vk, sc, ctrl) = match c {
+            0x03 => (0x43, 0x2E, LEFT_CTRL_PRESSED),
+            0x1A => (0x5A, 0x2C, LEFT_CTRL_PRESSED),
+            0x0D => (0x0D, 0x1C, 0),
+            _ => (0, 0, 0),
+        };
+        for down in [1, 0] {
+            // SAFETY: a zeroed INPUT_RECORD is valid; only the key-event member is set.
+            let mut r: INPUT_RECORD = unsafe { std::mem::zeroed() };
+            r.EventType = KEY_EVENT as u16;
+            r.Event.KeyEvent.bKeyDown = down;
+            r.Event.KeyEvent.wRepeatCount = 1;
+            r.Event.KeyEvent.wVirtualKeyCode = vk;
+            r.Event.KeyEvent.wVirtualScanCode = sc;
+            r.Event.KeyEvent.uChar.UnicodeChar = c;
+            r.Event.KeyEvent.dwControlKeyState = ctrl;
+            records.push(r);
+        }
+    }
+    let mut written = 0u32;
+    // SAFETY: writes `records.len()` initialized records to the attached console's input.
+    let ok =
+        unsafe { WriteConsoleInputW(conin, records.as_ptr(), records.len() as u32, &mut written) };
+    if ok == 0 {
+        4
+    } else {
+        0
+    }
+}
+
 pub fn main() {
     #[cfg(windows)]
     if let Some(pid) = std::env::var("ARGV_ECHO_BREAK_PID")
@@ -76,11 +223,41 @@ pub fn main() {
         std::process::exit(send_ctrl_c(pid));
     }
     #[cfg(windows)]
+    if let Some(exe) = std::env::var_os("ARGV_ECHO_SPAWN") {
+        std::process::exit(spawn_like_explorer(&exe));
+    }
+    #[cfg(windows)]
+    if let Some(pid) = std::env::var("ARGV_ECHO_SCREEN_PID")
+        .ok()
+        .and_then(|p| p.parse::<u32>().ok())
+    {
+        std::process::exit(read_screen(pid));
+    }
+    #[cfg(windows)]
+    if let Some(pid) = std::env::var("ARGV_ECHO_TYPE_PID")
+        .ok()
+        .and_then(|p| p.parse::<u32>().ok())
+    {
+        std::process::exit(type_keys(
+            pid,
+            &std::env::var("ARGV_ECHO_TYPE").unwrap_or_default(),
+        ));
+    }
+    #[cfg(windows)]
     if std::env::var("ARGV_ECHO_CATCH_BREAK").as_deref() == Ok("1") {
         // SAFETY: the handler only stores to an atomic.
         unsafe {
             windows_sys::Win32::System::Console::SetConsoleCtrlHandler(Some(catch), 1);
         }
+    }
+    if let Some(p) = std::env::var_os("ARGV_ECHO_FIRST") {
+        let _ = std::fs::write(&p, b"");
+    }
+    if let Some(ms) = std::env::var("ARGV_ECHO_DELAY_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+    {
+        std::thread::sleep(std::time::Duration::from_millis(ms));
     }
     let mut out = String::new();
     let mut args = std::env::args_os();
