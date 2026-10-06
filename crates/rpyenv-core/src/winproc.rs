@@ -9,10 +9,11 @@ use std::os::windows::io::AsRawHandle;
 use std::os::windows::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 use windows_sys::core::{BOOL, HRESULT};
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE, TRUE};
+use windows_sys::Win32::Foundation::{DuplicateHandle, DUPLICATE_SAME_ACCESS};
 use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE, WAIT_OBJECT_0};
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
@@ -29,6 +30,9 @@ use windows_sys::Win32::System::Console::{
     GetConsoleMode, GetConsoleProcessList, GetStdHandle, SetConsoleCtrlHandler, STD_ERROR_HANDLE,
     STD_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
 };
+use windows_sys::Win32::System::Console::{
+    CTRL_CLOSE_EVENT, CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT,
+};
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
     SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
@@ -38,6 +42,7 @@ use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress
 use windows_sys::Win32::System::StationsAndDesktops::{
     GetProcessWindowStation, GetUserObjectInformationW, UOI_FLAGS, USEROBJECTFLAGS,
 };
+use windows_sys::Win32::System::Threading::GetCurrentProcess;
 use windows_sys::Win32::System::Threading::{WaitForSingleObject, INFINITE};
 use windows_sys::Win32::System::Threading::{CREATE_NO_WINDOW, DETACHED_PROCESS};
 use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK, WSF_VISIBLE};
@@ -183,21 +188,49 @@ pub fn probe() -> Probe {
     }
 }
 
-unsafe extern "system" fn keep_running(_event: u32) -> BOOL {
+/// A copy of the child's process handle, never closed, for the console handler to wait on.
+static CHILD: AtomicUsize = AtomicUsize::new(0);
+
+/// Remembers the child for the console handler (plan M5a, R8).
+pub fn watch_child(process: HANDLE) {
+    let mut copy: HANDLE = std::ptr::null_mut();
+    // SAFETY: duplicates a live process handle within this process; the copy is kept for
+    // the life of the process.
+    unsafe {
+        let me = GetCurrentProcess();
+        if DuplicateHandle(me, process, me, &mut copy, 0, 0, DUPLICATE_SAME_ACCESS) != 0 {
+            CHILD.store(copy as usize, Ordering::SeqCst);
+        }
+    }
+}
+
+/// Ctrl+C and Ctrl+Break: TRUE, so the shim ignores them and waits for the child, which
+/// gets them too. CLOSE, LOGOFF and SHUTDOWN (plan M5a, R8): Windows ends the shim when this
+/// returns, and the job would then kill the child mid-cleanup. So the handler first closes
+/// a LAZY pseudo-console (which sends the child its own CTRL_CLOSE_EVENT), then waits for
+/// the child, until Windows' own timeout ends both. On a shared console the child is
+/// usually done already: the console host closes the most recently attached first.
+pub(crate) unsafe extern "system" fn on_console_event(event: u32) -> BOOL {
+    if matches!(
+        event,
+        CTRL_CLOSE_EVENT | CTRL_LOGOFF_EVENT | CTRL_SHUTDOWN_EVENT
+    ) {
+        close_pty();
+        let child = CHILD.load(Ordering::SeqCst);
+        if child != 0 {
+            WaitForSingleObject(child as HANDLE, INFINITE);
+        }
+    }
     TRUE
 }
 
-/// Console events reach the child, which shares the console. For Ctrl+C and Ctrl+Break the
-/// handler's TRUE means the shim ignores them and waits for the child. For
-/// `CTRL_CLOSE_EVENT`, `CTRL_LOGOFF_EVENT` and `CTRL_SHUTDOWN_EVENT` it doesn't: Windows
-/// ends the shim as soon as the handler returns, without waiting for the child, which gets
-/// the event too (under conhost, the child's own cleanup was observed to finish).
-/// It uses a handler, never `SetConsoleCtrlHandler(NULL, TRUE)`, which children would
-/// inherit (spec §5.3).
+/// Console events reach the child, which shares the console (`on_console_event` says what
+/// the shim does with each). It uses a handler, never `SetConsoleCtrlHandler(NULL, TRUE)`,
+/// which children would inherit (spec §5.3).
 pub fn ignore_console_events() {
-    // SAFETY: registers a handler that only returns TRUE and touches no state.
+    // SAFETY: registers a handler that touches only this module's atomics and lock.
     unsafe {
-        SetConsoleCtrlHandler(Some(keep_running), TRUE);
+        SetConsoleCtrlHandler(Some(on_console_event), TRUE);
     }
 }
 
@@ -407,10 +440,13 @@ pub fn hold_after(code: u32) {
             if ReadConsoleInputW(conin, records.as_mut_ptr(), 16, &mut n) == 0 {
                 break;
             }
-            if records[..n as usize]
-                .iter()
-                .any(|r| u32::from(r.EventType) == KEY_EVENT && r.Event.KeyEvent.bKeyDown != 0)
-            {
+            if records[..n as usize].iter().any(|r| {
+                u32::from(r.EventType) == KEY_EVENT
+                    && console::ends_hold(
+                        r.Event.KeyEvent.wVirtualKeyCode,
+                        r.Event.KeyEvent.bKeyDown != 0,
+                    )
+            }) {
                 break;
             }
         }
@@ -498,6 +534,7 @@ pub fn spawn_and_wait(cmd: &mut Command, program: &Path) -> io::Result<ExitStatu
         ConsoleMode::Lazy => unreachable!("LAZY returned or fell back above"),
     }
     let mut child = cmd.spawn()?;
+    watch_child(child.as_raw_handle() as HANDLE);
     // Without the job, killing the shim leaves the child running (D-45); say so in the log.
     if !job.as_ref().is_some_and(|j| j.assign(&child)) {
         debuglog::append("job=none");

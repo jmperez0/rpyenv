@@ -114,6 +114,16 @@ impl Hold {
     }
 }
 
+/// Whether a key event ends a hold: a key pressed down, unless it's a modifier or lock key
+/// on its own (Shift, Ctrl, Alt, the Windows keys, Caps/Num/Scroll Lock), so that Ctrl, as
+/// the start of Ctrl+C to copy the traceback, doesn't close the window.
+pub fn ends_hold(vk: u16, down: bool) -> bool {
+    const MODIFIERS: [u16; 14] = [
+        0x10, 0x11, 0x12, 0x14, 0x5B, 0x5C, 0x90, 0x91, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5,
+    ];
+    down && !MODIFIERS.contains(&vk)
+}
+
 /// `STATUS_CONTROL_C_EXIT`: how a program ended by Ctrl+C exits.
 pub const STATUS_CONTROL_C_EXIT: u32 = 0xC000_013A;
 
@@ -198,6 +208,19 @@ mod tests {
         assert_eq!(Hold::Key.name(), "key");
         assert_eq!(Hold::Off.name(), "off");
         assert_eq!(Hold::Seconds(3).name(), "3s");
+    }
+
+    /// A held window closes on a real key, not on a modifier pressed alone: Ctrl, as the
+    /// start of Ctrl+C to copy the traceback, must not close it.
+    #[test]
+    fn modifier_keys_alone_do_not_end_a_hold() {
+        for vk in [0x10, 0x11, 0x12, 0x14, 0x5B, 0x5C, 0x90, 0x91, 0xA0, 0xA5] {
+            assert!(!ends_hold(vk, true), "{vk:#x}");
+        }
+        assert!(ends_hold(0x0D, true));
+        assert!(ends_hold(0x41, true));
+        assert!(ends_hold(0x20, true));
+        assert!(!ends_hold(0x41, false));
     }
 
     /// Review focus 4: an exit from Ctrl+C isn't a failure to hold a window for.

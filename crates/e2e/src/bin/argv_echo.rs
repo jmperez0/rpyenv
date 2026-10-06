@@ -28,6 +28,11 @@
 //! exit code to `ARGV_ECHO_SPAWN_EXIT=<path>`; `ARGV_ECHO_SCREEN_PID=<pid>` prints the
 //! text on that process's console; `ARGV_ECHO_TYPE_PID=<pid>` types `ARGV_ECHO_TYPE` into
 //! that process's console (`\x03` is Ctrl+C, `\x1a` Ctrl+Z, `\r` Enter).
+//! `ARGV_ECHO_CLOSE_PID=<pid>` posts `WM_CLOSE` to that process's console window (exit 4
+//! when it isn't conhost's). `ARGV_ECHO_ON_CLOSE=<path>`, on `CTRL_CLOSE_EVENT`, waits
+//! 1 s and then creates that file, as slow cleanup would. `ARGV_ECHO_PTY_RUN=<exe>` runs
+//! that program on a pseudo-console this helper owns, as a terminal tab would, and closes
+//! it once the file `ARGV_ECHO_PTY_CLOSE_AFTER=<path>` exists.
 
 #[path = "../echo.rs"]
 mod echo;

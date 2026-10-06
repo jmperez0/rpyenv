@@ -298,6 +298,14 @@ fn api() -> bool {
     rpyenv_core::winproc::alloc_console_available()
 }
 
+/// Tests that open console windows run one at a time: run together, they starve each
+/// other's process starts (a helper was seen to start 14 s late) and fight over focus.
+static WINDOWS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn one_window_test_at_a_time() -> std::sync::MutexGuard<'static, ()> {
+    WINDOWS.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// A path under `base` that no other call in this test process returns.
@@ -402,6 +410,7 @@ fn type_keys(pid: u32, text: &str) {
 /// program prints anything.
 #[test]
 fn win_eager_makes_the_window_at_startup() {
+    let _windows = one_window_test_at_a_time();
     let f = Fixture::new();
     f.install("3.9.1/python.exe");
     f.rehash();
@@ -435,6 +444,7 @@ fn win_eager_makes_the_window_at_startup() {
 /// window at once, as `python.exe` does.
 #[test]
 fn win_a_new_console_request_gets_a_window() {
+    let _windows = one_window_test_at_a_time();
     let f = Fixture::new();
     f.install("3.9.1/python.exe");
     f.rehash();
@@ -468,6 +478,7 @@ fn win_a_new_console_request_gets_a_window() {
 /// `RPYENV_CONSOLE_HOLD` sets, and the exit code comes back.
 #[test]
 fn win_eager_holds_a_failed_programs_window_for_the_set_seconds() {
+    let _windows = one_window_test_at_a_time();
     let f = Fixture::new();
     f.install("3.9.1/python.exe");
     f.rehash();
@@ -496,6 +507,7 @@ fn win_eager_holds_a_failed_programs_window_for_the_set_seconds() {
 /// the caller wanted, shows why, and waits for a key.
 #[test]
 fn win_an_error_with_nowhere_to_print_gets_a_window_that_waits() {
+    let _windows = one_window_test_at_a_time();
     let f = Fixture::new();
     f.install("3.9.1/python.exe");
     f.rehash();
@@ -525,6 +537,7 @@ fn win_an_error_with_nowhere_to_print_gets_a_window_that_waits() {
 /// arrive unchanged, the variables too, and its exit code comes back.
 #[test]
 fn win_lazy_a_silent_program_never_shows_a_window() {
+    let _windows = one_window_test_at_a_time();
     let f = Fixture::new();
     f.install("3.9.1/python.exe");
     f.rehash();
@@ -563,6 +576,7 @@ fn win_lazy_a_silent_program_never_shows_a_window() {
 /// Review focus 5: killing a LAZY shim ends its program, through the Job Object.
 #[test]
 fn win_lazy_killing_the_shim_kills_the_child() {
+    let _windows = one_window_test_at_a_time();
     let f = Fixture::new();
     f.install("3.9.1/python.exe");
     f.rehash();
@@ -613,6 +627,7 @@ fn terminate(pid: u32) {
 /// shows the output intact (review focus 3: non-ASCII).
 #[test]
 fn win_lazy_shows_the_window_on_first_output() {
+    let _windows = one_window_test_at_a_time();
     let f = Fixture::new();
     f.install("3.9.1/python.exe");
     f.rehash();
@@ -655,6 +670,7 @@ fn win_lazy_shows_the_window_on_first_output() {
 /// LAZY: what's typed in the window reaches the program's stdin.
 #[test]
 fn win_lazy_relays_typed_input() {
+    let _windows = one_window_test_at_a_time();
     let f = Fixture::new();
     f.install("3.9.1/python.exe");
     f.rehash();
@@ -689,6 +705,7 @@ fn win_lazy_relays_typed_input() {
 /// LAZY: Ctrl+C typed in the window reaches the program as Ctrl+C.
 #[test]
 fn win_lazy_ctrl_c_reaches_the_program() {
+    let _windows = one_window_test_at_a_time();
     let f = Fixture::new();
     f.install("3.9.1/python.exe");
     f.rehash();
@@ -717,6 +734,7 @@ fn win_lazy_ctrl_c_reaches_the_program() {
 /// LAZY: a failed program's window waits for a key (the default hold).
 #[test]
 fn win_lazy_holds_a_failed_programs_window_until_a_key() {
+    let _windows = one_window_test_at_a_time();
     let f = Fixture::new();
     f.install("3.9.1/python.exe");
     f.rehash();
@@ -746,6 +764,7 @@ fn win_lazy_holds_a_failed_programs_window_until_a_key() {
 /// LAZY can't start a batch file with the raw command line safely, so it takes EAGER.
 #[test]
 fn win_lazy_a_batch_target_takes_eager() {
+    let _windows = one_window_test_at_a_time();
     let f = Fixture::new();
     f.install("3.9.1/python.exe");
     let scripts = f.root.join("versions").join("3.9.1").join("Scripts");
@@ -769,6 +788,143 @@ fn win_lazy_a_batch_target_takes_eager() {
         assert!(text.contains("lazy=batch"), "{text}");
         assert_eq!(mode_in(&log), "EAGER");
     }
+}
+
+/// Closes process `pid`'s console window. False (after ending the shim) when the window
+/// isn't conhost's, which this test can't close.
+fn close_window_of(pid: u32) -> bool {
+    let code = Command::new(built("argv-echo"))
+        .env("ARGV_ECHO_CLOSE_PID", pid.to_string())
+        .stdin(Stdio::null())
+        .status()
+        .unwrap()
+        .code();
+    if code == Some(4) {
+        eprintln!(
+            "skipped: the console window isn't conhost's (Windows Terminal is the default terminal)"
+        );
+        terminate(pid);
+        return false;
+    }
+    assert_eq!(code, Some(0), "cannot close the window of {pid}");
+    true
+}
+
+/// R8 in a terminal: closing the terminal (a pseudo-console the test owns, as Windows
+/// Terminal holds one per tab) sends `CTRL_CLOSE_EVENT` to the shim and the program. The
+/// shim waits for the program's cleanup, instead of ending at once and taking the program
+/// down with the job.
+#[test]
+fn win_closing_the_terminal_lets_the_program_finish_its_cleanup() {
+    let _windows = one_window_test_at_a_time();
+    let f = Fixture::new();
+    f.install("3.9.1/python.exe");
+    f.rehash();
+    let log = f.base.join("debug.log");
+    let ready = f.base.join("ready");
+    let cleaned = f.base.join("cleaned");
+    let status = f
+        .command(
+            &built("argv-echo"),
+            &[
+                ("PYENV_VERSION", v("3.9.1")),
+                ("RPYENV_DEBUG_LOG", log.as_os_str()),
+                ("ARGV_ECHO_PTY_RUN", f.shim("python").as_os_str()),
+                ("ARGV_ECHO_PTY_CLOSE_AFTER", ready.as_os_str()),
+                ("ARGV_ECHO_ON_CLOSE", cleaned.as_os_str()),
+                ("ARGV_ECHO_READY", ready.as_os_str()),
+                ("ARGV_ECHO_SLEEP_MS", v("20000")),
+            ],
+        )
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .unwrap();
+    assert_eq!(status.code(), Some(0), "the pseudo-console helper failed");
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(mode_in(&log), "INHERIT");
+    assert!(
+        cleaned.exists(),
+        "the program was ended before its cleanup finished"
+    );
+}
+
+/// R8: closing a window the program shares with the shim lets the program's own close
+/// handler finish, instead of the job killing it as soon as the shim ends.
+#[test]
+fn win_closing_the_window_lets_the_program_finish_its_cleanup() {
+    let _windows = one_window_test_at_a_time();
+    let f = Fixture::new();
+    f.install("3.9.1/python.exe");
+    f.rehash();
+    let log = f.base.join("debug.log");
+    let ready = f.base.join("ready");
+    let cleaned = f.base.join("cleaned");
+    let (mut helper, _exit) = launch_like_explorer(
+        &f,
+        "python",
+        &[
+            ("PYENV_VERSION", v("3.9.1")),
+            ("RPYENV_DEBUG_LOG", log.as_os_str()),
+            ("RPYENV_CONSOLE", v("eager")),
+            ("ARGV_ECHO_ON_CLOSE", cleaned.as_os_str()),
+            ("ARGV_ECHO_READY", ready.as_os_str()),
+            ("ARGV_ECHO_SLEEP_MS", v("20000")),
+        ],
+        &[],
+    );
+    wait_for(&ready);
+    let pid = shim_pid(&std::fs::read_to_string(&log).unwrap());
+    if !close_window_of(pid) {
+        return;
+    }
+    helper.wait().unwrap();
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(
+        cleaned.exists(),
+        "the program was ended before its cleanup finished"
+    );
+}
+
+/// R8 in LAZY: closing the shim's window closes the pseudo-console, and the program's
+/// close handler runs to the end.
+#[test]
+fn win_lazy_closing_the_window_reaches_the_program() {
+    let _windows = one_window_test_at_a_time();
+    let f = Fixture::new();
+    f.install("3.9.1/python.exe");
+    f.rehash();
+    if !api() {
+        return;
+    }
+    let log = f.base.join("debug.log");
+    let ready = f.base.join("ready");
+    let cleaned = f.base.join("cleaned");
+    let (mut helper, _exit) = launch_like_explorer(
+        &f,
+        "python",
+        &[
+            ("PYENV_VERSION", v("3.9.1")),
+            ("RPYENV_DEBUG_LOG", log.as_os_str()),
+            ("ARGV_ECHO_ON_CLOSE", cleaned.as_os_str()),
+            ("ARGV_ECHO_PROMPT", v("x")),
+            ("ARGV_ECHO_READY", ready.as_os_str()),
+            ("ARGV_ECHO_SLEEP_MS", v("20000")),
+        ],
+        &[],
+    );
+    let pid = shim_pid(&wait_log(&log, "console=new"));
+    wait_for(&ready);
+    if !close_window_of(pid) {
+        return;
+    }
+    helper.wait().unwrap();
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(
+        cleaned.exists(),
+        "the program never got to finish its close handler"
+    );
 }
 
 /// No console, output redirected → a windowless console for the child.
