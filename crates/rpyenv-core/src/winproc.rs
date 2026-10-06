@@ -164,7 +164,14 @@ pub fn ignore_console_events() {
 /// joins the job right after it starts (plan decision 2).
 pub fn spawn_and_wait(cmd: &mut Command, program: &Path) -> io::Result<ExitStatus> {
     let p = probe();
-    let mode = console::choose(p.attached, p.stdout_redirected, p.stderr_redirected);
+    let mode = console::choose(console::Situation {
+        attached: p.attached,
+        stdout_redirected: p.stdout_redirected,
+        stderr_redirected: p.stderr_redirected,
+        detached_policy: false,
+        parent_has_console: false,
+        setting: console::Setting::Lazy,
+    });
     debuglog::append(&format!(
         "mode={} program={}",
         mode.name(),
@@ -181,6 +188,7 @@ pub fn spawn_and_wait(cmd: &mut Command, program: &Path) -> io::Result<ExitStatu
         ConsoleMode::Mirror => {
             cmd.creation_flags(DETACHED_PROCESS);
         }
+        ConsoleMode::Eager | ConsoleMode::Lazy => unreachable!("no policy before Task 2"),
     }
     ignore_console_events();
     let job = Job::new();
