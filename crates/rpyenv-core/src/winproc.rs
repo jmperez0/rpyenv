@@ -140,6 +140,9 @@ pub struct Probe {
     pub stdout_redirected: bool,
     pub stderr_redirected: bool,
     pub stdin_provided: bool,
+    /// At least one of the three standard handles is a usable handle (a file, a pipe, a
+    /// console, NUL). Explorer gives none.
+    pub handles_given: bool,
 }
 
 fn usable(h: HANDLE) -> bool {
@@ -185,11 +188,19 @@ fn redirected(which: STD_HANDLE) -> bool {
 pub fn probe() -> Probe {
     // SAFETY: reads this process's own standard input handle.
     let stdin = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
+    // SAFETY: reads this process's own standard output and error handles.
+    let (stdout, stderr) = unsafe {
+        (
+            GetStdHandle(STD_OUTPUT_HANDLE),
+            GetStdHandle(STD_ERROR_HANDLE),
+        )
+    };
     Probe {
         attached: attached(),
         stdout_redirected: redirected(STD_OUTPUT_HANDLE),
         stderr_redirected: redirected(STD_ERROR_HANDLE),
         stdin_provided: usable(stdin),
+        handles_given: usable(stdin) || usable(stdout) || usable(stderr),
     }
 }
 
@@ -389,17 +400,25 @@ pub fn open_console(name: &str) -> Option<HANDLE> {
 }
 
 /// After a child ended with `code` in a window this shim opened: keeps the window on
-/// screen as `RPYENV_CONSOLE_HOLD` says, when `code` is a failure (console doc, LAZY step 6).
-pub fn hold_after(code: u32) {
+/// screen as `RPYENV_CONSOLE_HOLD` says (console doc, LAZY step 6), unless
+/// `console::hold_wait` says not to: no failure, a window nobody can see, or a window a
+/// console parent asked for (`asked_by_console_parent`).
+pub fn hold_after(code: u32, asked_by_console_parent: bool) {
     if !console::should_hold(code) {
         return;
     }
-    let hold = console::Hold::parse(std::env::var("RPYENV_CONSOLE_HOLD").ok().as_deref());
+    let setting = console::Hold::parse(std::env::var("RPYENV_CONSOLE_HOLD").ok().as_deref());
+    let visible = window_station_visible();
+    let Some(hold) = console::hold_wait(code, setting, visible, asked_by_console_parent) else {
+        debuglog::append(match (setting, visible) {
+            (console::Hold::Off, _) => "hold=off",
+            (_, false) => "hold=invisible",
+            _ => "hold=parent",
+        });
+        return;
+    };
     let wait_ms = match hold {
-        console::Hold::Off => {
-            debuglog::append("hold=off");
-            return;
-        }
+        console::Hold::Off => return,
         console::Hold::Key => INFINITE,
         console::Hold::Seconds(n) => n.saturating_mul(1000),
     };
@@ -466,12 +485,14 @@ pub fn hold_after(code: u32) {
 
 /// For the console shim with a message and no usable handle to print it on (R7): asks
 /// for the console the caller wanted, so a double-clicked script shows why it failed.
-/// True when that made a new console, which the caller then holds open.
+/// True when that made a new window the caller may hold open: not when a console parent
+/// asked for it (`hold_wait`).
 pub fn console_for_message(stderr: bool) -> bool {
     if !console_shim() || std_handle_usable(stderr) || attached() || !alloc_console_available() {
         return false;
     }
-    alloc_default() == Alloc::New
+    let parent = parent_has_console();
+    alloc_default() == Alloc::New && !parent
 }
 
 /// Starts `cmd` inside a job, with console events ignored, and waits for it. The child
@@ -489,6 +510,7 @@ pub fn spawn_and_wait(cmd: &mut Command, program: &Path) -> io::Result<ExitStatu
         stderr_redirected: p.stderr_redirected,
         detached_policy: policy,
         parent_has_console: parent,
+        handles_given: p.handles_given,
         setting: console::Setting::parse(std::env::var("RPYENV_CONSOLE").ok().as_deref()),
     });
     // LAZY starts the child itself, with the raw command line; std's batch escaping is the
@@ -510,7 +532,8 @@ pub fn spawn_and_wait(cmd: &mut Command, program: &Path) -> io::Result<ExitStatu
             Ok(o) => {
                 drop(job);
                 if o.new_window {
-                    hold_after(o.code);
+                    // LAZY only runs when no console parent asked (`choose`).
+                    hold_after(o.code, false);
                 }
                 return Ok(std::os::windows::process::ExitStatusExt::from_raw(o.code));
             }
@@ -552,7 +575,7 @@ pub fn spawn_and_wait(cmd: &mut Command, program: &Path) -> io::Result<ExitStatu
     let status = child.wait();
     drop(job);
     if let (true, Ok(s)) = (new_window, &status) {
-        hold_after(s.code().unwrap_or(1) as u32);
+        hold_after(s.code().unwrap_or(1) as u32, parent);
     }
     status
 }

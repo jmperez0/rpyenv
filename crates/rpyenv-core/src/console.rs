@@ -62,6 +62,10 @@ pub struct Situation {
     /// The shim's parent has a console. A shim it started without one was given
     /// `DETACHED_PROCESS` or `CREATE_NEW_CONSOLE`; only EAGER's allocation tells which.
     pub parent_has_console: bool,
+    /// The caller gave the shim at least one standard handle (a file, a pipe, NUL). LAZY
+    /// would replace them with the pseudo-console's, so the shim takes EAGER and the child
+    /// keeps them. Explorer gives none.
+    pub handles_given: bool,
     pub setting: Setting,
 }
 
@@ -74,6 +78,7 @@ pub fn choose(s: Situation) -> ConsoleMode {
     } else if !s.detached_policy {
         ConsoleMode::Mirror
     } else if s.parent_has_console
+        || s.handles_given
         || s.setting == Setting::Eager
         || s.stdout_redirected
         || s.stderr_redirected
@@ -124,6 +129,21 @@ pub fn ends_hold(vk: u16, down: bool) -> bool {
     down && !MODIFIERS.contains(&vk)
 }
 
+/// How a window the shim opened behaves after the child ended with `code`: `Some` keeps
+/// it as `hold` says, `None` closes it at once. It closes at once when `code` isn't a
+/// failure (`should_hold`), when nobody can see the window (`visible` false: a scheduled
+/// task or a service, where waiting for a key would never end), and when a console parent
+/// asked for the window (`start /wait` in a script must get its errorlevel, as with
+/// python.exe).
+pub fn hold_wait(
+    code: u32,
+    hold: Hold,
+    visible: bool,
+    asked_by_console_parent: bool,
+) -> Option<Hold> {
+    (should_hold(code) && visible && !asked_by_console_parent && hold != Hold::Off).then_some(hold)
+}
+
 /// `STATUS_CONTROL_C_EXIT`: how a program ended by Ctrl+C exits.
 pub const STATUS_CONTROL_C_EXIT: u32 = 0xC000_013A;
 
@@ -151,6 +171,7 @@ mod tests {
             stderr_redirected: err,
             detached_policy: policy,
             parent_has_console: parent,
+            handles_given: false,
             setting,
         }
     }
@@ -221,6 +242,45 @@ mod tests {
         assert!(ends_hold(0x41, true));
         assert!(ends_hold(0x20, true));
         assert!(!ends_hold(0x41, false));
+    }
+
+    /// Final review C1 and I2: no hold where nobody can see the window (a scheduled task
+    /// or service would wait forever), nor when a console parent asked for the window
+    /// (`start /wait` in a script must get its errorlevel, as with python.exe).
+    #[test]
+    fn when_a_window_is_held() {
+        assert_eq!(hold_wait(3, Hold::Key, true, false), Some(Hold::Key));
+        assert_eq!(
+            hold_wait(3, Hold::Seconds(2), true, false),
+            Some(Hold::Seconds(2))
+        );
+        assert_eq!(hold_wait(3, Hold::Off, true, false), None);
+        assert_eq!(hold_wait(0, Hold::Key, true, false), None);
+        assert_eq!(
+            hold_wait(STATUS_CONTROL_C_EXIT, Hold::Key, true, false),
+            None
+        );
+        assert_eq!(
+            hold_wait(3, Hold::Key, false, false),
+            None,
+            "invisible window station"
+        );
+        assert_eq!(
+            hold_wait(3, Hold::Key, true, true),
+            None,
+            "a console parent asked"
+        );
+    }
+
+    /// Final review I3: a caller that gave the shim any standard handle (stdin from a file,
+    /// output to NUL) gets EAGER, so the child keeps those handles; only a caller that gave
+    /// none (Explorer) gets LAZY.
+    #[test]
+    fn any_given_handle_means_eager() {
+        let mut lazy = s(false, false, false, true, false, Setting::Lazy);
+        assert_eq!(choose(lazy), ConsoleMode::Lazy);
+        lazy.handles_given = true;
+        assert_eq!(choose(lazy), ConsoleMode::Eager);
     }
 
     /// Review focus 4: an exit from Ctrl+C isn't a failure to hold a window for.

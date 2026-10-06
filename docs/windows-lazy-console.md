@@ -121,8 +121,8 @@ shim starts
    ├─ not the console shim, or 24H2
    │  APIs unavailable? ───────────────── yes → MIRROR
    ├─ the parent has a console, or
-   │  RPYENV_CONSOLE=eager, or
-   │  only some handles redirected? ────── yes → EAGER
+   │  the caller gave any standard handle, or
+   │  RPYENV_CONSOLE=eager? ────────────── yes → EAGER
    └─ otherwise ─────────────────────────────── → LAZY
 ```
 
@@ -142,6 +142,10 @@ leaves it at once, keeping its standard handles as they were. A caller that pass
 `CREATE_NO_WINDOW` still gives the shim a windowless console at startup, so the shim takes
 INHERIT.
 
+**Given handles.** A caller that gave the shim any standard handle (stdin from a file or a
+pipe, output to NUL) gets EAGER, so the child keeps those handles. LAZY would replace them
+with the pseudo-console's. Explorer gives none.
+
 `pyenv exec` and the GUI shim don't carry the manifest entry and keep the first three modes.
 
 | Mode | Child is started with | Window appears |
@@ -149,7 +153,7 @@ INHERIT.
 | INHERIT | The shim's console and std handles, inherited | Whatever the caller arranged. This is the normal case in a terminal. |
 | NO-WINDOW | `CREATE_NO_WINDOW`; the caller's redirected handles; stdin set to `NUL` if the caller didn't provide it | Never |
 | MIRROR | `DETACHED_PROCESS` | Never. Same as `python.exe` started with that flag. |
-| EAGER | `AllocConsoleWithOptions(DEFAULT)` at startup, then INHERIT, or `DETACHED_PROCESS` when that gives no console | At startup, exactly as with `python.exe` |
+| EAGER | `AllocConsoleWithOptions(DEFAULT)` at startup, then INHERIT, or `DETACHED_PROCESS` when that gives no console | At startup, as with `python.exe`; after a failure it may stay open (step 6) |
 | LAZY | A pseudo-console (ConPTY), relayed by the shim | On the first printable output (see below) |
 
 How the shim checks each condition:
@@ -250,7 +254,12 @@ on all versions, because older Windows ignores the setting.
    - **Failure after the shim opened a new window** (`ALLOC_CONSOLE_RESULT_NEW_CONSOLE`,
      in EAGER or LAZY): print the exit code and keep the window, so a traceback from a
      double-clicked script stays readable. `RPYENV_CONSOLE_HOLD` sets how long
-     (Configuration). A program ended by Ctrl+C (`0xC000013A`) isn't held. A modifier or
+     (Configuration). There is no hold:
+     - for a program ended by Ctrl+C (`0xC000013A`);
+     - when the window station isn't visible (a scheduled task that runs whether or not a
+       user is logged on, a service), because nobody could press the key;
+     - when a console parent asked for the window (`start /wait` in a script), which
+       needs the errorlevel, as with `python.exe`. A modifier or
      lock key pressed alone (Ctrl, as the start of Ctrl+C to copy the text) doesn't close
      the window. In INHERIT mode this never happens, because the terminal belongs to the
      caller.
