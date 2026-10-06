@@ -24,6 +24,7 @@ pub mod textout;
 pub mod venv;
 pub mod verfile;
 pub mod vsort;
+pub mod vtscan;
 pub mod wincmd;
 #[cfg(windows)]
 pub mod wincp;
