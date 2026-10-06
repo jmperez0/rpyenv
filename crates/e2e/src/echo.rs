@@ -477,8 +477,17 @@ pub fn main() {
         // A process left running on this console: a quiet copy of this program that sleeps,
         // then creates the file. Not waited for.
         let mut copy = std::process::Command::new(std::env::current_exe().unwrap());
+        let sleep = std::env::var("ARGV_ECHO_LEAVE_MS").unwrap_or_else(|_| "1500".into());
+        #[cfg(windows)]
+        if std::env::var_os("ARGV_ECHO_LEAVE_DETACHED").is_some() {
+            // No console at all, as daemons are usually started.
+            use std::os::windows::process::CommandExt;
+            copy.creation_flags(0x0000_0008); // DETACHED_PROCESS
+        }
         for k in [
             "ARGV_ECHO_LEAVE",
+            "ARGV_ECHO_LEAVE_MS",
+            "ARGV_ECHO_LEAVE_DETACHED",
             "ARGV_ECHO_EXIT",
             "ARGV_ECHO_READY",
             "ARGV_ECHO_FIRST",
@@ -490,7 +499,7 @@ pub fn main() {
         }
         let _ = copy
             .env("ARGV_ECHO_QUIET", "1")
-            .env("ARGV_ECHO_SLEEP_MS", "1500")
+            .env("ARGV_ECHO_SLEEP_MS", sleep)
             .env("ARGV_ECHO_AFTER", &p)
             .spawn();
     }
