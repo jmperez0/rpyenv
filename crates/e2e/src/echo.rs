@@ -98,6 +98,8 @@ fn send_ctrl_c(pid: u32) -> i32 {
 /// helper's own arguments on. Writes the exit code to `ARGV_ECHO_SPAWN_EXIT`.
 #[cfg(windows)]
 fn spawn_like_explorer(exe: &std::ffi::OsStr) -> i32 {
+    // Read first: the hidden start clears the variables before starting the program.
+    let exit_file = std::env::var_os("ARGV_ECHO_SPAWN_EXIT");
     use windows_sys::Win32::System::Console::{
         SetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
     };
@@ -118,15 +120,70 @@ fn spawn_like_explorer(exe: &std::ffi::OsStr) -> i32 {
             cmd.stdout(f);
         }
     }
-    let status = cmd.status();
-    let code = match status {
-        Ok(s) => i64::from(s.code().unwrap_or(-1) as u32),
-        Err(_) => -2,
+    let code = if std::env::var_os("ARGV_ECHO_SPAWN_HIDDEN").is_some() {
+        spawn_hidden(exe)
+    } else {
+        match cmd.status() {
+            Ok(s) => i64::from(s.code().unwrap_or(-1) as u32),
+            Err(_) => -2,
+        }
     };
-    if let Some(p) = std::env::var_os("ARGV_ECHO_SPAWN_EXIT") {
+    if let Some(p) = exit_file {
         let _ = std::fs::write(p, code.to_string());
     }
     0
+}
+
+/// Starts `exe` with this helper's arguments as `WshShell.Run cmd, 0, True` does: no
+/// creation flags, `SW_HIDE`, no handles. Waits and returns the exit code (-2 when it
+/// can't start).
+#[cfg(windows)]
+fn spawn_hidden(exe: &std::ffi::OsStr) -> i64 {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::System::Threading::{
+        CreateProcessW, GetExitCodeProcess, WaitForSingleObject, INFINITE, PROCESS_INFORMATION,
+        STARTF_USESHOWWINDOW, STARTUPINFOW,
+    };
+    std::env::remove_var("ARGV_ECHO_SPAWN");
+    std::env::remove_var("ARGV_ECHO_SPAWN_EXIT");
+    std::env::remove_var("ARGV_ECHO_SPAWN_HIDDEN");
+    let mut line: Vec<u16> = vec![u16::from(b'"')];
+    line.extend(exe.encode_wide());
+    line.push(u16::from(b'"'));
+    for a in std::env::args_os().skip(1) {
+        line.extend(" \"".encode_utf16());
+        line.extend(a.encode_wide());
+        line.push(u16::from(b'"'));
+    }
+    line.push(0);
+    // SAFETY: a zeroed STARTUPINFOW with its size and show-window fields set; locals for
+    // every out-pointer; the command line is NUL-terminated and mutable.
+    unsafe {
+        let mut si: STARTUPINFOW = std::mem::zeroed();
+        si.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
+        si.dwFlags = STARTF_USESHOWWINDOW;
+        si.wShowWindow = 0;
+        let mut pi: PROCESS_INFORMATION = std::mem::zeroed();
+        if CreateProcessW(
+            std::ptr::null(),
+            line.as_mut_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            0,
+            0,
+            std::ptr::null(),
+            std::ptr::null(),
+            &si,
+            &mut pi,
+        ) == 0
+        {
+            return -2;
+        }
+        WaitForSingleObject(pi.hProcess, INFINITE);
+        let mut code = 0u32;
+        GetExitCodeProcess(pi.hProcess, &mut code);
+        i64::from(code)
+    }
 }
 
 /// Leaves this helper's console and attaches to process `pid`'s, keeping stdout (the

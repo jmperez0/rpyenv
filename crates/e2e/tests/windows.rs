@@ -676,6 +676,45 @@ fn win_a_given_stdout_takes_eager_and_keeps_the_file() {
     }
 }
 
+/// Re-review I-c: a program started hidden (`WshShell.Run "python x.py", 0, True`) that
+/// fails: nobody can see its window, so the shim doesn't wait for a key, and the caller
+/// gets the exit code, as with python.exe.
+#[test]
+fn win_a_hidden_window_is_not_held() {
+    let _windows = one_window_test_at_a_time();
+    let f = Fixture::new();
+    f.install("3.9.1/python.exe");
+    f.rehash();
+    let log = f.base.join("debug.log");
+    let (mut helper, exit) = launch_like_explorer(
+        &f,
+        "python",
+        &[
+            ("PYENV_VERSION", v("3.9.1")),
+            ("RPYENV_DEBUG_LOG", log.as_os_str()),
+            ("ARGV_ECHO_SPAWN_HIDDEN", v("1")),
+            ("ARGV_ECHO_EXIT", v("3")),
+        ],
+        &[],
+    );
+    let start = std::time::Instant::now();
+    while helper.try_wait().unwrap().is_none() {
+        if start.elapsed() > Duration::from_secs(15) {
+            let text = std::fs::read_to_string(&log).unwrap_or_default();
+            terminate(shim_pid(&text));
+            let _ = helper.wait();
+            panic!("the shim held a hidden window:\n{text}");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(explorer_exit(helper, &exit), 3);
+    if api() {
+        let text = std::fs::read_to_string(&log).unwrap();
+        assert!(text.contains("console=new"), "{text}");
+        assert!(text.contains("hold=invisible"), "{text}");
+    }
+}
+
 /// Final review I4 (user decision 2026-10-06): a program that leaves a console process
 /// running on the pseudo-console when it exits doesn't take it down. The process runs to
 /// the end, as it would in python.exe's console, and the shim stays until it's done.

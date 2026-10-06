@@ -18,7 +18,7 @@ use windows_sys::Win32::Globalization::CP_UTF8;
 use windows_sys::Win32::Storage::FileSystem::{ReadFile, WriteFile};
 use windows_sys::Win32::System::Console::{
     CreatePseudoConsole, GetConsoleProcessList, GetConsoleScreenBufferInfo, ReadConsoleInputW,
-    SetConsoleMode, SetConsoleOutputCP, CONSOLE_SCREEN_BUFFER_INFO, COORD,
+    SetConsoleCtrlHandler, SetConsoleMode, SetConsoleOutputCP, CONSOLE_SCREEN_BUFFER_INFO, COORD,
     DISABLE_NEWLINE_AUTO_RETURN, ENABLE_PROCESSED_OUTPUT, ENABLE_VIRTUAL_TERMINAL_INPUT,
     ENABLE_VIRTUAL_TERMINAL_PROCESSING, ENABLE_WINDOW_INPUT, ENABLE_WRAP_AT_EOL_OUTPUT, HPCON,
     INPUT_RECORD, KEY_EVENT, WINDOW_BUFFER_SIZE_EVENT,
@@ -108,12 +108,31 @@ pub fn command_line(program: &Path, tail: Option<&OsStr>) -> Vec<u16> {
 }
 
 /// Set, in its own environment only, on the shim copy that watches the pseudo-console for
-/// processes the program left running (`watch_main`).
+/// processes the program left running (`watch_main`). Its value is the starting shim's
+/// process ID.
 pub const WATCH_VAR: &str = "RPYENV_INTERNAL_PTY_WATCH";
+
+/// Whether this process is a watcher: `WATCH_VAR` names its own parent. The variable
+/// alone, inherited from a user's environment, doesn't make a shim a watcher.
+pub fn is_watcher() -> bool {
+    let Some(want) = std::env::var(WATCH_VAR)
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+    else {
+        return false;
+    };
+    let me = std::process::id();
+    process_ids().iter().any(|&(p, pp)| p == me && pp == want)
+}
 
 /// The watcher's main: waits until it is the only process on its console (the
 /// pseudo-console), checking every 200 ms, then exits 0.
 pub fn watch_main() -> i32 {
+    // Ctrl+C typed in the window must not end the watcher: the pseudo-console would then
+    // close under processes that survive Ctrl+C. It starts nothing, so nothing inherits
+    // this.
+    // SAFETY: sets this process's own Ctrl+C handling.
+    unsafe { SetConsoleCtrlHandler(None, 1) };
     let mut ids = [0u32; 64];
     loop {
         // SAFETY: fills a local buffer of the length given with process IDs.
@@ -143,6 +162,47 @@ pub fn descendants(procs: &[(u32, u32, u64)], root: u32, root_created: u64) -> V
     found
 }
 
+/// The processes that may still use the pseudo-console after the program exited: its live
+/// descendants, plus any process created after it whose parent has exited (or whose
+/// parent ID was reused). A launcher (a venv's python.exe, pip's `black.exe`) exits with
+/// the real program, so what that left running has a dead parent ID. Over-counting only
+/// costs the watcher, which counts exactly.
+pub fn leftover_candidates(procs: &[(u32, u32, u64)], root: u32, root_created: u64) -> Vec<u32> {
+    let mut found = descendants(procs, root, root_created);
+    for &(p, pp, c) in procs {
+        if p == root || c < root_created || found.contains(&p) {
+            continue;
+        }
+        let parent_alive = procs.iter().any(|&(q, _, qc)| q == pp && qc <= c);
+        if !parent_alive {
+            found.push(p);
+        }
+    }
+    found.sort_unstable();
+    found
+}
+
+/// Every running process's ID and parent ID.
+fn process_ids() -> Vec<(u32, u32)> {
+    let mut ids = Vec::new();
+    // SAFETY: a process snapshot walked with a correctly sized entry and closed after.
+    unsafe {
+        let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snap == INVALID_HANDLE_VALUE {
+            return ids;
+        }
+        let mut entry: PROCESSENTRY32W = std::mem::zeroed();
+        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        let mut more = Process32FirstW(snap, &mut entry) != 0;
+        while more {
+            ids.push((entry.th32ProcessID, entry.th32ParentProcessID));
+            more = Process32NextW(snap, &mut entry) != 0;
+        }
+        CloseHandle(snap);
+    }
+    ids
+}
+
 /// A process's creation time, or `None` when it can't be read.
 fn created(process: HANDLE) -> Option<u64> {
     let zero = FILETIME {
@@ -159,27 +219,17 @@ fn created(process: HANDLE) -> Option<u64> {
 /// creation time can't be read.
 fn process_table() -> Vec<(u32, u32, u64)> {
     let mut table = Vec::new();
-    // SAFETY: a process snapshot walked with a correctly sized entry and closed after;
-    // each process opened for its times is closed at once.
-    unsafe {
-        let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-        if snap == INVALID_HANDLE_VALUE {
-            return table;
-        }
-        let mut entry: PROCESSENTRY32W = std::mem::zeroed();
-        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
-        let mut more = Process32FirstW(snap, &mut entry) != 0;
-        while more {
-            let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, entry.th32ProcessID);
+    for (pid, ppid) in process_ids() {
+        // SAFETY: opens a process only to read its times, and closes it at once.
+        unsafe {
+            let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
             if !h.is_null() {
                 if let Some(c) = created(h) {
-                    table.push((entry.th32ProcessID, entry.th32ParentProcessID, c));
+                    table.push((pid, ppid, c));
                 }
                 CloseHandle(h);
             }
-            more = Process32NextW(snap, &mut entry) != 0;
         }
-        CloseHandle(snap);
     }
     table
 }
@@ -189,13 +239,13 @@ fn process_table() -> Vec<(u32, u32, u64)> {
 /// left on it, as python.exe's console stays for them. A watcher, this shim's own binary
 /// started on the pseudo-console, counts the processes on it, so descendants on other
 /// consoles, or with none (GUI programs), don't make the shim wait.
-fn wait_for_leftovers(program: HANDLE, hpc: HPCON, job: Option<&Job>) {
+fn wait_for_leftovers(program: HANDLE, job: Option<&Job>) {
     // SAFETY: reads the exited program's ID from the handle this module owns.
     let pid = unsafe { GetProcessId(program) };
     let Some(born) = created(program) else {
         return;
     };
-    let left = descendants(&process_table(), pid, born);
+    let left = leftover_candidates(&process_table(), pid, born);
     if left.is_empty() {
         return;
     }
@@ -205,10 +255,17 @@ fn wait_for_leftovers(program: HANDLE, hpc: HPCON, job: Option<&Job>) {
     };
     let env = env_block(&merge_env(
         std::env::vars_os().collect(),
-        &[(OsString::from(WATCH_VAR), Some(OsString::from("1")))],
+        &[(
+            OsString::from(WATCH_VAR),
+            Some(OsString::from(std::process::id().to_string())),
+        )],
     ));
     let mut line = command_line(&exe, None);
-    if let Ok(watcher) = start(&mut line, &env, hpc, job) {
+    // Started under the pseudo-console's lock, so a window closed meanwhile (the handler
+    // closes it) can't leave a dangling handle here; waited for outside it, so the handler
+    // can close the pseudo-console, which ends the watcher.
+    let watcher = winproc::with_open_pty(|hpc| start(&mut line, &env, hpc, job).ok()).flatten();
+    if let Some(watcher) = watcher {
         // SAFETY: waits on the watcher's process handle, which `watcher` owns.
         unsafe { WaitForSingleObject(watcher.0, INFINITE) };
     }
@@ -275,7 +332,7 @@ pub fn run(
         WaitForSingleObject(process.0, INFINITE);
         GetExitCodeProcess(process.0, &mut code);
     }
-    wait_for_leftovers(process.0, hpc, job);
+    wait_for_leftovers(process.0, job);
     // Closing the pseudo-console ends its output once drained; the reader then returns.
     winproc::close_pty();
     let shown = match reader.join() {
@@ -678,6 +735,26 @@ mod tests {
         assert_eq!(descendants(&procs, 10, 100), vec![11, 12, 15]);
         assert_eq!(descendants(&procs, 15, 125), Vec::<u32>::new());
         assert_eq!(descendants(&[(10, 10, 100)], 10, 100), Vec::<u32>::new());
+    }
+
+    /// Re-review I-b: a launcher (a venv's python.exe, pip's `black.exe`) starts the real
+    /// program, which exits with the launcher and leaves a process running: its parent ID
+    /// is dead, yet it may be on the pseudo-console. An orphan created after the program
+    /// counts; an older one, or one with a live unrelated parent, doesn't.
+    #[test]
+    fn leftover_candidates_include_orphans_created_after_the_program() {
+        let procs = [
+            (12, 11, 120), // left by 11 (exited): an orphan created after the program
+            (20, 5, 50),   // an old orphan
+            (21, 7, 130),  // a newer process with a live parent
+            (7, 1, 10),
+            (13, 10, 115), // a live direct descendant
+        ];
+        assert_eq!(leftover_candidates(&procs, 10, 100), vec![12, 13]);
+        assert_eq!(
+            leftover_candidates(&[(7, 1, 10)], 10, 100),
+            Vec::<u32>::new()
+        );
     }
 
     #[test]
