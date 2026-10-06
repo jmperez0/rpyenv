@@ -18,7 +18,7 @@ pub const SHIMW_NAME: &str = "pyenv-shimw";
 pub fn main() -> i32 {
     // The watcher a LAZY shim starts on its pseudo-console (plan M5a, final review I4).
     #[cfg(windows)]
-    if std::env::var_os(crate::conpty::WATCH_VAR).is_some() {
+    if std::env::var_os(crate::conpty::WATCH_VAR).is_some() && crate::conpty::is_watcher() {
         return crate::conpty::watch_main();
     }
     #[cfg(windows)]

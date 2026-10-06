@@ -29,7 +29,8 @@
 //! when done: `ARGV_ECHO_SPAWN=<exe>` starts that program as Explorer does (no console,
 //! null standard handles, no creation flags, this helper's own arguments) and writes its
 //! exit code to `ARGV_ECHO_SPAWN_EXIT=<path>` (with `ARGV_ECHO_SPAWN_STDOUT=<path>`, stdout
-//! goes to that file); `ARGV_ECHO_SCREEN_PID=<pid>` prints the
+//! goes to that file; with `ARGV_ECHO_SPAWN_HIDDEN=1`, it starts it hidden, as
+//! `WshShell.Run cmd, 0, True` does); `ARGV_ECHO_SCREEN_PID=<pid>` prints the
 //! text on that process's console; `ARGV_ECHO_TYPE_PID=<pid>` types `ARGV_ECHO_TYPE` into
 //! that process's console (`\x03` is Ctrl+C, `\x1a` Ctrl+Z, `\r` Enter).
 //! `ARGV_ECHO_CLOSE_PID=<pid>` posts `WM_CLOSE` to that process's console window (exit 4

@@ -244,11 +244,16 @@ on all versions, because older Windows ignores the setting.
 6. **Shut down.** When the child exits, keep the pseudo-console while processes it
    left running still use it, as `python.exe`'s console stays for them. ConPTY never
    closes on its own, even with no process left (probed: 10 s each, three cases).
-   - A process snapshot first looks for the child's live descendants; usually there are
-     none.
-   - Otherwise the shim starts a watcher on the pseudo-console (its own binary, flagged by
-     an internal variable). The watcher exits once it is the only process there, so
-     descendants on another console, or with none, don't keep the shim.
+   - A process snapshot first looks for processes that may still use the pseudo-console:
+     the child's live descendants, and processes created after it whose parent has exited.
+     A launcher, such as a venv's `python.exe` or pip's `black.exe`, exits together with
+     the real program it started.
+   - If there are any, the shim starts a watcher on the pseudo-console: its own binary,
+     flagged by an internal variable that names the shim as its parent. The watcher
+     exits once it is the only process there, so processes on another console, or with
+     none, don't keep the shim.
+   - A caller that waits for the shim (Task Scheduler, `WshShell.Run …, True`) gets the
+     exit code only after those processes end, unlike with `python.exe`.
 
    Then keep reading the output pipe until it closes, and call `ClosePseudoConsole` from a
    thread other than the reader.
@@ -267,8 +272,9 @@ on all versions, because older Windows ignores the setting.
      (Configuration). There is no hold:
      - for a program ended by Ctrl+C (`0xC000013A`), or that exits 130, as programs that
        catch Ctrl+C commonly do;
-     - when the window station isn't visible (a scheduled task that runs whether or not a
-       user is logged on, a service), because nobody could press the key;
+     - when nobody can see the window, because nobody could press the key: the window
+       station isn't visible (a scheduled task that runs whether or not a user is logged
+       on, a service), or the caller hid the window (`WshShell.Run …, 0, True`);
      - when a console parent asked for the window (`start /wait` in a script), which
        needs the errorlevel, as with `python.exe`. A modifier or
      lock key pressed alone (Ctrl, as the start of Ctrl+C to copy the text) doesn't close

@@ -45,7 +45,9 @@ use windows_sys::Win32::System::StationsAndDesktops::{
 use windows_sys::Win32::System::Threading::GetCurrentProcess;
 use windows_sys::Win32::System::Threading::{WaitForSingleObject, INFINITE};
 use windows_sys::Win32::System::Threading::{CREATE_NO_WINDOW, DETACHED_PROCESS};
-use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK, WSF_VISIBLE};
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    IsWindowVisible, MessageBoxW, MB_ICONERROR, MB_OK, WSF_VISIBLE,
+};
 
 /// A Job Object whose processes end when its last handle closes, which happens when this
 /// process ends, however it ends. Processes they start break away silently and live on,
@@ -113,6 +115,13 @@ pub fn close_pty() {
         unsafe { ClosePseudoConsole(*pty) };
         *pty = 0;
     }
+}
+
+/// Runs `f` with the pseudo-console while holding its lock, so it can't close meanwhile;
+/// `None` when it's already closed.
+pub fn with_open_pty<T>(f: impl FnOnce(HPCON) -> T) -> Option<T> {
+    let pty = PTY.lock().unwrap_or_else(|e| e.into_inner());
+    (*pty != 0).then(|| f(*pty))
 }
 
 /// Resizes the pseudo-console, if it's still open.
@@ -381,6 +390,13 @@ fn parent_has_console() -> bool {
     }
 }
 
+/// Whether this process's console window is visible (re-review I-c: probed on build
+/// 26200, a launch with `SW_HIDE` gets a console whose window isn't).
+fn console_window_visible() -> bool {
+    // SAFETY: no arguments; IsWindowVisible accepts any window handle, null included.
+    unsafe { IsWindowVisible(windows_sys::Win32::System::Console::GetConsoleWindow()) != 0 }
+}
+
 /// Opens this process's console input (`CONIN$`) or screen (`CONOUT$`).
 pub fn open_console(name: &str) -> Option<HANDLE> {
     let wide: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
@@ -408,7 +424,9 @@ pub fn hold_after(code: u32, asked_by_console_parent: bool) {
         return;
     }
     let setting = console::Hold::parse(std::env::var("RPYENV_CONSOLE_HOLD").ok().as_deref());
-    let visible = window_station_visible();
+    // Visible means a window someone can see: on a visible window station, and not
+    // hidden (a caller's `SW_HIDE`, such as `WshShell.Run cmd, 0, True`).
+    let visible = window_station_visible() && console_window_visible();
     let Some(hold) = console::hold_wait(code, setting, visible, asked_by_console_parent) else {
         debuglog::append(match (setting, visible) {
             (console::Hold::Off, _) => "hold=off",
