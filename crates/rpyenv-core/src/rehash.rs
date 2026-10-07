@@ -71,6 +71,16 @@ pub struct RehashStats {
     pub removed: usize,
 }
 
+/// Set by a command that handles Ctrl+C itself (`install`, `uninstall`, `virtualenv`):
+/// Ctrl+C then doesn't end the process, so the lock stays until its rehash is done, and the
+/// Windows console handler only acts on events that end the process regardless.
+static INTERRUPT_HANDLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Records that this process handles Ctrl+C itself (final review I1).
+pub fn note_interrupt_handler() {
+    INTERRUPT_HANDLED.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
 /// Held while a rehash runs. Dropping it removes the lock file, on failure too. An
 /// interruption removes it as well (plan M5b, R3): on Linux, SIGINT, SIGTERM or SIGHUP
 /// (unless ignored on entry); on Windows, Ctrl+C, Ctrl+Break or a closed window, for the
@@ -125,7 +135,8 @@ mod cleanup {
 
     const SIGNALS: [libc::c_int; 3] = [libc::SIGINT, libc::SIGTERM, libc::SIGHUP];
     static PATH: AtomicPtr<libc::c_char> = AtomicPtr::new(std::ptr::null_mut());
-    static OLD: Mutex<Option<[libc::sigaction; 3]>> = Mutex::new(None);
+    /// The dispositions `arm` replaced, by signal; `None` where it left one alone.
+    static OLD: Mutex<Option<[Option<libc::sigaction>; 3]>> = Mutex::new(None);
 
     extern "C" fn on_signal(signal: libc::c_int) {
         let p = PATH.swap(std::ptr::null_mut(), Ordering::SeqCst);
@@ -152,20 +163,25 @@ mod cleanup {
             // SAFETY: a CString leaked by an earlier `arm`, now unreachable from the handler.
             drop(unsafe { CString::from_raw(old_path) });
         }
+        // Only a signal that would end the process gets the handler: one the caller ignored
+        // (`nohup`) or one this process handles (Ctrl+C in `uninstall`, final review I1)
+        // doesn't end it, and the lock's `Drop` removes the lock in time.
         // SAFETY: reads and sets dispositions with zeroed, then filled, sigaction values.
         unsafe {
-            let mut old: [libc::sigaction; 3] = std::mem::zeroed();
+            let mut replaced: [Option<libc::sigaction>; 3] = [None, None, None];
             for (i, &s) in SIGNALS.iter().enumerate() {
-                libc::sigaction(s, std::ptr::null(), &mut old[i]);
-                if old[i].sa_sigaction == libc::SIG_IGN {
+                let mut old: libc::sigaction = std::mem::zeroed();
+                libc::sigaction(s, std::ptr::null(), &mut old);
+                if old.sa_sigaction != libc::SIG_DFL {
                     continue;
                 }
+                replaced[i] = Some(old);
                 let mut act: libc::sigaction = std::mem::zeroed();
                 act.sa_sigaction = on_signal as extern "C" fn(libc::c_int) as libc::sighandler_t;
                 libc::sigemptyset(&mut act.sa_mask);
                 libc::sigaction(s, &act, std::ptr::null_mut());
             }
-            *OLD.lock().unwrap_or_else(|e| e.into_inner()) = Some(old);
+            *OLD.lock().unwrap_or_else(|e| e.into_inner()) = Some(replaced);
         }
     }
 
@@ -199,11 +215,11 @@ mod cleanup {
     }
 
     pub fn disarm() {
-        if let Some(old) = OLD.lock().unwrap_or_else(|e| e.into_inner()).take() {
-            for (i, &s) in SIGNALS.iter().enumerate() {
-                if old[i].sa_sigaction != libc::SIG_IGN {
-                    // SAFETY: restores the disposition read in `arm`.
-                    unsafe { libc::sigaction(s, &old[i], std::ptr::null_mut()) };
+        if let Some(replaced) = OLD.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            for (old, &s) in replaced.iter().zip(SIGNALS.iter()) {
+                if let Some(old) = old {
+                    // SAFETY: restores the disposition `arm` replaced.
+                    unsafe { libc::sigaction(s, old, std::ptr::null_mut()) };
                 }
             }
         }
@@ -222,11 +238,19 @@ mod cleanup {
     use std::path::{Path, PathBuf};
     use std::sync::Mutex;
     use windows_sys::core::BOOL;
-    use windows_sys::Win32::System::Console::SetConsoleCtrlHandler;
+    use windows_sys::Win32::System::Console::{
+        SetConsoleCtrlHandler, CTRL_BREAK_EVENT, CTRL_C_EVENT,
+    };
 
     static PATH: Mutex<Option<PathBuf>> = Mutex::new(None);
 
-    unsafe extern "system" fn on_event(_event: u32) -> BOOL {
+    unsafe extern "system" fn on_event(event: u32) -> BOOL {
+        // Ctrl+C and Ctrl+Break don't end a process that handles them (final review I1):
+        // its rehash goes on, and the lock with it.
+        let handled = super::INTERRUPT_HANDLED.load(std::sync::atomic::Ordering::SeqCst);
+        if handled && (event == CTRL_C_EVENT || event == CTRL_BREAK_EVENT) {
+            return 0;
+        }
         if let Ok(mut p) = PATH.try_lock() {
             if let Some(p) = p.take() {
                 let _ = std::fs::remove_file(p);
