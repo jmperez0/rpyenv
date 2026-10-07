@@ -11,6 +11,7 @@ pub mod installed;
 pub mod junction;
 pub mod latest;
 pub mod launch;
+pub mod livewatch;
 pub mod lookup;
 pub mod paths;
 pub mod pathsearch;
