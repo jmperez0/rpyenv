@@ -43,6 +43,10 @@ fn close_window(pid: u32) -> i32 {
         if String::from_utf16_lossy(&class[..n.max(0) as usize]) != "ConsoleWindowClass" {
             return 4;
         }
+        // Leave that console before closing it: the close sends CTRL_CLOSE_EVENT to every
+        // process still on it, and this helper would die with 0xC000013A (seen on CI,
+        // windows-2022). The window handle stays valid after leaving.
+        FreeConsole();
         if PostMessageW(hwnd, WM_CLOSE, 0, 0) == 0 {
             return 3;
         }
