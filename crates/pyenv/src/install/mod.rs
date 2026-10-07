@@ -73,6 +73,8 @@ pub fn watch_interrupt() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         let _ = ctrlc::set_handler(|| INTERRUPTED.store(true, Ordering::SeqCst));
+        // A rehash in this process then survives Ctrl+C and releases its lock itself.
+        rpyenv_core::rehash::note_interrupt_handler();
     });
 }
 
