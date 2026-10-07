@@ -500,3 +500,74 @@ fn win_exec_puts_the_version_folders_first_on_path() {
         "{text}"
     );
 }
+
+/// Polls until `path` exists (20 s at most).
+#[cfg(unix)]
+fn wait_until_exists(path: &std::path::Path) {
+    let start = Instant::now();
+    while !path.exists() {
+        assert!(
+            start.elapsed() < Duration::from_secs(20),
+            "{} never appeared",
+            path.display()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Spec §8 Safety (M5b): a rehash ended by SIGINT, SIGTERM or SIGHUP removes its lock
+/// instead of leaving it for two minutes, and dies by that signal.
+#[cfg(target_os = "linux")]
+#[test]
+fn an_interrupted_rehash_removes_its_lock() {
+    use std::os::unix::process::ExitStatusExt;
+    for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
+        let f = Fixture::new();
+        f.install("3.12.10/bin/python");
+        let lock = f.root.join("shims").join(".rehash.lock");
+        let mut child = f
+            .command(
+                &built("pyenv"),
+                &[("RPYENV_TEST_HOLD_REHASH_MS", v("20000"))],
+            )
+            .arg("rehash")
+            .spawn()
+            .unwrap();
+        wait_until_exists(&lock);
+        // SAFETY: sends a signal to the child this test started.
+        unsafe { libc::kill(child.id() as libc::pid_t, signal) };
+        let status = child.wait().unwrap();
+        assert_eq!(status.signal(), Some(signal), "signal {signal}");
+        assert!(!lock.exists(), "signal {signal} left the lock behind");
+    }
+}
+
+/// Review focus 2: under `nohup` (SIGHUP ignored) the rehash survives SIGHUP and finishes.
+#[cfg(target_os = "linux")]
+#[test]
+fn rehash_keeps_an_ignored_sighup() {
+    use std::os::unix::process::CommandExt;
+    let f = Fixture::new();
+    f.install("3.12.10/bin/python");
+    let lock = f.root.join("shims").join(".rehash.lock");
+    let mut cmd = f.command(
+        &built("pyenv"),
+        &[("RPYENV_TEST_HOLD_REHASH_MS", v("1500"))],
+    );
+    cmd.arg("rehash");
+    // SAFETY: only async-signal-safe calls between fork and exec.
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::signal(libc::SIGHUP, libc::SIG_IGN);
+            Ok(())
+        });
+    }
+    let mut child = cmd.spawn().unwrap();
+    wait_until_exists(&lock);
+    // SAFETY: sends a signal to the child this test started.
+    unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGHUP) };
+    let status = child.wait().unwrap();
+    assert!(status.success(), "{status:?}");
+    assert!(f.shim("python").exists());
+    assert!(!lock.exists());
+}
