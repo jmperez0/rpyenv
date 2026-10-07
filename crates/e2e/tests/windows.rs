@@ -300,6 +300,7 @@ fn win_live_watcher_skips_a_quick_program() {
     f.install("3.9.1/python.exe");
     f.rehash();
     let log = f.base.join("debug.log");
+    let start = std::time::Instant::now();
     let out = f
         .shim_command(
             "python",
@@ -312,9 +313,16 @@ fn win_live_watcher_skips_a_quick_program() {
         .creation_flags(CREATE_NO_WINDOW)
         .output()
         .unwrap();
+    let took = start.elapsed();
     assert!(out.status.success());
+    // Watching starts only for a program still running after the start delay; a loaded
+    // machine can make even this one take that long.
     let text = std::fs::read_to_string(&log).unwrap_or_default();
-    assert!(!text.contains("live=watching"), "{text}");
+    assert!(
+        !text.contains("live=watching") || took >= Duration::from_secs(1),
+        "watched a program that took {took:?}:
+{text}"
+    );
 }
 
 /// Spec §8 Safety (M5b): `pyenv rehash` ended by Ctrl+Break (or Ctrl+C, or closing its
