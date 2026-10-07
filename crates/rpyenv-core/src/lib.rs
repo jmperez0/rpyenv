@@ -12,6 +12,8 @@ pub mod junction;
 pub mod latest;
 pub mod launch;
 pub mod livewatch;
+#[cfg(windows)]
+pub mod livewatch_win;
 pub mod lookup;
 pub mod paths;
 pub mod pathsearch;

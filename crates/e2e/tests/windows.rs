@@ -183,6 +183,140 @@ impl Drop for KillOnDrop {
 /// exits 5 at once (its sleep, up to 30 s, only bounds how long the break may take to
 /// arrive under load). A shim that didn't ignore the event would die at once with
 /// 0xC000013A.
+/// Spec §8 point 3: with `RPYENV_LIVE_REHASH=1`, a script installed while the program runs
+/// gets its shim before the program exits.
+#[test]
+fn win_live_watcher_makes_a_new_scripts_shim_while_the_program_runs() {
+    let f = Fixture::new();
+    f.install("3.9.1/python.exe");
+    f.rehash();
+    let log = f.base.join("debug.log");
+    let ready = f.base.join("ready");
+    let mut shim = KillOnDrop(
+        f.shim_command(
+            "python",
+            &[
+                ("PYENV_VERSION", v("3.9.1")),
+                ("RPYENV_DEBUG_LOG", log.as_os_str()),
+                ("RPYENV_LIVE_REHASH", v("1")),
+                ("ARGV_ECHO_READY", ready.as_os_str()),
+                ("ARGV_ECHO_SLEEP_MS", v("8000")),
+            ],
+        )
+        .creation_flags(CREATE_NO_WINDOW)
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap(),
+    );
+    wait_for(&ready);
+    wait_log(&log, "live=watching");
+    f.install("3.9.1/Scripts/black.exe");
+    let start = std::time::Instant::now();
+    while !f.shim("black").exists() {
+        assert!(
+            shim.0.try_wait().unwrap().is_none(),
+            "the program ended first"
+        );
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "no shim while the program ran"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Without the variable nothing changes: no shim until the exit check.
+#[test]
+fn win_no_live_watcher_without_the_variable() {
+    let f = Fixture::new();
+    f.install("3.9.1/python.exe");
+    f.rehash();
+    let ready = f.base.join("ready");
+    let mut shim = KillOnDrop(
+        f.shim_command(
+            "python",
+            &[
+                ("PYENV_VERSION", v("3.9.1")),
+                ("ARGV_ECHO_READY", ready.as_os_str()),
+                ("ARGV_ECHO_SLEEP_MS", v("5000")),
+            ],
+        )
+        .creation_flags(CREATE_NO_WINDOW)
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap(),
+    );
+    wait_for(&ready);
+    std::thread::sleep(Duration::from_millis(1500));
+    f.install("3.9.1/Scripts/black.exe");
+    std::thread::sleep(Duration::from_millis(2000));
+    assert!(shim.0.try_wait().unwrap().is_none());
+    assert!(
+        !f.shim("black").exists(),
+        "a shim appeared without the variable"
+    );
+    let _ = shim.0.wait();
+    assert!(f.shim("black").exists(), "the exit check still rehashes");
+}
+
+/// Review focus 3: the watcher never blocks renaming or uninstalling a version.
+#[test]
+fn win_live_watcher_lets_a_version_be_renamed() {
+    let f = Fixture::new();
+    f.install("3.9.1/python.exe");
+    f.install("3.8.0/python.exe");
+    f.rehash();
+    let log = f.base.join("debug.log");
+    let ready = f.base.join("ready");
+    let mut shim = KillOnDrop(
+        f.shim_command(
+            "python",
+            &[
+                ("PYENV_VERSION", v("3.9.1")),
+                ("RPYENV_DEBUG_LOG", log.as_os_str()),
+                ("RPYENV_LIVE_REHASH", v("1")),
+                ("ARGV_ECHO_READY", ready.as_os_str()),
+                ("ARGV_ECHO_SLEEP_MS", v("6000")),
+            ],
+        )
+        .creation_flags(CREATE_NO_WINDOW)
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap(),
+    );
+    wait_for(&ready);
+    wait_log(&log, "live=watching");
+    let versions = f.root.join("versions");
+    std::fs::rename(versions.join("3.8.0"), versions.join("3.8.0-old"))
+        .expect("rename while watched");
+    std::fs::remove_dir_all(versions.join("3.8.0-old")).expect("delete while watched");
+    let _ = shim.0.wait();
+}
+
+/// Review focus 5: a program that ends within the start delay is never watched.
+#[test]
+fn win_live_watcher_skips_a_quick_program() {
+    let f = Fixture::new();
+    f.install("3.9.1/python.exe");
+    f.rehash();
+    let log = f.base.join("debug.log");
+    let out = f
+        .shim_command(
+            "python",
+            &[
+                ("PYENV_VERSION", v("3.9.1")),
+                ("RPYENV_DEBUG_LOG", log.as_os_str()),
+                ("RPYENV_LIVE_REHASH", v("1")),
+            ],
+        )
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let text = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(!text.contains("live=watching"), "{text}");
+}
+
 /// Spec §8 Safety (M5b): `pyenv rehash` ended by Ctrl+Break (or Ctrl+C, or closing its
 /// window) removes its lock instead of leaving it for two minutes.
 #[test]
