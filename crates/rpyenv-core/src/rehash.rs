@@ -71,15 +71,151 @@ pub struct RehashStats {
     pub removed: usize,
 }
 
-/// Held while a rehash runs. Dropping it removes the lock file, on failure too.
+/// Held while a rehash runs. Dropping it removes the lock file, on failure too. An
+/// interruption removes it as well (plan M5b, R3): on Linux, SIGINT, SIGTERM or SIGHUP
+/// (unless ignored on entry); on Windows, Ctrl+C, Ctrl+Break or a closed window, for the
+/// callers of `rehash` (which `arm_ctrl` arms).
 #[derive(Debug)]
 pub struct Lock {
     path: PathBuf,
+    armed_ctrl: bool,
+}
+
+impl Lock {
+    fn new(path: PathBuf) -> Lock {
+        #[cfg(unix)]
+        cleanup::arm(&path);
+        Lock {
+            path,
+            armed_ctrl: false,
+        }
+    }
+
+    /// Windows: removes the lock if a console event ends this process (`pyenv rehash` and
+    /// the commands that run it, which Ctrl+C ends).
+    #[cfg(windows)]
+    fn arm_ctrl(&mut self) {
+        cleanup::arm(&self.path);
+        self.armed_ctrl = true;
+    }
 }
 
 impl Drop for Lock {
     fn drop(&mut self) {
+        #[cfg(unix)]
+        cleanup::disarm();
+        #[cfg(windows)]
+        if self.armed_ctrl {
+            cleanup::disarm();
+        }
+        let _ = self.armed_ctrl;
         let _ = fs::remove_file(&self.path);
+    }
+}
+
+#[cfg(unix)]
+mod cleanup {
+    //! The lock's path for a signal handler: SIGINT, SIGTERM and SIGHUP unlink it, then end
+    //! the process by the same signal, as if no handler were there.
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    use std::path::Path;
+    use std::sync::atomic::{AtomicPtr, Ordering};
+    use std::sync::Mutex;
+
+    const SIGNALS: [libc::c_int; 3] = [libc::SIGINT, libc::SIGTERM, libc::SIGHUP];
+    static PATH: AtomicPtr<libc::c_char> = AtomicPtr::new(std::ptr::null_mut());
+    static OLD: Mutex<Option<[libc::sigaction; 3]>> = Mutex::new(None);
+
+    extern "C" fn on_signal(signal: libc::c_int) {
+        let p = PATH.swap(std::ptr::null_mut(), Ordering::SeqCst);
+        // SAFETY: unlink, sigaction and raise are async-signal-safe; `p` is a CString leaked
+        // by `arm` and never freed while stored.
+        unsafe {
+            if !p.is_null() {
+                libc::unlink(p);
+            }
+            let mut act: libc::sigaction = std::mem::zeroed();
+            act.sa_sigaction = libc::SIG_DFL;
+            libc::sigemptyset(&mut act.sa_mask);
+            libc::sigaction(signal, &act, std::ptr::null_mut());
+            libc::raise(signal);
+        }
+    }
+
+    pub fn arm(path: &Path) {
+        let Ok(c) = CString::new(path.as_os_str().as_bytes()) else {
+            return;
+        };
+        let old_path = PATH.swap(c.into_raw(), Ordering::SeqCst);
+        if !old_path.is_null() {
+            // SAFETY: a CString leaked by an earlier `arm`, now unreachable from the handler.
+            drop(unsafe { CString::from_raw(old_path) });
+        }
+        // SAFETY: reads and sets dispositions with zeroed, then filled, sigaction values.
+        unsafe {
+            let mut old: [libc::sigaction; 3] = std::mem::zeroed();
+            for (i, &s) in SIGNALS.iter().enumerate() {
+                libc::sigaction(s, std::ptr::null(), &mut old[i]);
+                if old[i].sa_sigaction == libc::SIG_IGN {
+                    continue;
+                }
+                let mut act: libc::sigaction = std::mem::zeroed();
+                act.sa_sigaction = on_signal as extern "C" fn(libc::c_int) as libc::sighandler_t;
+                libc::sigemptyset(&mut act.sa_mask);
+                libc::sigaction(s, &act, std::ptr::null_mut());
+            }
+            *OLD.lock().unwrap_or_else(|e| e.into_inner()) = Some(old);
+        }
+    }
+
+    pub fn disarm() {
+        if let Some(old) = OLD.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            for (i, &s) in SIGNALS.iter().enumerate() {
+                if old[i].sa_sigaction != libc::SIG_IGN {
+                    // SAFETY: restores the disposition read in `arm`.
+                    unsafe { libc::sigaction(s, &old[i], std::ptr::null_mut()) };
+                }
+            }
+        }
+        let p = PATH.swap(std::ptr::null_mut(), Ordering::SeqCst);
+        if !p.is_null() {
+            // SAFETY: a CString leaked by `arm`, no longer reachable from the handler.
+            drop(unsafe { CString::from_raw(p) });
+        }
+    }
+}
+
+#[cfg(windows)]
+mod cleanup {
+    //! The lock's path for a console handler: Ctrl+C, Ctrl+Break and a closed window delete
+    //! it, then let the next handler (the default one ends the process) run.
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+    use windows_sys::core::BOOL;
+    use windows_sys::Win32::System::Console::SetConsoleCtrlHandler;
+
+    static PATH: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+    unsafe extern "system" fn on_event(_event: u32) -> BOOL {
+        if let Ok(mut p) = PATH.try_lock() {
+            if let Some(p) = p.take() {
+                let _ = std::fs::remove_file(p);
+            }
+        }
+        0
+    }
+
+    pub fn arm(path: &Path) {
+        *PATH.lock().unwrap_or_else(|e| e.into_inner()) = Some(path.to_path_buf());
+        // SAFETY: registers a handler that only touches `PATH` and the file system.
+        unsafe { SetConsoleCtrlHandler(Some(on_event), 1) };
+    }
+
+    pub fn disarm() {
+        // SAFETY: removes the handler `arm` registered.
+        unsafe { SetConsoleCtrlHandler(Some(on_event), 0) };
+        PATH.lock().unwrap_or_else(|e| e.into_inner()).take();
     }
 }
 
@@ -95,7 +231,7 @@ pub fn lock(shims: &Path, wait: Wait) -> Result<Lock, RehashError> {
             .create_new(true)
             .open(&path)
         {
-            Ok(_) => return Ok(Lock { path }),
+            Ok(_) => return Ok(Lock::new(path)),
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
                 if is_stale(&path) {
                     let _ = fs::remove_file(&path);
@@ -221,8 +357,13 @@ fn check_outcome(ctx: &Ctx, shim_exe: &Path) -> Result<bool, RehashError> {
 
 /// `pyenv rehash`: brings `shims` in line with the installed versions.
 pub fn rehash(ctx: &Ctx, shim_exe: &Path, wait: Wait) -> Result<RehashStats, RehashError> {
-    let _lock = lock(&ctx.shims_dir(), wait)?;
-    rehash_locked(ctx, shim_exe, Caller::Command)
+    #[allow(unused_mut)]
+    let mut lock = lock(&ctx.shims_dir(), wait)?;
+    #[cfg(windows)]
+    lock.arm_ctrl();
+    let stats = rehash_locked(ctx, shim_exe, Caller::Command);
+    drop(lock);
+    stats
 }
 
 /// The rehash itself, for a caller that holds the lock.
@@ -231,6 +372,15 @@ pub fn rehash_locked(
     shim_exe: &Path,
     caller: Caller,
 ) -> Result<RehashStats, RehashError> {
+    // Test hook (debug builds only): hold the lock this long, so tests can interrupt a
+    // rehash that is mid-way (plan M5b, R4).
+    #[cfg(debug_assertions)]
+    if let Some(ms) = std::env::var("RPYENV_TEST_HOLD_REHASH_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+    {
+        std::thread::sleep(Duration::from_millis(ms));
+    }
     let shims = ctx.shims_dir();
     // Taken before scanning: a change during the scan makes the next check rehash again.
     let state = snapshot(ctx);
