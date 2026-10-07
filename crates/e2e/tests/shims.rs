@@ -663,7 +663,7 @@ fn live_watcher_is_detached() {
     let pid: u32 = text
         .split_whitespace()
         .filter_map(|w| w.strip_prefix("pid="))
-        .last()
+        .next_back()
         .and_then(|p| p.parse().ok())
         .expect("watcher pid");
     for fd in 0..3 {
