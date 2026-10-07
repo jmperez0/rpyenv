@@ -726,3 +726,38 @@ fn wait_log(log: &std::path::Path, needle: &str) -> String {
         std::thread::sleep(Duration::from_millis(20));
     }
 }
+
+/// Final review I1: a command that handles Ctrl+C itself (uninstall finishes what it
+/// started, then exits 130) keeps its lock through the interrupt: the lock's cleanup must
+/// not end the process, nor remove a lock that is still in use.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_command_that_handles_ctrl_c_keeps_its_lock_until_done() {
+    use std::os::unix::process::ExitStatusExt;
+    let f = Fixture::new();
+    f.install("3.12.10/bin/python");
+    f.install("3.11.9/bin/python");
+    f.rehash();
+    let lock = f.root.join("shims").join(".rehash.lock");
+    let mut child = f
+        .command(
+            &built("pyenv"),
+            &[("RPYENV_TEST_HOLD_REHASH_MS", v("3000"))],
+        )
+        .args(["uninstall", "-f", "3.11.9"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    wait_until_exists(&lock);
+    // SAFETY: sends a signal to the child this test started.
+    unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGINT) };
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(
+        lock.exists(),
+        "the lock was removed while the rehash still ran"
+    );
+    let status = child.wait().unwrap();
+    assert_eq!(status.signal(), None, "ended by a signal: {status:?}");
+    assert!(!lock.exists());
+}
