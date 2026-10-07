@@ -178,11 +178,6 @@ impl Drop for KillOnDrop {
     }
 }
 
-/// Review focus 2. The shim gets a windowless console of its own and a process group, the
-/// child shares both, and a helper sends Ctrl+Break to the group. The child catches it and
-/// exits 5 at once (its sleep, up to 30 s, only bounds how long the break may take to
-/// arrive under load). A shim that didn't ignore the event would die at once with
-/// 0xC000013A.
 /// Spec §8 point 3: with `RPYENV_LIVE_REHASH=1`, a script installed while the program runs
 /// gets its shim before the program exits.
 #[test]
@@ -353,6 +348,11 @@ fn win_an_interrupted_rehash_removes_its_lock() {
     assert!(!lock.exists(), "Ctrl+Break left the lock behind");
 }
 
+/// Review focus 2. The shim gets a windowless console of its own and a process group, the
+/// child shares both, and a helper sends Ctrl+Break to the group. The child catches it and
+/// exits 5 at once (its sleep, up to 30 s, only bounds how long the break may take to
+/// arrive under load). A shim that didn't ignore the event would die at once with
+/// 0xC000013A.
 #[test]
 fn win_ctrl_break_reaches_the_child_and_the_shim_waits() {
     let f = Fixture::new();

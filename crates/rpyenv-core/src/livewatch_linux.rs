@@ -15,9 +15,15 @@ use std::path::Path;
 use std::time::Instant;
 
 /// Forks the watcher. Every failure skips it silently (spec §8).
-pub fn spawn(ctx: &Ctx, shim_exe: &Path) {
-    // SAFETY: getpid and fork have no preconditions. The shim runs no other threads here,
-    // so the forked processes may run ordinary Rust code.
+///
+/// # Safety
+///
+/// This process must run no other threads: the forked processes run ordinary Rust code
+/// (allocation, file system), which a lock held by another thread at the fork would
+/// deadlock.
+pub(crate) unsafe fn spawn(ctx: &Ctx, shim_exe: &Path) {
+    // SAFETY: getpid and fork have no preconditions; the caller vouches for a
+    // single-threaded process.
     let shim = unsafe { libc::getpid() };
     let first = unsafe { libc::fork() };
     if first < 0 {
@@ -47,9 +53,12 @@ fn watcher(ctx: &Ctx, shim_exe: &Path, pidfd: libc::c_int) -> ! {
             libc::close(pidfd);
         }
         let null = libc::open(c"/dev/null".as_ptr(), libc::O_RDWR);
-        if null >= 0 {
-            for fd in 0..3 {
+        for fd in 0..3 {
+            // Without /dev/null, close them: never keep the caller's pipes open.
+            if null >= 0 {
                 libc::dup2(null, fd);
+            } else {
+                libc::close(fd);
             }
         }
         close_from(4);
@@ -149,8 +158,10 @@ fn run(ctx: &Ctx, shim_exe: &Path, pidfd: libc::c_int) {
     rehash::check(ctx, shim_exe);
 }
 
-/// Watches every stored-state folder (re-adding a watched one only refreshes it). Folders
-/// that can't be watched (gone, or the inotify limit) are skipped.
+/// Watches every stored-state folder, and the folder that holds each one, so a `bin` or
+/// `envs` created later is noticed too (final review minor 7). Re-adding a watched folder
+/// only refreshes it; folders that can't be watched (gone, or the inotify limit) are
+/// skipped.
 fn watch_all(ino: libc::c_int, ctx: &Ctx) {
     let mask = libc::IN_CREATE
         | libc::IN_DELETE
@@ -158,7 +169,16 @@ fn watch_all(ino: libc::c_int, ctx: &Ctx) {
         | libc::IN_MOVED_TO
         | libc::IN_ATTRIB
         | libc::IN_ONLYDIR;
-    for d in rehash::state_dirs(ctx) {
+    let mut dirs = rehash::state_dirs(ctx);
+    let parents: Vec<_> = dirs
+        .iter()
+        .filter_map(|d| d.parent().map(Path::to_path_buf))
+        .filter(|p| p.starts_with(ctx.versions_dir()))
+        .collect();
+    dirs.extend(parents);
+    dirs.sort();
+    dirs.dedup();
+    for d in dirs {
         if let Ok(c) = CString::new(d.as_os_str().as_bytes()) {
             // SAFETY: a NUL-terminated path; failures are ignored.
             unsafe { libc::inotify_add_watch(ino, c.as_ptr(), mask) };

@@ -166,6 +166,12 @@ mod cleanup {
         // Only a signal that would end the process gets the handler: one the caller ignored
         // (`nohup`) or one this process handles (Ctrl+C in `uninstall`, final review I1)
         // doesn't end it, and the lock's `Drop` removes the lock in time.
+        let mut old = OLD.lock().unwrap_or_else(|e| e.into_inner());
+        if old.is_some() {
+            // Already armed (two locks at once, as parallel tests take them): the handler
+            // is in place, and saving it as "the old one" would keep it there for good.
+            return;
+        }
         // SAFETY: reads and sets dispositions with zeroed, then filled, sigaction values.
         unsafe {
             let mut replaced: [Option<libc::sigaction>; 3] = [None, None, None];
@@ -178,10 +184,15 @@ mod cleanup {
                 replaced[i] = Some(old);
                 let mut act: libc::sigaction = std::mem::zeroed();
                 act.sa_sigaction = on_signal as extern "C" fn(libc::c_int) as libc::sighandler_t;
+                // The other two wait while the handler runs, so a second signal can't end
+                // the process between taking the path and unlinking it.
                 libc::sigemptyset(&mut act.sa_mask);
+                for other in SIGNALS {
+                    libc::sigaddset(&mut act.sa_mask, other);
+                }
                 libc::sigaction(s, &act, std::ptr::null_mut());
             }
-            *OLD.lock().unwrap_or_else(|e| e.into_inner()) = Some(replaced);
+            *old = Some(replaced);
         }
     }
 
@@ -279,17 +290,23 @@ pub fn lock(shims: &Path, wait: Wait) -> Result<Lock, RehashError> {
     let path = shims.join(LOCK_NAME);
     let start = Instant::now();
     loop {
-        // From creating the file until its handler is armed, the cleanup signals wait: one
-        // that came in between would otherwise end the process and leave the lock.
-        #[cfg(unix)]
-        let _held = cleanup::Held::new();
-        match fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-        {
-            Ok(_) => return Ok(Lock::new(path)),
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+        let created = {
+            // From creating the file until its handler is armed, this thread holds the
+            // cleanup signals back: one that came in between would end the process and
+            // leave the lock. (Other threads of a multi-threaded caller aren't covered.)
+            #[cfg(unix)]
+            let _held = cleanup::Held::new();
+            match fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(_) => return Ok(Lock::new(path)),
+                Err(e) => e,
+            }
+        };
+        match created {
+            e if e.kind() == io::ErrorKind::AlreadyExists => {
                 if is_stale(&path) {
                     let _ = fs::remove_file(&path);
                     continue;
@@ -298,12 +315,12 @@ pub fn lock(shims: &Path, wait: Wait) -> Result<Lock, RehashError> {
             // Access denied with the name still taken is a lock its holder deleted while
             // another handle kept it open (Windows "delete pending"): busy, so wait. With
             // the name free, the folder isn't writable.
-            Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
+            e if e.kind() == io::ErrorKind::PermissionDenied => {
                 if fs::symlink_metadata(&path).is_err_and(|m| m.kind() == io::ErrorKind::NotFound) {
                     return Err(not_writable());
                 }
             }
-            Err(e) => return Err(RehashError::Io(e)),
+            e => return Err(RehashError::Io(e)),
         }
         match wait {
             Wait::No => return Err(RehashError::Busy),
