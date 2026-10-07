@@ -88,6 +88,8 @@ fn run(gui: bool) -> i32 {
             // A warning is non-fatal; it shouldn't force every GUI launch through an OK
             // click. It's still in the debug log, from `say` itself.
             let _ = say(false, flavor, &plan.warnings, true);
+            // Dropped after the program and the exit check (spec §8 point 3).
+            let _live = crate::livewatch::start(&ctx, rehash_with.as_deref());
             match launch::run(&plan, &ctx, rehash_with.as_deref()) {
                 Ok(code) => code,
                 Err(r) => fail(gui, flavor, &r.lines, r.stderr, r.code),

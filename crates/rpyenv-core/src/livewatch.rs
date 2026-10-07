@@ -51,7 +51,10 @@ impl Debounce {
 /// Keeps a Windows watcher thread running until it's dropped (after the program and the
 /// exit check). Nothing on Linux, where the watcher is a detached process.
 #[derive(Default)]
-pub struct Guard {}
+pub struct Guard {
+    #[cfg(windows)]
+    _running: Option<crate::livewatch_win::Running>,
+}
 
 /// Starts the watcher for this shim when `RPYENV_LIVE_REHASH=1` (spec §8 point 3). Any
 /// failure skips it silently; the exit check still runs.
@@ -66,8 +69,15 @@ pub fn start(ctx: &Ctx, shim_exe: Option<&Path>) -> Guard {
         }
         return Guard::default();
     }
-    let _ = ctx;
-    Guard::default()
+    #[cfg(windows)]
+    return Guard {
+        _running: crate::livewatch_win::spawn(ctx, _exe),
+    };
+    #[cfg(not(windows))]
+    {
+        let _ = ctx;
+        Guard::default()
+    }
 }
 
 #[cfg(test)]
