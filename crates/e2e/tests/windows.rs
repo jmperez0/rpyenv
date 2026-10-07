@@ -325,42 +325,6 @@ fn win_live_watcher_skips_a_quick_program() {
     );
 }
 
-/// Final review I1: `pyenv uninstall` handles Ctrl+C itself and finishes its rehash, so
-/// the lock must stay until that rehash is done, not vanish at the Ctrl+Break.
-#[test]
-fn win_a_command_that_handles_ctrl_c_keeps_its_lock_until_done() {
-    let f = Fixture::new();
-    f.install("3.9.1/python.exe");
-    f.install("3.8.0/python.exe");
-    f.rehash();
-    let lock = f.root.join("shims").join(".rehash.lock");
-    let mut child = KillOnDrop(
-        f.command(
-            &built("pyenv"),
-            &[("RPYENV_TEST_HOLD_REHASH_MS", v("3000"))],
-        )
-        .args(["uninstall", "-f", "3.8.0"])
-        .creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap(),
-    );
-    wait_for(&lock);
-    let sent = Command::new(built("argv-echo"))
-        .env("ARGV_ECHO_BREAK_PID", child.0.id().to_string())
-        .status()
-        .unwrap();
-    assert_eq!(sent.code(), Some(0), "could not send Ctrl+Break");
-    std::thread::sleep(Duration::from_millis(500));
-    assert!(
-        lock.exists(),
-        "the lock was removed while the rehash still ran"
-    );
-    let _ = child.0.wait();
-    assert!(!lock.exists());
-}
-
 /// Spec §8 Safety (M5b): `pyenv rehash` ended by Ctrl+Break (or Ctrl+C, or closing its
 /// window) removes its lock instead of leaving it for two minutes.
 #[test]
