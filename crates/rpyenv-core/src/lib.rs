@@ -12,6 +12,8 @@ pub mod junction;
 pub mod latest;
 pub mod launch;
 pub mod livewatch;
+#[cfg(target_os = "linux")]
+pub mod livewatch_linux;
 #[cfg(windows)]
 pub mod livewatch_win;
 pub mod lookup;

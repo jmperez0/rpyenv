@@ -69,6 +69,8 @@ pub fn start(ctx: &Ctx, shim_exe: Option<&Path>) -> Guard {
         }
         return Guard::default();
     }
+    #[cfg(target_os = "linux")]
+    crate::livewatch_linux::spawn(ctx, _exe);
     #[cfg(windows)]
     return Guard {
         _running: crate::livewatch_win::spawn(ctx, _exe),
