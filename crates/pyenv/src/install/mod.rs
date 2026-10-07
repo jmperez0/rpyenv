@@ -72,9 +72,12 @@ static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 pub fn watch_interrupt() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        let _ = ctrlc::set_handler(|| INTERRUPTED.store(true, Ordering::SeqCst));
-        // A rehash in this process then survives Ctrl+C and releases its lock itself.
-        rpyenv_core::rehash::note_interrupt_handler();
+        let set = ctrlc::set_handler(|| INTERRUPTED.store(true, Ordering::SeqCst));
+        // A rehash in this process then survives Ctrl+C and releases its lock itself, when a
+        // handler is really in place (re-review minor 2).
+        if matches!(set, Ok(()) | Err(ctrlc::Error::MultipleHandlers)) {
+            rpyenv_core::rehash::note_interrupt_handler();
+        }
     });
 }
 

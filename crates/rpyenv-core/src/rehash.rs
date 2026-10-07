@@ -81,6 +81,15 @@ pub fn note_interrupt_handler() {
     INTERRUPT_HANDLED.store(true, std::sync::atomic::Ordering::SeqCst);
 }
 
+/// Whether a console event (Windows' `CTRL_*_EVENT` number) removes the lock: always,
+/// except Ctrl+C (0) and Ctrl+Break (1) in a process that handles Ctrl+C itself, which they
+/// don't end, so its rehash goes on with the lock. Close (2), log-off (5) and shutdown (6)
+/// end every process.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn removes_lock(event: u32, interrupt_handled: bool) -> bool {
+    !(interrupt_handled && (event == 0 || event == 1))
+}
+
 /// Held while a rehash runs. Dropping it removes the lock file, on failure too. An
 /// interruption removes it as well (plan M5b, R3): on Linux, SIGINT, SIGTERM or SIGHUP
 /// (unless ignored on entry); on Windows, Ctrl+C, Ctrl+Break or a closed window, for the
@@ -249,17 +258,15 @@ mod cleanup {
     use std::path::{Path, PathBuf};
     use std::sync::Mutex;
     use windows_sys::core::BOOL;
-    use windows_sys::Win32::System::Console::{
-        SetConsoleCtrlHandler, CTRL_BREAK_EVENT, CTRL_C_EVENT,
-    };
+    use windows_sys::Win32::System::Console::SetConsoleCtrlHandler;
 
     static PATH: Mutex<Option<PathBuf>> = Mutex::new(None);
 
-    pub(super) unsafe extern "system" fn on_event(event: u32) -> BOOL {
+    unsafe extern "system" fn on_event(event: u32) -> BOOL {
         // Ctrl+C and Ctrl+Break don't end a process that handles them (final review I1):
         // its rehash goes on, and the lock with it.
         let handled = super::INTERRUPT_HANDLED.load(std::sync::atomic::Ordering::SeqCst);
-        if handled && (event == CTRL_C_EVENT || event == CTRL_BREAK_EVENT) {
+        if !super::removes_lock(event, handled) {
             return 0;
         }
         if let Ok(mut p) = PATH.try_lock() {
@@ -804,38 +811,25 @@ mod tests {
     /// Final review I1 (Windows): in a process that handles Ctrl+C itself (`install`,
     /// `virtualenv`), Ctrl+C and Ctrl+Break leave the lock to its rehash, which goes on;
     /// closing the window, logging off and shutting down still remove it, as they end the
-    /// process regardless. Without such a handler, Ctrl+C removes it.
-    #[cfg(windows)]
+    /// process regardless. Without such a handler, every event removes it. Pure, so it
+    /// touches none of the process-wide state parallel tests share (re-review I1).
     #[test]
-    fn the_console_handler_spares_a_lock_whose_process_survives_ctrl_c() {
-        use windows_sys::Win32::System::Console::{
-            CTRL_BREAK_EVENT, CTRL_CLOSE_EVENT, CTRL_C_EVENT,
-        };
-        let tmp = tempfile::tempdir().unwrap();
-        let lock = tmp.path().join(LOCK_NAME);
-        fs::write(&lock, b"").unwrap();
-        cleanup::arm(&lock);
-        // SAFETY: calls the handler as Windows would, on this thread.
-        unsafe { cleanup::on_event(CTRL_C_EVENT) };
-        assert!(
-            !lock.exists(),
-            "without a Ctrl+C handler, Ctrl+C ends the process"
-        );
-        cleanup::disarm();
-
-        note_interrupt_handler();
-        fs::write(&lock, b"").unwrap();
-        cleanup::arm(&lock);
-        // SAFETY: as above.
-        unsafe {
-            cleanup::on_event(CTRL_C_EVENT);
-            cleanup::on_event(CTRL_BREAK_EVENT);
+    fn which_console_events_remove_the_lock() {
+        // CTRL_C, CTRL_BREAK, CTRL_CLOSE, CTRL_LOGOFF, CTRL_SHUTDOWN.
+        for event in [0, 1, 2, 5, 6] {
+            assert!(
+                removes_lock(event, false),
+                "event {event}, Ctrl+C not handled"
+            );
         }
-        assert!(lock.exists(), "Ctrl+C removed a lock still in use");
-        // SAFETY: as above.
-        unsafe { cleanup::on_event(CTRL_CLOSE_EVENT) };
-        assert!(!lock.exists(), "a closed window ends the process anyway");
-        cleanup::disarm();
+        assert!(!removes_lock(0, true));
+        assert!(!removes_lock(1, true));
+        for event in [2, 5, 6] {
+            assert!(
+                removes_lock(event, true),
+                "event {event} ends the process anyway"
+            );
+        }
     }
 
     #[test]
