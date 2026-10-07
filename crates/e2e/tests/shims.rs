@@ -761,3 +761,51 @@ fn a_command_that_handles_ctrl_c_keeps_its_lock_until_done() {
     assert_eq!(status.signal(), None, "ended by a signal: {status:?}");
     assert!(!lock.exists());
 }
+
+/// Final review minor 7: a version folder created while the program runs, whose `bin`
+/// comes later (as an install fills it), still gets its scripts' shims: the watcher also
+/// watches the folders that hold the watched ones.
+#[cfg(target_os = "linux")]
+#[test]
+fn live_watcher_sees_a_bin_folder_created_after_its_version() {
+    let f = Fixture::new();
+    f.install("3.12.10/bin/python");
+    f.rehash();
+    let log = f.base.join("debug.log");
+    let ready = f.base.join("ready");
+    let mut child = f
+        .shim_command(
+            "python",
+            &[
+                ("PYENV_VERSION", v("3.12.10")),
+                ("RPYENV_DEBUG_LOG", log.as_os_str()),
+                ("RPYENV_LIVE_REHASH", v("1")),
+                ("ARGV_ECHO_READY", ready.as_os_str()),
+                ("ARGV_ECHO_SLEEP_MS", v("10000")),
+            ],
+        )
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    wait_until_exists(&ready);
+    wait_log(&log, "live=watching");
+    // The version folder first; its check runs and finds no bin yet.
+    std::fs::create_dir_all(f.root.join("versions/3.13.0")).unwrap();
+    wait_log(&log, "live=check");
+    std::thread::sleep(Duration::from_millis(300));
+    f.install("3.13.0/bin/ruff");
+    let start = Instant::now();
+    while !f.shim("ruff").exists() {
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "the program ended first"
+        );
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "no shim for a script in a bin created after its version"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
