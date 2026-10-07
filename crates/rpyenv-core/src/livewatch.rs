@@ -57,7 +57,8 @@ pub struct Guard {
 }
 
 /// Starts the watcher for this shim when `RPYENV_LIVE_REHASH=1` (spec §8 point 3). Any
-/// failure skips it silently; the exit check still runs.
+/// failure skips it silently; the exit check still runs. On Linux it forks, so the shim
+/// must call it while it runs no other threads (it does: before `launch::run`).
 pub fn start(ctx: &Ctx, shim_exe: Option<&Path>) -> Guard {
     let setting = std::env::var("RPYENV_LIVE_REHASH").ok();
     let Some(_exe) = shim_exe else {
@@ -70,7 +71,10 @@ pub fn start(ctx: &Ctx, shim_exe: Option<&Path>) -> Guard {
         return Guard::default();
     }
     #[cfg(target_os = "linux")]
-    crate::livewatch_linux::spawn(ctx, _exe);
+    // SAFETY: the shim runs no other threads here (its only threads are Windows-only).
+    unsafe {
+        crate::livewatch_linux::spawn(ctx, _exe)
+    };
     #[cfg(windows)]
     return Guard {
         _running: crate::livewatch_win::spawn(ctx, _exe),

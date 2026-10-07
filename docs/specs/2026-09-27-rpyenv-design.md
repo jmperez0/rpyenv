@@ -401,7 +401,10 @@ instructions, as upstream does.
      new versions and envs are watched too. If the watcher can't start (for
      example, the inotify limit is reached, or `pidfd_open` is missing before
      Linux 5.3), it is skipped silently; the exit check still runs. The watcher
-     runs in shims only, not in `pyenv exec`.
+     runs in shims only, not in `pyenv exec`. On Linux each watched program uses
+     one inotify instance while it runs; many long-running programs started
+     through shims (language servers, kernels) count against
+     `fs.inotify.max_user_instances` (128 by default on Debian).
    - The MSI shows an "Enable live rehash" checkbox, which sets the variable
      for the user. On Linux you set it in your shell profile.
 

@@ -51,7 +51,14 @@ pub fn spawn(ctx: &Ctx, shim_exe: &Path) -> Option<Running> {
         return None;
     }
     let (ctx, exe, stop_id) = (ctx.clone(), shim_exe.to_path_buf(), stop as usize);
-    let thread = std::thread::spawn(move || watch(&ctx, &exe, stop_id as HANDLE));
+    let Ok(thread) =
+        std::thread::Builder::new().spawn(move || watch(&ctx, &exe, stop_id as HANDLE))
+    else {
+        // No thread: skipped silently (spec §8).
+        // SAFETY: the event created above, unused, closed once.
+        unsafe { CloseHandle(stop) };
+        return None;
+    };
     Some(Running {
         stop: stop as usize,
         thread: Some(thread),
