@@ -183,6 +183,34 @@ impl Drop for KillOnDrop {
 /// exits 5 at once (its sleep, up to 30 s, only bounds how long the break may take to
 /// arrive under load). A shim that didn't ignore the event would die at once with
 /// 0xC000013A.
+/// Spec §8 Safety (M5b): `pyenv rehash` ended by Ctrl+Break (or Ctrl+C, or closing its
+/// window) removes its lock instead of leaving it for two minutes.
+#[test]
+fn win_an_interrupted_rehash_removes_its_lock() {
+    let f = Fixture::new();
+    f.install("3.9.1/python.exe");
+    let lock = f.root.join("shims").join(".rehash.lock");
+    let mut child = KillOnDrop(
+        f.command(
+            &built("pyenv"),
+            &[("RPYENV_TEST_HOLD_REHASH_MS", v("20000"))],
+        )
+        .arg("rehash")
+        .creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW)
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap(),
+    );
+    wait_for(&lock);
+    let sent = Command::new(built("argv-echo"))
+        .env("ARGV_ECHO_BREAK_PID", child.0.id().to_string())
+        .status()
+        .unwrap();
+    assert_eq!(sent.code(), Some(0), "could not send Ctrl+Break");
+    let _ = child.0.wait();
+    assert!(!lock.exists(), "Ctrl+Break left the lock behind");
+}
+
 #[test]
 fn win_ctrl_break_reaches_the_child_and_the_shim_waits() {
     let f = Fixture::new();

@@ -1700,6 +1700,7 @@ dependencies = [
 name = "rpyenv-e2e"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "rpyenv-core",
  "tempfile",
  "windows-sys 0.61.2",
