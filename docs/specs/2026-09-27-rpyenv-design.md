@@ -374,8 +374,10 @@ instructions, as upstream does.
    - Covers long-running processes that install packages, such as Jupyter's
      `%pip install`.
    - Windows: a thread in the shim, started only if the child is still running
-     after about 1 s. It uses `ReadDirectoryChangesW`, with directory handles
-     opened with share-delete so they never block `pyenv uninstall`.
+     after about 1 s. It watches the whole `versions` tree with
+     `ReadDirectoryChangesW` through one handle on `versions`, opened with
+     share-delete. No version folder is held open, so renaming or uninstalling a
+     version always works.
    - Linux: the shim forks, the child forks the watcher and exits
      immediately, and the shim reaps that child and then runs `execv`. The
      watcher is handed to init (or the nearest subreaper process) and waits
@@ -394,9 +396,12 @@ instructions, as upstream does.
      - **Skipped when the shim is PID 1** (a container without an init
        process): orphaned processes are handed back to PID 1, which would be
        the program itself.
-   - Both: once changes stop for about 0.5 s, one rehash runs. If the watcher
-     can't start (for example, the inotify limit is reached), it is skipped
-     silently; the exit check still runs.
+   - Both: once changes stop for about 0.5 s, the stored-state check runs (the
+     same check as at exit), and on Linux the watched folders are re-derived, so
+     new versions and envs are watched too. If the watcher can't start (for
+     example, the inotify limit is reached, or `pidfd_open` is missing before
+     Linux 5.3), it is skipped silently; the exit check still runs. The watcher
+     runs in shims only, not in `pyenv exec`.
    - The MSI shows an "Enable live rehash" checkbox, which sets the variable
      for the user. On Linux you set it in your shell profile.
 
@@ -404,6 +409,15 @@ instructions, as upstream does.
 
 - A lock file makes sure only one rehash runs at a time. A shim that can't
   get the lock skips; the next check will catch up.
+- An interrupted rehash removes its lock instead of leaving it for two
+  minutes:
+  - on Linux, SIGINT, SIGTERM and SIGHUP, except a signal the caller ignored
+    (`nohup`);
+  - on Windows, Ctrl+C, Ctrl+Break and a closed window, for `pyenv rehash` and
+    the commands that run it. A shim's own rehash ignores those events, as the
+    shim does.
+
+  A lock older than two minutes is still broken.
 - Only differences are applied: missing shims are added, stale ones removed.
 - A stale shim that is running can't be deleted on Windows, so it is renamed
   to `*.old` and deleted by a later rehash.
