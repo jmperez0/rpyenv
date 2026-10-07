@@ -3,6 +3,7 @@
 //! `argv0=`, one `arg=` per argument, `cwd=`, `env NAME=` (or `env NAME unset`) for each
 //! name in `ARGV_ECHO_ENV` (comma-separated), and `stdin=` when `ARGV_ECHO_STDIN=1`.
 //! `sigign=` (the `SigIgn` mask from `/proc/self/status`, hex) when `ARGV_ECHO_SIGIGN=1`, on Linux.
+//! `children=<n>` (how many child processes it has) when `ARGV_ECHO_CHILDREN=1`, on Linux.
 //! Then `ARGV_ECHO_TOUCH=<path>` creates that file (runnable), as `pip install` creates a
 //! script; `ARGV_ECHO_SLEEP_MS` waits, after which `ARGV_ECHO_AFTER=<path>` creates that
 //! file, so a test can tell whether the process was still running past the sleep;

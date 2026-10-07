@@ -561,6 +561,18 @@ pub fn main() {
             }
         }
     }
+    #[cfg(target_os = "linux")]
+    if var("ARGV_ECHO_CHILDREN").as_deref() == Some("1") {
+        let mut n = 0;
+        if let Ok(tasks) = std::fs::read_dir("/proc/self/task") {
+            for t in tasks.flatten() {
+                n += std::fs::read_to_string(t.path().join("children"))
+                    .map(|s| s.split_whitespace().count())
+                    .unwrap_or(0);
+            }
+        }
+        out.push_str(&format!("children={n}\n"));
+    }
     if let Some(p) = std::env::var_os("ARGV_ECHO_TOUCH") {
         let _ = std::fs::write(&p, b"");
         #[cfg(unix)]

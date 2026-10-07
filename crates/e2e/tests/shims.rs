@@ -571,3 +571,158 @@ fn rehash_keeps_an_ignored_sighup() {
     assert!(f.shim("python").exists());
     assert!(!lock.exists());
 }
+
+/// Spec §8 point 3 on Linux: a script installed while the program runs gets its shim
+/// before the program exits.
+#[cfg(target_os = "linux")]
+#[test]
+fn live_watcher_makes_a_new_scripts_shim_while_the_program_runs() {
+    let f = Fixture::new();
+    f.install("3.12.10/bin/python");
+    f.rehash();
+    let log = f.base.join("debug.log");
+    let ready = f.base.join("ready");
+    let mut child = f
+        .shim_command(
+            "python",
+            &[
+                ("PYENV_VERSION", v("3.12.10")),
+                ("RPYENV_DEBUG_LOG", log.as_os_str()),
+                ("RPYENV_LIVE_REHASH", v("1")),
+                ("ARGV_ECHO_READY", ready.as_os_str()),
+                ("ARGV_ECHO_SLEEP_MS", v("8000")),
+            ],
+        )
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    wait_until_exists(&ready);
+    wait_log(&log, "live=watching");
+    f.install("3.12.10/bin/black");
+    let start = Instant::now();
+    while !f.shim("black").exists() {
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "the program ended first"
+        );
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "no shim while the program ran"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// Review focus 4: the watcher isn't the program's child (spec §8: "Why two forks").
+#[cfg(target_os = "linux")]
+#[test]
+fn live_watcher_is_not_a_child_of_the_program() {
+    let f = Fixture::new();
+    f.install("3.12.10/bin/python");
+    f.rehash();
+    let out = f.run_shim(
+        "python",
+        &[],
+        &[
+            ("PYENV_VERSION", v("3.12.10")),
+            ("RPYENV_LIVE_REHASH", v("1")),
+            ("ARGV_ECHO_CHILDREN", v("1")),
+        ],
+    );
+    assert!(stdout(&out).contains("children=0\n"), "{}", stdout(&out));
+}
+
+/// Review focus 1: the watcher holds none of the caller's descriptors (its stdin, stdout and
+/// stderr are /dev/null) and is in a session of its own.
+#[cfg(target_os = "linux")]
+#[test]
+fn live_watcher_is_detached() {
+    let f = Fixture::new();
+    f.install("3.12.10/bin/python");
+    f.rehash();
+    let log = f.base.join("debug.log");
+    let ready = f.base.join("ready");
+    let mut child = f
+        .shim_command(
+            "python",
+            &[
+                ("PYENV_VERSION", v("3.12.10")),
+                ("RPYENV_DEBUG_LOG", log.as_os_str()),
+                ("RPYENV_LIVE_REHASH", v("1")),
+                ("ARGV_ECHO_READY", ready.as_os_str()),
+                ("ARGV_ECHO_SLEEP_MS", v("6000")),
+            ],
+        )
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    wait_until_exists(&ready);
+    let text = wait_log(&log, "live=watching");
+    let pid: u32 = text
+        .split_whitespace()
+        .filter_map(|w| w.strip_prefix("pid="))
+        .last()
+        .and_then(|p| p.parse().ok())
+        .expect("watcher pid");
+    for fd in 0..3 {
+        let target = std::fs::read_link(format!("/proc/{pid}/fd/{fd}")).unwrap();
+        assert_eq!(target, std::path::Path::new("/dev/null"), "fd {fd}");
+    }
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+    let fields: Vec<&str> = stat
+        .rsplit(')')
+        .next()
+        .unwrap()
+        .split_whitespace()
+        .collect();
+    assert_eq!(fields[3], pid.to_string(), "session id (setsid)");
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// Review focus 5: watching starts only for a program still running after the start delay.
+#[cfg(target_os = "linux")]
+#[test]
+fn live_watcher_skips_a_quick_program() {
+    let f = Fixture::new();
+    f.install("3.12.10/bin/python");
+    f.rehash();
+    let log = f.base.join("debug.log");
+    let start = Instant::now();
+    let out = f.run_shim(
+        "python",
+        &[],
+        &[
+            ("PYENV_VERSION", v("3.12.10")),
+            ("RPYENV_DEBUG_LOG", log.as_os_str()),
+            ("RPYENV_LIVE_REHASH", v("1")),
+        ],
+    );
+    let took = start.elapsed();
+    assert!(out.status.success());
+    std::thread::sleep(Duration::from_millis(1500));
+    let text = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(
+        !text.contains("live=watching") || took >= Duration::from_secs(1),
+        "watched a program that took {took:?}:\n{text}"
+    );
+}
+
+/// Polls the debug log until it contains `needle` (20 s at most); returns the log.
+#[cfg(unix)]
+fn wait_log(log: &std::path::Path, needle: &str) -> String {
+    let start = Instant::now();
+    loop {
+        let text = std::fs::read_to_string(log).unwrap_or_default();
+        if text.contains(needle) {
+            return text;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(20),
+            "no {needle:?} in:\n{text}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
