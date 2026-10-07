@@ -244,7 +244,7 @@ mod cleanup {
 
     static PATH: Mutex<Option<PathBuf>> = Mutex::new(None);
 
-    unsafe extern "system" fn on_event(event: u32) -> BOOL {
+    pub(super) unsafe extern "system" fn on_event(event: u32) -> BOOL {
         // Ctrl+C and Ctrl+Break don't end a process that handles them (final review I1):
         // its rehash goes on, and the lock with it.
         let handled = super::INTERRUPT_HANDLED.load(std::sync::atomic::Ordering::SeqCst);
@@ -782,6 +782,43 @@ mod tests {
         let shim = tmp.path().join("pyenv-shim");
         fs::write(&shim, b"shim binary").unwrap();
         (tmp, ctx, shim)
+    }
+
+    /// Final review I1 (Windows): in a process that handles Ctrl+C itself (`install`,
+    /// `virtualenv`), Ctrl+C and Ctrl+Break leave the lock to its rehash, which goes on;
+    /// closing the window, logging off and shutting down still remove it, as they end the
+    /// process regardless. Without such a handler, Ctrl+C removes it.
+    #[cfg(windows)]
+    #[test]
+    fn the_console_handler_spares_a_lock_whose_process_survives_ctrl_c() {
+        use windows_sys::Win32::System::Console::{
+            CTRL_BREAK_EVENT, CTRL_CLOSE_EVENT, CTRL_C_EVENT,
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let lock = tmp.path().join(LOCK_NAME);
+        fs::write(&lock, b"").unwrap();
+        cleanup::arm(&lock);
+        // SAFETY: calls the handler as Windows would, on this thread.
+        unsafe { cleanup::on_event(CTRL_C_EVENT) };
+        assert!(
+            !lock.exists(),
+            "without a Ctrl+C handler, Ctrl+C ends the process"
+        );
+        cleanup::disarm();
+
+        note_interrupt_handler();
+        fs::write(&lock, b"").unwrap();
+        cleanup::arm(&lock);
+        // SAFETY: as above.
+        unsafe {
+            cleanup::on_event(CTRL_C_EVENT);
+            cleanup::on_event(CTRL_BREAK_EVENT);
+        }
+        assert!(lock.exists(), "Ctrl+C removed a lock still in use");
+        // SAFETY: as above.
+        unsafe { cleanup::on_event(CTRL_CLOSE_EVENT) };
+        assert!(!lock.exists(), "a closed window ends the process anyway");
+        cleanup::disarm();
     }
 
     #[test]
