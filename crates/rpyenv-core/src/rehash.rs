@@ -169,6 +169,35 @@ mod cleanup {
         }
     }
 
+    /// Holds SIGINT, SIGTERM and SIGHUP for this thread until dropped; one that arrives
+    /// meanwhile is delivered then.
+    pub struct Held {
+        old: libc::sigset_t,
+    }
+
+    impl Held {
+        pub fn new() -> Held {
+            // SAFETY: builds a signal set and blocks it for this thread, keeping the old mask.
+            unsafe {
+                let mut set: libc::sigset_t = std::mem::zeroed();
+                libc::sigemptyset(&mut set);
+                for s in SIGNALS {
+                    libc::sigaddset(&mut set, s);
+                }
+                let mut old: libc::sigset_t = std::mem::zeroed();
+                libc::pthread_sigmask(libc::SIG_BLOCK, &set, &mut old);
+                Held { old }
+            }
+        }
+    }
+
+    impl Drop for Held {
+        fn drop(&mut self) {
+            // SAFETY: restores this thread's mask as it was before `new`.
+            unsafe { libc::pthread_sigmask(libc::SIG_SETMASK, &self.old, std::ptr::null_mut()) };
+        }
+    }
+
     pub fn disarm() {
         if let Some(old) = OLD.lock().unwrap_or_else(|e| e.into_inner()).take() {
             for (i, &s) in SIGNALS.iter().enumerate() {
@@ -226,6 +255,10 @@ pub fn lock(shims: &Path, wait: Wait) -> Result<Lock, RehashError> {
     let path = shims.join(LOCK_NAME);
     let start = Instant::now();
     loop {
+        // From creating the file until its handler is armed, the cleanup signals wait: one
+        // that came in between would otherwise end the process and leave the lock.
+        #[cfg(unix)]
+        let _held = cleanup::Held::new();
         match fs::OpenOptions::new()
             .write(true)
             .create_new(true)
