@@ -298,8 +298,9 @@ fn is_stale(lock: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// The watched folders' modification times and entry counts, one line each.
-pub fn snapshot(ctx: &Ctx) -> String {
+/// The folders whose times and entry counts the stored state records (spec §8): the ones
+/// a new or removed script changes.
+pub fn state_dirs(ctx: &Ctx) -> Vec<PathBuf> {
     let vdir = ctx.versions_dir();
     let mut dirs = vec![vdir.clone()];
     for entry in installed::top_level(&vdir, ctx.flavor) {
@@ -320,8 +321,14 @@ pub fn snapshot(ctx: &Ctx) -> String {
             }
         }
     }
+    dirs
+}
+
+/// The watched folders' modification times and entry counts, one line each.
+pub fn snapshot(ctx: &Ctx) -> String {
+    let vdir = ctx.versions_dir();
     let mut s = String::from("rpyenv rehash state 2\n");
-    for d in dirs {
+    for d in state_dirs(ctx) {
         let Ok(meta) = fs::metadata(&d) else {
             continue;
         };
@@ -751,6 +758,16 @@ mod tests {
         let shim = tmp.path().join("pyenv-shim");
         fs::write(&shim, b"shim binary").unwrap();
         (tmp, ctx, shim)
+    }
+
+    #[test]
+    fn state_dirs_are_the_folders_the_snapshot_records() {
+        let (_tmp, ctx, _) = setup(Flavor::Pyenv);
+        fs::create_dir_all(ctx.versions_dir().join("3.12.1").join("bin")).unwrap();
+        let dirs = state_dirs(&ctx);
+        assert_eq!(dirs[0], ctx.versions_dir());
+        assert!(dirs.contains(&ctx.versions_dir().join("3.12.1").join("bin")));
+        assert!(snapshot(&ctx).contains("3.12.1/bin"));
     }
 
     #[test]
