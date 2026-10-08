@@ -22,6 +22,11 @@
 - **User decisions (2026-10-08):**
   1. M6 is split: **M6a** is these commands (this plan); **M6b** is the MSI, the Linux tarball and install script, the release workflow, and code signing.
   2. `migrate` **links pyenv-win-venv envs in** with junctions, and `--restore` removes them.
+- **A linked pyenv-win-venv env is deleted as a link, never as files** (side-agent note, 2026-10-08):
+  - `pyenv uninstall <base>`, `pyenv virtualenv-delete <name>` and `--restore` remove only the junctions;
+  - the env's files stay in `.pyenv-win-venv\envs`, which pyenv-win-venv still owns.
+
+  M4b's `remove_target` already removes a linked env with `remove_dir`. Tasks 5's tests pin it for uninstall and `virtualenv-delete`.
 - **Spec §9.4 `setup`:**
   - creates `PYENV_ROOT`;
   - puts `shims` at the front of the user `PATH`;
@@ -1085,6 +1090,24 @@ fn uninstalling_the_base_keeps_a_linked_venv_env() {
     assert_eq!(r.code, 0, "{}{}", r.stdout, r.stderr);
     assert!(env.join("pyvenv.cfg").is_file(), "the env's files stay");
 }
+
+/// Global Constraints (side-agent note): `virtualenv-delete` of a linked pyenv-win-venv env
+/// removes the links, never the env's files.
+#[test]
+fn virtualenv_delete_keeps_a_linked_venv_envs_files() {
+    let f = Fixture::new();
+    pyenv_win(&f);
+    let env = f.base.join(".pyenv-win-venv").join("envs").join("work");
+    std::fs::create_dir_all(env.join("Scripts")).unwrap();
+    std::fs::write(env.join("pyvenv.cfg"), format!("home = {}\r\n", f.root.join("versions").join("3.12.1").display())).unwrap();
+    assert_eq!(f.pyenv(&["migrate"]).code, 0);
+    let r = f.pyenv(&["virtualenv-delete", "-f", "work"]);
+    assert_eq!(r.code, 0, "{}{}", r.stdout, r.stderr);
+    assert!(!f.root.join("versions").join("work").exists(), "the link is gone");
+    assert!(env.join("pyvenv.cfg").is_file(), "the env's files stay");
+    // --restore copes with links that are already gone.
+    assert_eq!(f.pyenv(&["migrate", "--restore"]).code, 0);
+}
 ```
 
 - [ ] **Step 2: Run them to verify they fail:** unknown command `migrate`.
@@ -1301,7 +1324,7 @@ Note for `restore_touches_only_what_migrate_did`: the backup keeps the old file 
 - [ ] **Step 4: Run them to verify they pass**
 
 Run: `cargo build --workspace`, then `cargo test -p pyenv --test cli_migrate_win`.
-Expected: 5 passed. If `uninstalling_the_base_keeps_a_linked_venv_env` fails, the M4b uninstall cascade follows a junction at `envs\<name>`. Fix it in `uninstall_win.rs`: remove the junction with `remove_dir`, never `remove_dir_all` through it. Ledger it as a finding.
+Expected: 6 passed. If `uninstalling_the_base_keeps_a_linked_venv_env` or `virtualenv_delete_keeps_a_linked_venv_envs_files` fails, the M4b uninstall cascade follows a junction at `envs\<name>`. Fix it in `uninstall_win.rs`: remove the junction with `remove_dir`, never `remove_dir_all` through it. Ledger it as a finding.
 
 - [ ] **Step 5: Commit:** `git commit -m "pyenv migrate takes over pyenv-win (launchers, PATH, profiles, pyenv-win-venv envs) and --restore undoes exactly what it did"`.
 
