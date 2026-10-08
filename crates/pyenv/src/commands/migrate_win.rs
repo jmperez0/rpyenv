@@ -6,7 +6,7 @@ use crate::commands::pwsh_profile::{self, Added};
 use crate::output::Output;
 use rpyenv_core::ctx::Ctx;
 use rpyenv_core::{pathlist, winenv};
-use std::io::{self, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 pub const HELP: &str = "Usage: pyenv migrate [--restore]
@@ -15,6 +15,9 @@ Takes over a pyenv-win install in PYENV_ROOT: moves pyenv-win's launchers out of
 into a backup, takes `bin` off your user PATH, rehashes, links pyenv-win-venv envs in,
 and adds the PowerShell profile line. `--restore` undoes exactly what it did.
 ";
+
+/// pyenv-win's launchers in `bin`, which migrate moves to the backup.
+const LAUNCHERS: [&str; 3] = ["pyenv.ps1", "pyenv.bat", "pyenv"];
 
 fn dir(ctx: &Ctx) -> PathBuf {
     ctx.root.join(".rpyenv-migrate")
@@ -83,27 +86,30 @@ fn forward(ctx: &Ctx) -> Output {
         .with_code(1);
     }
     let backup = dir(ctx).join("bin");
+    // A launcher an earlier restore kept is still in the backup: stop before anything
+    // changes rather than half-migrate (re-review 5).
+    for name in LAUNCHERS {
+        let kept = backup.join(name);
+        if bin.join(name).is_file() && std::fs::symlink_metadata(&kept).is_ok() {
+            return Output::error(format!(
+                "pyenv: {} from an earlier migration is in the way; move it out of {} and run `pyenv migrate` again",
+                kept.display(),
+                backup.display()
+            ))
+            .with_code(1);
+        }
+    }
     if let Err(e) = std::fs::create_dir_all(&backup) {
         return Output::error(format!("pyenv: cannot create {}: {e}", backup.display()));
     }
     // Final review M1: a step that fails fails the command.
     let mut failed = false;
-    for name in ["pyenv.ps1", "pyenv.bat", "pyenv"] {
+    for name in LAUNCHERS {
         let from = bin.join(name);
         if !from.is_file() {
             continue;
         }
-        // A launcher kept by an earlier restore is still in the backup: never replace it.
-        let to = backup.join(name);
-        let moved = if to.exists() {
-            Err(io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                format!("{} is in the way", to.display()),
-            ))
-        } else {
-            std::fs::rename(&from, &to)
-        };
-        match moved {
+        match std::fs::rename(&from, backup.join(name)) {
             Ok(()) => failed |= !record(ctx, &mut o, &format!("bin\t{name}")),
             Err(e) => {
                 o.err(format!("pyenv: cannot move {}: {e}", from.display()));
@@ -300,18 +306,21 @@ fn restore(ctx: &Ctx) -> Output {
         {
             // Final review M4: `versions\<name>` is migrate's only while what it points to
             // is migrate's link too, not a folder rpyenv made later under the same name.
+            // A target that is gone (the base deleted) leaves the link dangling: still
+            // migrate's (re-review 1).
+            let target_gone = std::fs::symlink_metadata(target).is_err();
             let ours = made[k]
                 && junctions
                     .iter()
                     .zip(&made)
-                    .all(|(&(_, l, _), &m)| m || !pathlist::same(l, target));
+                    .all(|(&(_, l, _), &m)| m || target_gone || !pathlist::same(l, target));
             let link = Path::new(link);
             if ours {
                 if let Err(e) = std::fs::remove_dir(link) {
                     o.err(format!("pyenv: cannot remove {}: {e}", link.display()));
                     left[i] = true;
                 }
-            } else if link.exists() {
+            } else if std::fs::symlink_metadata(link).is_ok() {
                 o.err(format!(
                     "pyenv: left {} alone: it isn't the link migrate made",
                     link.display()
@@ -319,10 +328,19 @@ fn restore(ctx: &Ctx) -> Output {
             }
         }
     }
-    for l in lines.iter().rev() {
+    for (i, l) in lines.iter().enumerate().rev() {
         if let Some(d) = l.strip_prefix("dir\t") {
-            // Not empty: the user put something there since; it stays.
-            let _ = std::fs::remove_dir(d);
+            // Not empty: if a link that couldn't go is in it, it's retried with that link
+            // (re-review 2); otherwise the user put something there since, and it stays.
+            let holds_left = junctions.iter().any(|&(j, link, _)| {
+                left[j]
+                    && Path::new(link)
+                        .parent()
+                        .is_some_and(|p| pathlist::same(&p.display().to_string(), d))
+            });
+            if std::fs::remove_dir(d).is_err() && holds_left {
+                left[i] = true;
+            }
         }
     }
     let bin = ctx.root.join("bin");
@@ -340,8 +358,18 @@ fn restore(ctx: &Ctx) -> Output {
                     ));
                     continue;
                 }
+                let from = backup.join(name);
+                if std::fs::symlink_metadata(&from).is_err() {
+                    // Nothing to put back, now or on a later run (re-review 3).
+                    o.err(format!(
+                        "pyenv: cannot put back {}: its backup {} is gone",
+                        to.display(),
+                        from.display()
+                    ));
+                    continue;
+                }
                 let _ = std::fs::create_dir_all(&bin);
-                if let Err(e) = std::fs::rename(backup.join(name), &to) {
+                if let Err(e) = std::fs::rename(&from, &to) {
                     o.err(format!("pyenv: cannot put back {}: {e}", to.display()));
                     left[i] = true;
                 }
@@ -409,7 +437,13 @@ fn restore(ctx: &Ctx) -> Output {
     }
     // Only empty folders go: a launcher kept in the backup stays there.
     if let Err(e) = std::fs::remove_file(&manifest) {
-        o.err(format!("pyenv: cannot remove {}: {e}", manifest.display()));
+        // A later `--restore` would replay all of it (re-review 4).
+        o.err(format!(
+            "pyenv: restored, but cannot remove the manifest {} ({e}); delete it before running `pyenv migrate` again",
+            manifest.display()
+        ));
+        o.code = 1;
+        return o;
     }
     let _ = std::fs::remove_dir(&backup);
     let _ = std::fs::remove_dir(dir(ctx));

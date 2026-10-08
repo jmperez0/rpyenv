@@ -7,6 +7,10 @@ use std::path::PathBuf;
 
 pub const MARKER: &str = ".rpyenv-setup";
 
+/// Written when an all-users first run fails: the next one waits `RETRY_AFTER`.
+const FAILED_MARKER: &str = ".rpyenv-setup-failed";
+const RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
 pub const HELP: &str = "Usage: pyenv setup
 
 Prepares your Windows user for rpyenv: creates PYENV_ROOT, puts its shims folder first
@@ -135,17 +139,34 @@ fn under(path: &std::path::Path, dir: &std::path::Path) -> bool {
 /// Spec §9.4: an all-users install (this pyenv.exe under Program Files) sets the user up
 /// on their first command (plan M6a, R6). `None` when nothing was needed.
 pub fn first_run(ctx: &Ctx, cmd: &str) -> Option<Output> {
+    // Once per process: `completions` runs pyenv again in-process (re-review 6).
+    static TRIED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     if cmd == "setup" || ctx.root.join(MARKER).exists() {
+        return None;
+    }
+    // A first run that failed is retried a day later, not on every command (and every new
+    // shell's `pyenv init`); `pyenv setup` retries at once (re-review 6).
+    let failed = ctx.root.join(FAILED_MARKER);
+    let recent = std::fs::metadata(&failed)
+        .and_then(|m| m.modified())
+        .is_ok_and(|t| t.elapsed().is_ok_and(|age| age < RETRY_AFTER));
+    if recent {
         return None;
     }
     let exe = std::env::current_exe().ok()?;
     let pf = rpyenv_core::winenv::program_files()?;
-    if !under(&exe, &pf) {
+    if !under(&exe, &pf) || TRIED.swap(true, std::sync::atomic::Ordering::Relaxed) {
         return None;
     }
     let r = run(ctx);
     let mut o = Output::new();
     o.err("pyenv: set up for this user (see `pyenv setup`)");
     o.stderr.push_str(&r.stderr);
+    if r.code != 0 {
+        let _ = std::fs::write(&failed, "");
+        o.err("pyenv: this is tried again tomorrow, or now with `pyenv setup`");
+    } else {
+        let _ = std::fs::remove_file(&failed);
+    }
     Some(o)
 }

@@ -244,7 +244,7 @@ mod tests {
     /// The only test here that sets `RPYENV_TEST_ENV_KEY` (tests share the process).
     #[test]
     fn a_value_round_trips_through_the_test_key_keeping_its_type() {
-        let key = format!("Software\\rpyenv-test\\unit-{}", std::process::id());
+        let key = format!("Software\\rpyenv-test-unit-{}", std::process::id());
         std::env::set_var("RPYENV_TEST_ENV_KEY", &key);
         // `cargo test --release` has no debug assertions: the override must hold there
         // too, or the writes below would reach the real user `Path`.
@@ -260,11 +260,5 @@ mod tests {
         let _ = std::process::Command::new("reg")
             .args(["delete", &format!("HKCU\\{key}"), "/f"])
             .output();
-        // The parent too, unless something else still uses it (it has subkeys then).
-        let parent = wide("Software\\rpyenv-test");
-        // SAFETY: a NUL-terminated name; RegDeleteKeyW only deletes a key without subkeys.
-        unsafe {
-            windows_sys::Win32::System::Registry::RegDeleteKeyW(HKEY_CURRENT_USER, parent.as_ptr());
-        }
     }
 }

@@ -278,3 +278,23 @@ fn first_run_prints_before_exec_runs_the_command() {
     let (setup, child) = (err.find("set up for this user"), err.find("from-the-child"));
     assert!(setup.is_some() && child.is_some() && setup < child, "{err}");
 }
+
+/// Re-review 6: a first run that fails says so once, not on every command (it retries a
+/// day later; `pyenv setup` retries at once).
+#[test]
+fn a_failed_first_run_is_not_repeated_on_every_command() {
+    let f = Fixture::new();
+    let pf_bin = all_users_bin(&f);
+    reg_set(&f, "user", "Path", "REG_DWORD", "1");
+    let run = || {
+        let out = f
+            .command(&pf_bin.join("pyenv.exe"), &f.work, &[])
+            .arg("root")
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stderr).into_owned()
+    };
+    assert!(run().contains("set up for this user"));
+    let second = run();
+    assert!(second.is_empty(), "{second}");
+}

@@ -159,7 +159,7 @@ fn escaping_names_remove_nothing() {
             // Final review M7: the overrides every fixture command has (plan M6a, R1).
             .env(
                 "RPYENV_TEST_ENV_KEY",
-                "Software\\rpyenv-test\\uninstall-args",
+                "Software\\rpyenv-test-uninstall-args",
             )
             .env("RPYENV_TEST_DOCUMENTS", t.path().join("Documents"))
             .env("RPYENV_TEST_PROGRAM_FILES", t.path().join("Program Files"))

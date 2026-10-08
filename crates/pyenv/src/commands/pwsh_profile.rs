@@ -37,17 +37,22 @@ enum Encoding {
 
 /// The file's code units (bytes, or UTF-16 units after the BOM). Nothing is decoded, so
 /// what isn't the pyenv line is written back exactly as it was (final review I1).
-fn units(bytes: &[u8]) -> (Encoding, Vec<u16>) {
-    let pairs = |rest: &[u8], f: fn([u8; 2]) -> u16| {
-        rest.chunks(2)
-            .map(|c| f([c[0], c.get(1).copied().unwrap_or(0)]))
-            .collect()
+fn units(bytes: &[u8]) -> io::Result<(Encoding, Vec<u16>)> {
+    let pairs = |rest: &[u8], f: fn([u8; 2]) -> u16| -> io::Result<Vec<u16>> {
+        // UTF-32 (`FF FE 00 00`) or a cut-off UTF-16 file: not rewritten (re-review 8).
+        if !rest.len().is_multiple_of(2) || rest.starts_with(&[0, 0]) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "its text encoding isn't one pyenv edits (UTF-8, ANSI or UTF-16)",
+            ));
+        }
+        Ok(rest.chunks(2).map(|c| f([c[0], c[1]])).collect())
     };
-    match bytes {
-        [0xFF, 0xFE, rest @ ..] => (Encoding::Utf16Le, pairs(rest, u16::from_le_bytes)),
-        [0xFE, 0xFF, rest @ ..] => (Encoding::Utf16Be, pairs(rest, u16::from_be_bytes)),
+    Ok(match bytes {
+        [0xFF, 0xFE, rest @ ..] => (Encoding::Utf16Le, pairs(rest, u16::from_le_bytes)?),
+        [0xFE, 0xFF, rest @ ..] => (Encoding::Utf16Be, pairs(rest, u16::from_be_bytes)?),
         _ => (Encoding::Bytes, bytes.iter().map(|&b| b.into()).collect()),
-    }
+    })
 }
 
 fn to_bytes(encoding: Encoding, units: &[u16]) -> Vec<u8> {
@@ -68,8 +73,16 @@ fn ascii(s: &str) -> Vec<u16> {
     s.bytes().map(u16::from).collect()
 }
 
-/// `LINE` without its line end.
+/// A UTF-8 BOM, as bytes, or as U+FEFF when the profile was read as UTF-16.
+const BOMS: [&[u16]; 2] = [&[0xEF, 0xBB, 0xBF], &[0xFEFF]];
+
+/// `LINE` without its line end (and without a UTF-8 BOM in front of the first line, as
+/// bytes or as U+FEFF: re-review 7).
 fn is_line(line: &[u16]) -> bool {
+    let line = BOMS
+        .iter()
+        .find_map(|b| line.strip_prefix(*b))
+        .unwrap_or(line);
     let mut end = line.len();
     while end > 0 && (line[end - 1] == u16::from(b'\n') || line[end - 1] == u16::from(b'\r')) {
         end -= 1;
@@ -79,7 +92,7 @@ fn is_line(line: &[u16]) -> bool {
 
 fn read_units(file: &Path) -> io::Result<Option<(Encoding, Vec<u16>)>> {
     match std::fs::read(file) {
-        Ok(b) => Ok(Some(units(&b))),
+        Ok(b) => units(&b).map(Some),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e),
     }
@@ -124,9 +137,13 @@ pub fn remove(file: &Path) -> io::Result<bool> {
     };
     let mut removed = false;
     let mut out = Vec::new();
-    for line in text.split_inclusive(|&u| u == u16::from(b'\n')) {
+    for (n, line) in text.split_inclusive(|&u| u == u16::from(b'\n')).enumerate() {
         if is_line(line) {
             removed = true;
+            // Keep the BOM a first line carried.
+            if let Some(bom) = BOMS.iter().find(|b| n == 0 && line.starts_with(b)) {
+                out.extend_from_slice(bom);
+            }
         } else {
             out.extend_from_slice(line);
         }
@@ -260,6 +277,33 @@ mod tests {
         assert!(remove(&f).unwrap());
         ansi.extend_from_slice(b"\r\n");
         assert_eq!(std::fs::read(&f).unwrap(), ansi);
+    }
+
+    /// Re-review 7: a UTF-8 BOM before the line (an editor re-saved a profile `add` made).
+    #[test]
+    fn the_line_after_a_utf8_bom_is_found_and_removed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let f = tmp.path().join("p.ps1");
+        std::fs::write(&f, format!("\u{feff}{LINE}\r\nb\r\n")).unwrap();
+        assert!(has_line(&f).unwrap());
+        assert!(remove(&f).unwrap());
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "\u{feff}b\r\n");
+    }
+
+    /// Re-review 8: UTF-16 with an odd byte count, or UTF-32, isn't rewritten.
+    #[test]
+    fn a_profile_in_an_unknown_encoding_is_left_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let f = tmp.path().join("p.ps1");
+        for bytes in [
+            vec![0xFF, 0xFE, b'a', 0, b'b'],
+            vec![0xFF, 0xFE, 0, 0, b'a', 0, 0, 0],
+        ] {
+            std::fs::write(&f, &bytes).unwrap();
+            assert!(add(&f).is_err());
+            assert!(remove(&f).is_err());
+            assert_eq!(std::fs::read(&f).unwrap(), bytes);
+        }
     }
 
     #[test]
