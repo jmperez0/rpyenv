@@ -46,7 +46,9 @@ pub fn init(ctx: &Ctx, args: &[&str]) -> Output {
     match a.mode {
         Mode::Help => help(&shell, family),
         Mode::DetectShell => detect(&shell, family),
-        // Decision 2: startup files are M6's `pyenv setup`.
+        // Plan M6a, R2: PowerShell gets the profile line; other shells have no startup
+        // file rpyenv edits.
+        Mode::Install if family == Family::Pwsh => commands::pwsh_profile::install_all(),
         Mode::Install => Output::error(format!(
             "pyenv: cannot automatically configure startup files for {shell}"
         )),
