@@ -296,6 +296,7 @@ pub fn lock(shims: &Path, wait: Wait) -> Result<Lock, RehashError> {
     fs::create_dir_all(shims).map_err(|_| not_writable())?;
     let path = shims.join(LOCK_NAME);
     let start = Instant::now();
+    let mut retried_free = false;
     loop {
         let created = {
             // From creating the file until its handler is armed, this thread holds the
@@ -324,6 +325,13 @@ pub fn lock(shims: &Path, wait: Wait) -> Result<Lock, RehashError> {
             // the name free, the folder isn't writable.
             e if e.kind() == io::ErrorKind::PermissionDenied => {
                 if fs::symlink_metadata(&path).is_err_and(|m| m.kind() == io::ErrorKind::NotFound) {
+                    // The name may have come free between the two calls (a delete-pending
+                    // lock whose last handle just closed): try once more before calling the
+                    // folder unwritable.
+                    if !retried_free {
+                        retried_free = true;
+                        continue;
+                    }
                     return Err(not_writable());
                 }
             }
