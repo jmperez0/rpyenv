@@ -109,6 +109,14 @@ pub fn add(file: &Path) -> io::Result<Added> {
     Ok(Added::Added)
 }
 
+/// True when `file` has a line that is exactly `LINE`, whoever added it.
+pub fn has_line(file: &Path) -> io::Result<bool> {
+    Ok(read_units(file)?.is_some_and(|(_, text)| {
+        text.split_inclusive(|&u| u == u16::from(b'\n'))
+            .any(is_line)
+    }))
+}
+
 /// Removes every line that is exactly `LINE`; true when there was one.
 pub fn remove(file: &Path) -> io::Result<bool> {
     let Some((encoding, text)) = read_units(file)? else {
