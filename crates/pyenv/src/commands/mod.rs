@@ -15,6 +15,8 @@ pub mod prefix;
 #[cfg(windows)]
 pub mod pwsh_profile;
 pub mod rehash;
+#[cfg(windows)]
+pub mod setup_win;
 pub mod shell;
 pub mod shell_win;
 #[cfg(unix)]
@@ -76,6 +78,8 @@ const WIN_ONLY: &[(&str, Command)] = &[
     ("sh-rehash", shell_win::sh_rehash),
     ("sh-shell", shell_win::sh_shell),
     ("shell", shell_win::shell),
+    #[cfg(windows)]
+    ("setup", setup_win::setup),
 ];
 
 /// pyenv (Linux) only, until M2b brings pyenv-win's installer commands.

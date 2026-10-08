@@ -13,6 +13,7 @@ local
 prefix
 rehash
 root
+setup
 shell
 shims
 uninstall
