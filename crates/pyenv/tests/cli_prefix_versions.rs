@@ -166,7 +166,7 @@ fn win_commands_order() {
     let r = Fixture::new().pyenv(&["commands"]);
     assert_eq!(
         r.stdout,
-        "--version\r\nactivate\r\ncommands\r\ncompletions\r\ndeactivate\r\nexec\r\nglobal\r\nhelp\r\ninit\r\ninstall\r\nlatest\r\nlocal\r\nprefix\r\nrehash\r\nroot\r\nshell\r\nshims\r\nuninstall\r\nupdate\r\nversion-file-read\r\nversion-file-write\r\nversion-file\r\nversion-name\r\nversion-origin\r\nversion\r\nversions\r\nvirtualenv-delete\r\nvirtualenv-init\r\nvirtualenv-prefix\r\nvirtualenv\r\nvirtualenvs\r\nvname\r\nwhence\r\nwhich\r\n"
+        "--version\r\nactivate\r\ncommands\r\ncompletions\r\ndeactivate\r\nexec\r\nglobal\r\nhelp\r\ninit\r\ninstall\r\nlatest\r\nlocal\r\nmigrate\r\nprefix\r\nrehash\r\nroot\r\nsetup\r\nshell\r\nshims\r\nuninstall\r\nupdate\r\nversion-file-read\r\nversion-file-write\r\nversion-file\r\nversion-name\r\nversion-origin\r\nversion\r\nversions\r\nvirtualenv-delete\r\nvirtualenv-init\r\nvirtualenv-prefix\r\nvirtualenv\r\nvirtualenvs\r\nvname\r\nwhence\r\nwhich\r\n"
     );
 }
 
