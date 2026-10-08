@@ -85,12 +85,12 @@ fn help_and_refusals() {
         run(&f, &["init", "cmd"]),
         (String::new(), "# cmd has no shell integration. `pyenv shell` prints the `set`\r\n# command to run, and every other command needs no setup.\r\n\r\n".to_string(), 1)
     );
-    // Decision 2: no startup-file editing on Windows before M6.
+    // Plan M6a, R2: only PowerShell has a startup file rpyenv edits.
     assert_eq!(
-        run(&f, &["init", "--install", "pwsh"]),
+        run(&f, &["init", "--install", "cmd"]),
         (
             String::new(),
-            "pyenv: cannot automatically configure startup files for pwsh\r\n".to_string(),
+            "pyenv: cannot automatically configure startup files for cmd\r\n".to_string(),
             1
         )
     );
@@ -100,6 +100,28 @@ fn help_and_refusals() {
         run(&f, &["init"]).1,
         "# pyenv can't tell which shell runs it. Name one: `pyenv init <shell>`,\r\n# where <shell> is pwsh, powershell, bash, zsh, fish or cmd.\r\n\r\n"
     );
+}
+
+/// M6a (plan R2): `init --install pwsh` adds the profile line to both profiles; cmd still
+/// refuses.
+#[test]
+fn init_install_pwsh_adds_the_profile_line() {
+    let f = Fixture::new();
+    let r = f.pyenv(&["init", "--install", "pwsh"]);
+    assert_eq!(r.code, 0, "{}{}", r.stdout, r.stderr);
+    for sub in ["WindowsPowerShell", "PowerShell"] {
+        let p = f
+            .base
+            .join("Documents")
+            .join(sub)
+            .join("Microsoft.PowerShell_profile.ps1");
+        assert_eq!(
+            std::fs::read_to_string(&p).unwrap(),
+            "iex ((pyenv init - pwsh) -join \"`n\")\r\n"
+        );
+    }
+    let r = f.pyenv(&["init", "--install", "cmd"]);
+    assert_ne!(r.code, 0);
 }
 
 #[test]

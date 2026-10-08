@@ -12,6 +12,8 @@ pub mod latest;
 pub mod local_global;
 pub mod misc;
 pub mod prefix;
+#[cfg(windows)]
+pub mod pwsh_profile;
 pub mod rehash;
 pub mod shell;
 pub mod shell_win;
