@@ -10,6 +10,8 @@ pub mod install;
 pub mod install_win;
 pub mod latest;
 pub mod local_global;
+#[cfg(windows)]
+pub mod migrate_win;
 pub mod misc;
 pub mod prefix;
 #[cfg(windows)]
@@ -78,6 +80,8 @@ const WIN_ONLY: &[(&str, Command)] = &[
     ("sh-rehash", shell_win::sh_rehash),
     ("sh-shell", shell_win::sh_shell),
     ("shell", shell_win::shell),
+    #[cfg(windows)]
+    ("migrate", migrate_win::migrate),
     #[cfg(windows)]
     ("setup", setup_win::setup),
 ];
