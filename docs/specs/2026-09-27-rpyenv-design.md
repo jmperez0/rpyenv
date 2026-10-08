@@ -624,8 +624,13 @@ changes nothing. `pyenv migrate --restore` undoes exactly what the manifest
 lists: it removes the junctions it made (only if they still point where it
 made them), puts back the launchers (unless a file with that name exists
 again), puts the `PATH` entries back first, and removes the profile lines it
-added. It then asks for pyenv-win's own `pyenv rehash` to bring back its
-shims. When something was left alone, the backup and manifest stay.
+added, including a line `pyenv setup` added before. It then asks for
+pyenv-win's own `pyenv rehash` to bring back its shims. A step that fails is
+reported, fails the command, and stays in the manifest, so running `--restore`
+again finishes the job; a launcher kept because it exists again is final, and
+the old one stays in the backup. Migrate and setup stop without changing the
+user `Path` when they can't read it, and either command exits 1 when a step
+fails; setup writes its marker only when every step succeeded.
 
 `pyenv migrate --restore` undoes it. The per-user MSI offers to run
 `migrate` when it finds pyenv-win. For an all-users install, `pyenv setup`

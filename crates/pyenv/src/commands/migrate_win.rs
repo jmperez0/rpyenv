@@ -6,7 +6,7 @@ use crate::commands::pwsh_profile::{self, Added};
 use crate::output::Output;
 use rpyenv_core::ctx::Ctx;
 use rpyenv_core::{pathlist, winenv};
-use std::io::Write;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 pub const HELP: &str = "Usage: pyenv migrate [--restore]
@@ -50,7 +50,16 @@ fn forward(ctx: &Ctx) -> Output {
         return o;
     }
     let bin = ctx.root.join("bin");
-    let user = winenv::get(winenv::Scope::User, "Path");
+    // Final review I5: a Path that can't be read stops migrate before anything changes.
+    let user = match winenv::get(winenv::Scope::User, "Path") {
+        Ok(v) => v,
+        Err(e) => {
+            return Output::error(format!(
+                "pyenv: cannot read your user PATH ({e}); nothing was changed"
+            ))
+            .with_code(1)
+        }
+    };
     let on_path = user.as_ref().is_some_and(|v| {
         pathlist::split(&v.text)
             .iter()
@@ -69,12 +78,28 @@ fn forward(ctx: &Ctx) -> Output {
     if let Err(e) = std::fs::create_dir_all(&backup) {
         return Output::error(format!("pyenv: cannot create {}: {e}", backup.display()));
     }
+    // Final review M1: a step that fails fails the command.
+    let mut failed = false;
     for name in ["pyenv.ps1", "pyenv.bat", "pyenv"] {
         let from = bin.join(name);
-        if from.is_file() {
-            match std::fs::rename(&from, backup.join(name)) {
-                Ok(()) => record(ctx, &format!("bin\t{name}")),
-                Err(e) => o.err(format!("pyenv: cannot move {}: {e}", from.display())),
+        if !from.is_file() {
+            continue;
+        }
+        // A launcher kept by an earlier restore is still in the backup: never replace it.
+        let to = backup.join(name);
+        let moved = if to.exists() {
+            Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!("{} is in the way", to.display()),
+            ))
+        } else {
+            std::fs::rename(&from, &to)
+        };
+        match moved {
+            Ok(()) => record(ctx, &format!("bin\t{name}")),
+            Err(e) => {
+                o.err(format!("pyenv: cannot move {}: {e}", from.display()));
+                failed = true;
             }
         }
     }
@@ -97,25 +122,47 @@ fn forward(ctx: &Ctx) -> Output {
                     o.out(format!("pyenv: took {target} off your user PATH"));
                     winenv::broadcast();
                 }
-                Err(e) => o.err(format!("pyenv: cannot change your user PATH: {e}")),
+                Err(e) => {
+                    o.err(format!("pyenv: cannot change your user PATH: {e}"));
+                    failed = true;
+                }
             }
         }
     }
     let r = crate::commands::rehash::rehash(ctx, &[]);
     o.stderr.push_str(&r.stderr);
+    failed |= r.code != 0;
     if let Some(docs) = winenv::documents() {
         for p in pwsh_profile::paths(&docs) {
-            if let Ok(Added::Added) = pwsh_profile::add(&p) {
-                record(ctx, &format!("profile\t{}", p.display()));
-                o.out(format!(
-                    "pyenv: added the PowerShell line to {}",
-                    p.display()
-                ));
+            match pwsh_profile::add(&p) {
+                Ok(Added::Added) => {
+                    record(ctx, &format!("profile\t{}", p.display()));
+                    o.out(format!(
+                        "pyenv: added the PowerShell line to {}",
+                        p.display()
+                    ));
+                }
+                // Final review I2: the line `pyenv setup` added fails under pyenv-win too,
+                // so `--restore` takes it out whoever added it.
+                Ok(Added::Mentions) => {
+                    if pwsh_profile::has_line(&p).unwrap_or(false) {
+                        record(ctx, &format!("profile\t{}", p.display()));
+                    }
+                }
+                Err(e) => {
+                    o.err(format!("pyenv: {}: {e}", p.display()));
+                    failed = true;
+                }
             }
         }
     }
     if let Some(envs) = envs_dir {
         link_venvs(ctx, &envs, &mut o);
+    }
+    if failed {
+        o.err("pyenv: migrate didn't finish; `pyenv migrate --restore` undoes what it did");
+        o.code = 1;
+        return o;
     }
     o.out("pyenv: migrated; open a new terminal. `pyenv migrate --restore` undoes it");
     o
@@ -175,14 +222,19 @@ fn link_venvs(ctx: &Ctx, envs: &Path, o: &mut Output) {
     }
 }
 
+/// Undoes what the manifest lists. A step that fails is reported and stays in the manifest
+/// for the next `--restore`; a step left alone on purpose (a link that isn't migrate's, a
+/// launcher that exists again) is final (final review I3, I4).
 fn restore(ctx: &Ctx) -> Output {
     let mut o = Output::new();
-    let Ok(text) = std::fs::read_to_string(dir(ctx).join("manifest.txt")) else {
+    let manifest = dir(ctx).join("manifest.txt");
+    let Ok(text) = std::fs::read_to_string(&manifest) else {
         return Output::error("pyenv: nothing to restore: no migration recorded").with_code(1);
     };
     let lines: Vec<&str> = text.lines().collect();
+    let mut left = vec![false; lines.len()];
     // Junctions first, newest first: `versions\<name>` before the one it points to.
-    for l in lines.iter().rev() {
+    for (i, l) in lines.iter().enumerate().rev() {
         let f: Vec<&str> = l.split('\t').collect();
         if let ["junction", link, target] = f[..] {
             let link = Path::new(link);
@@ -190,7 +242,10 @@ fn restore(ctx: &Ctx) -> Output {
                 && std::fs::read_link(link)
                     .is_ok_and(|t| pathlist::same(&t.display().to_string(), target));
             if ours {
-                let _ = std::fs::remove_dir(link);
+                if let Err(e) = std::fs::remove_dir(link) {
+                    o.err(format!("pyenv: cannot remove {}: {e}", link.display()));
+                    left[i] = true;
+                }
             } else if link.exists() {
                 o.err(format!(
                     "pyenv: left {} alone: it isn't the link migrate made",
@@ -200,7 +255,8 @@ fn restore(ctx: &Ctx) -> Output {
         }
     }
     let bin = ctx.root.join("bin");
-    for l in &lines {
+    let backup = dir(ctx).join("bin");
+    for (i, l) in lines.iter().enumerate() {
         let f: Vec<&str> = l.split('\t').collect();
         match f[..] {
             ["bin", name] => {
@@ -209,49 +265,83 @@ fn restore(ctx: &Ctx) -> Output {
                     o.err(format!(
                         "pyenv: kept {}, which exists again; the old one stays in {}",
                         to.display(),
-                        dir(ctx).join("bin").display()
+                        backup.display()
                     ));
                     continue;
                 }
                 let _ = std::fs::create_dir_all(&bin);
-                if let Err(e) = std::fs::rename(dir(ctx).join("bin").join(name), &to) {
+                if let Err(e) = std::fs::rename(backup.join(name), &to) {
                     o.err(format!("pyenv: cannot put back {}: {e}", to.display()));
+                    left[i] = true;
                 }
             }
             ["profile", p] => {
-                let _ = pwsh_profile::remove(Path::new(p));
+                if let Err(e) = pwsh_profile::remove(Path::new(p)) {
+                    o.err(format!(
+                        "pyenv: cannot take the PowerShell line out of {p}: {e}"
+                    ));
+                    left[i] = true;
+                }
             }
             _ => {}
         }
     }
-    let gone: Vec<&str> = lines
-        .iter()
-        .filter_map(|l| l.strip_prefix("path\t"))
+    let gone: Vec<usize> = (0..lines.len())
+        .filter(|&i| lines[i].starts_with("path\t"))
         .collect();
     if !gone.is_empty() {
-        let v = winenv::get(winenv::Scope::User, "Path").unwrap_or(winenv::Value {
-            text: String::new(),
-            expand: true,
+        let put_back = winenv::get(winenv::Scope::User, "Path").and_then(|v| {
+            let v = v.unwrap_or(winenv::Value {
+                text: String::new(),
+                expand: true,
+            });
+            let mut text = v.text.clone();
+            for &i in gone.iter().rev() {
+                let entry = &lines[i]["path\t".len()..];
+                text = pathlist::put_first(&text, entry, &winenv::expand).unwrap_or(text);
+            }
+            winenv::set_user(
+                "Path",
+                &winenv::Value {
+                    text,
+                    expand: v.expand,
+                },
+            )
         });
-        let mut text = v.text.clone();
-        for g in gone.iter().rev() {
-            text = pathlist::put_first(&text, g, &winenv::expand).unwrap_or(text);
-        }
-        if winenv::set_user(
-            "Path",
-            &winenv::Value {
-                text,
-                expand: v.expand,
-            },
-        )
-        .is_ok()
-        {
-            winenv::broadcast();
+        match put_back {
+            Ok(()) => winenv::broadcast(),
+            Err(e) => {
+                o.err(format!(
+                    "pyenv: cannot put pyenv-win back on your user PATH: {e}"
+                ));
+                for &i in &gone {
+                    left[i] = true;
+                }
+            }
         }
     }
-    if o.stderr.is_empty() {
-        let _ = std::fs::remove_dir_all(dir(ctx));
+    if left.contains(&true) {
+        let rest: String = lines
+            .iter()
+            .zip(&left)
+            .filter(|(_, &l)| l)
+            .map(|(l, _)| format!("{l}\n"))
+            .collect();
+        if let Err(e) = std::fs::write(&manifest, rest) {
+            o.err(format!("pyenv: cannot update {}: {e}", manifest.display()));
+        }
+        o.err(
+            "pyenv: restore didn't finish; fix the above and run `pyenv migrate --restore` again",
+        );
+        o.code = 1;
+        return o;
     }
+    // Only empty folders go: a launcher kept in the backup stays there.
+    if let Err(e) = std::fs::remove_file(&manifest) {
+        o.err(format!("pyenv: cannot remove {}: {e}", manifest.display()));
+    }
+    let _ = std::fs::remove_dir(&backup);
+    let _ = std::fs::remove_dir(dir(ctx));
     o.out("pyenv: restored pyenv-win; run its `pyenv rehash` in a new terminal to bring back its shims");
     o
 }

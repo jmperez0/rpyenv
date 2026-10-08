@@ -48,34 +48,53 @@ pub fn run(ctx: &Ctx) -> Output {
         }
     }
     let shims = ctx.shims_dir().display().to_string();
-    let current = winenv::get(winenv::Scope::User, "Path").unwrap_or(winenv::Value {
-        text: String::new(),
-        expand: true,
-    });
-    match pathlist::put_first(&current.text, &shims, &winenv::expand) {
-        None => o.out(format!("pyenv: {shims} is already first on your user PATH")),
-        Some(text) => match winenv::set_user(
-            "Path",
-            &winenv::Value {
-                text,
-                expand: current.expand,
-            },
-        ) {
-            Ok(()) => {
-                o.out(format!(
-                    "pyenv: added {shims} to the front of your user PATH"
-                ));
-                winenv::broadcast();
+    // Final review M1: any failure fails setup and leaves the root unmarked, so the
+    // all-users first run tries again.
+    let mut failed = false;
+    match winenv::get(winenv::Scope::User, "Path") {
+        // Final review I5: never write over a Path that couldn't be read.
+        Err(e) => {
+            o.err(format!(
+                "pyenv: cannot read your user PATH ({e}); left it as it is"
+            ));
+            failed = true;
+        }
+        Ok(current) => {
+            let current = current.unwrap_or(winenv::Value {
+                text: String::new(),
+                expand: true,
+            });
+            match pathlist::put_first(&current.text, &shims, &winenv::expand) {
+                None => o.out(format!("pyenv: {shims} is already first on your user PATH")),
+                Some(text) => match winenv::set_user(
+                    "Path",
+                    &winenv::Value {
+                        text,
+                        expand: current.expand,
+                    },
+                ) {
+                    Ok(()) => {
+                        o.out(format!(
+                            "pyenv: added {shims} to the front of your user PATH"
+                        ));
+                        winenv::broadcast();
+                    }
+                    Err(e) => {
+                        o.err(format!("pyenv: cannot change your user PATH: {e}"));
+                        failed = true;
+                    }
+                },
             }
-            Err(e) => o.err(format!("pyenv: cannot change your user PATH: {e}")),
-        },
+        }
     }
     let r = crate::commands::rehash::rehash(ctx, &[]);
     o.stderr.push_str(&r.stderr);
+    failed |= r.code != 0;
     let p = crate::commands::pwsh_profile::install_all();
     o.stdout.push_str(&p.stdout);
     o.stderr.push_str(&p.stderr);
-    if let Some(machine) = winenv::get(winenv::Scope::Machine, "Path") {
+    failed |= p.code != 0;
+    if let Ok(Some(machine)) = winenv::get(winenv::Scope::Machine, "Path") {
         for e in pathlist::split(&machine.text) {
             let py = PathBuf::from(winenv::expand(&e)).join("python.exe");
             if py.is_file() {
@@ -92,11 +111,13 @@ pub fn run(ctx: &Ctx) -> Output {
             bin.display()
         ));
     }
+    if failed {
+        o.err("pyenv: setup didn't finish; fix the above and run `pyenv setup` again");
+        o.code = 1;
+        return o;
+    }
     let _ = std::fs::write(ctx.root.join(MARKER), env!("CARGO_PKG_VERSION"));
     o.out("pyenv: open a new terminal for the changes to take effect");
-    if !p.stderr.is_empty() {
-        o.code = 1;
-    }
     o
 }
 

@@ -6,7 +6,7 @@
 
 use std::io;
 use std::path::PathBuf;
-use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+use windows_sys::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_MORE_DATA, ERROR_SUCCESS};
 use windows_sys::Win32::System::Environment::ExpandEnvironmentStringsW;
 use windows_sys::Win32::System::Registry::{
     RegCloseKey, RegCreateKeyExW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW, HKEY,
@@ -54,48 +54,58 @@ fn location(scope: Scope) -> (HKEY, String) {
     }
 }
 
-/// A variable of `scope`, as stored (not expanded).
-pub fn get(scope: Scope, name: &str) -> Option<Value> {
+/// A variable of `scope`, as stored (not expanded); `Ok(None)` only when it doesn't exist.
+/// Any other failure is an error, so a caller never mistakes an unreadable `Path` for an
+/// empty one and writes over it (final review I5).
+pub fn get(scope: Scope, name: &str) -> io::Result<Option<Value>> {
     let (root, sub) = location(scope);
     let (sub, name) = (wide(&sub), wide(name));
+    let fail = |rc: u32| Err(io::Error::from_raw_os_error(rc as i32));
     // SAFETY: opens, sizes, reads and closes a key; buffers are locals of the given sizes.
     unsafe {
         let mut key: HKEY = std::ptr::null_mut();
-        if RegOpenKeyExW(root, sub.as_ptr(), 0, KEY_READ, &mut key) != ERROR_SUCCESS {
-            return None;
+        match RegOpenKeyExW(root, sub.as_ptr(), 0, KEY_READ, &mut key) {
+            ERROR_SUCCESS => {}
+            ERROR_FILE_NOT_FOUND => return Ok(None),
+            rc => return fail(rc),
         }
-        let (mut kind, mut size) = (0u32, 0u32);
-        let ok = RegQueryValueExW(
-            key,
-            name.as_ptr(),
-            std::ptr::null(),
-            &mut kind,
-            std::ptr::null_mut(),
-            &mut size,
-        );
-        if ok != ERROR_SUCCESS || (kind != REG_SZ && kind != REG_EXPAND_SZ) {
+        let mut size = 0u32;
+        // The value can grow between sizing and reading (ERROR_MORE_DATA): size again.
+        for _ in 0..4 {
+            let mut kind = 0u32;
+            let mut buf = vec![0u16; (size as usize).div_ceil(2) + 1];
+            let mut bytes = (buf.len() * 2) as u32;
+            let rc = RegQueryValueExW(
+                key,
+                name.as_ptr(),
+                std::ptr::null(),
+                &mut kind,
+                buf.as_mut_ptr().cast(),
+                &mut bytes,
+            );
+            if rc == ERROR_MORE_DATA {
+                size = bytes;
+                continue;
+            }
             RegCloseKey(key);
-            return None;
+            return match rc {
+                ERROR_SUCCESS if kind == REG_SZ || kind == REG_EXPAND_SZ => {
+                    let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+                    Ok(Some(Value {
+                        text: String::from_utf16_lossy(&buf[..len]),
+                        expand: kind == REG_EXPAND_SZ,
+                    }))
+                }
+                ERROR_SUCCESS => Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "it isn't stored as text",
+                )),
+                ERROR_FILE_NOT_FOUND => Ok(None),
+                rc => fail(rc),
+            };
         }
-        let mut buf = vec![0u16; (size as usize).div_ceil(2) + 1];
-        let mut bytes = (buf.len() * 2) as u32;
-        let ok = RegQueryValueExW(
-            key,
-            name.as_ptr(),
-            std::ptr::null(),
-            &mut kind,
-            buf.as_mut_ptr().cast(),
-            &mut bytes,
-        );
         RegCloseKey(key);
-        if ok != ERROR_SUCCESS {
-            return None;
-        }
-        let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
-        Some(Value {
-            text: String::from_utf16_lossy(&buf[..len]),
-            expand: kind == REG_EXPAND_SZ,
-        })
+        fail(ERROR_MORE_DATA)
     }
 }
 
@@ -232,14 +242,14 @@ mod tests {
         // `cargo test --release` has no debug assertions: the override must hold there
         // too, or the writes below would reach the real user `Path`.
         assert_eq!(location(Scope::User).1, format!("{key}\\user"));
-        assert!(get(Scope::User, "Path").is_none());
+        assert!(get(Scope::User, "Path").unwrap().is_none());
         let v = Value {
             text: r"%USERPROFILE%\x;C:\y".into(),
             expand: true,
         };
         set_user("Path", &v).unwrap();
-        assert_eq!(get(Scope::User, "Path"), Some(v));
-        assert!(get(Scope::Machine, "Path").is_none());
+        assert_eq!(get(Scope::User, "Path").unwrap(), Some(v));
+        assert!(get(Scope::Machine, "Path").unwrap().is_none());
         let _ = std::process::Command::new("reg")
             .args(["delete", &format!("HKCU\\{key}"), "/f"])
             .output();

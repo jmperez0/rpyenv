@@ -240,3 +240,102 @@ fn virtualenv_delete_keeps_a_linked_venv_envs_files() {
     // --restore copes with links that are already gone.
     assert_eq!(f.pyenv(&["migrate", "--restore"]).code, 0);
 }
+
+/// Final review I5: a user Path migrate can't read stops it before anything moves.
+#[test]
+fn migrate_stops_on_an_unreadable_path() {
+    let f = Fixture::new();
+    pyenv_win(&f);
+    reg_set(&f, "user", "Path", "REG_DWORD", "1");
+    let r = f.pyenv(&["migrate"]);
+    assert_eq!(r.code, 1, "{}{}", r.stdout, r.stderr);
+    assert!(f.root.join("bin").join("pyenv.ps1").is_file());
+    assert!(!f.root.join(".rpyenv-migrate").exists());
+}
+
+fn profiles(f: &Fixture) -> [std::path::PathBuf; 2] {
+    let docs = f.base.join("Documents");
+    [
+        docs.join("WindowsPowerShell")
+            .join("Microsoft.PowerShell_profile.ps1"),
+        docs.join("PowerShell")
+            .join("Microsoft.PowerShell_profile.ps1"),
+    ]
+}
+
+/// Final review I2: after `pyenv setup` (which hints at migrate, and which an all-users
+/// first run does before anything), `--restore` still takes the line out: under pyenv-win
+/// it would fail in every new PowerShell.
+#[test]
+fn restore_removes_the_line_setup_added_too() {
+    let f = Fixture::new();
+    pyenv_win(&f);
+    assert_eq!(f.pyenv(&["setup"]).code, 0);
+    assert_eq!(f.pyenv(&["migrate"]).code, 0);
+    let back = f.pyenv(&["migrate", "--restore"]);
+    assert_eq!(back.code, 0, "{}{}", back.stdout, back.stderr);
+    for p in profiles(&f) {
+        assert!(
+            !std::fs::read_to_string(&p).unwrap().contains("pyenv init"),
+            "{}",
+            p.display()
+        );
+    }
+}
+
+/// Final review I3: a restore step that fails is reported, fails the command, and stays in
+/// the manifest, so running `--restore` again finishes the job.
+#[test]
+fn a_failed_restore_keeps_what_is_left_to_retry() {
+    let f = Fixture::new();
+    pyenv_win(&f);
+    assert_eq!(f.pyenv(&["migrate"]).code, 0);
+    let [_, p7] = profiles(&f);
+    let mut perms = std::fs::metadata(&p7).unwrap().permissions();
+    perms.set_readonly(true);
+    std::fs::set_permissions(&p7, perms.clone()).unwrap();
+    let back = f.pyenv(&["migrate", "--restore"]);
+    assert_eq!(back.code, 1, "{}{}", back.stdout, back.stderr);
+    assert!(
+        back.stderr.contains(&p7.display().to_string()),
+        "{}",
+        back.stderr
+    );
+    assert!(f
+        .root
+        .join(".rpyenv-migrate")
+        .join("manifest.txt")
+        .is_file());
+    #[allow(clippy::permissions_set_readonly_false)]
+    perms.set_readonly(false);
+    std::fs::set_permissions(&p7, perms).unwrap();
+    let again = f.pyenv(&["migrate", "--restore"]);
+    assert_eq!(again.code, 0, "{}{}", again.stdout, again.stderr);
+    assert!(!std::fs::read_to_string(&p7).unwrap().contains("pyenv init"));
+    assert!(!f.root.join(".rpyenv-migrate").exists());
+}
+
+/// Final review I4: a launcher kept because it exists again is final, not a reason to
+/// keep the whole manifest: the restore finishes, a second one has nothing to do, and the
+/// old launcher stays in the backup.
+#[test]
+fn a_kept_launcher_doesnt_hold_the_restore_open() {
+    let f = Fixture::new();
+    pyenv_win(&f);
+    assert_eq!(f.pyenv(&["migrate"]).code, 0);
+    std::fs::write(f.root.join("bin").join("pyenv.ps1"), "a newer pyenv.ps1").unwrap();
+    let back = f.pyenv(&["migrate", "--restore"]);
+    assert_eq!(back.code, 0, "{}{}", back.stdout, back.stderr);
+    assert!(back.stderr.contains("kept"), "{}", back.stderr);
+    let again = f.pyenv(&["migrate", "--restore"]);
+    assert!(
+        again.stderr.contains("nothing to restore"),
+        "{}",
+        again.stderr
+    );
+    assert_eq!(
+        std::fs::read_to_string(f.root.join(".rpyenv-migrate").join("bin").join("pyenv.ps1"))
+            .unwrap(),
+        "pyenv.ps1 from pyenv-win"
+    );
+}

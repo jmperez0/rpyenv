@@ -187,3 +187,33 @@ fn a_per_user_install_doesnt_set_up_on_its_own() {
     assert_eq!(f.pyenv(&["root"]).code, 0);
     assert!(!f.root.join(".rpyenv-setup").exists());
 }
+
+fn reg_type(f: &Fixture, scope: &str, name: &str) -> String {
+    let out = std::process::Command::new("reg")
+        .args([
+            "query",
+            &format!("HKCU\\{}\\{scope}", f.test_key),
+            "/v",
+            name,
+        ])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// Final review I5 and M1: a user Path setup can't read is left as it is (not replaced by
+/// the shims alone), setup fails, and it doesn't mark the root as set up.
+#[test]
+fn setup_leaves_an_unreadable_path_alone_and_fails() {
+    let f = Fixture::new();
+    reg_set(&f, "user", "Path", "REG_DWORD", "1");
+    let r = f.pyenv(&["setup"]);
+    assert_eq!(r.code, 1, "{}{}", r.stdout, r.stderr);
+    assert!(r.stderr.contains("PATH"), "{}", r.stderr);
+    assert!(
+        reg_type(&f, "user", "Path").contains("REG_DWORD"),
+        "{}",
+        reg_type(&f, "user", "Path")
+    );
+    assert!(!f.root.join(".rpyenv-setup").exists());
+}
