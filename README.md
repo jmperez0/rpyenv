@@ -175,13 +175,21 @@ list is in the design spec (§13).
    - takes pyenv-win's `bin` off your `PATH`,
    - moves pyenv-win's `pyenv.bat`, `pyenv.ps1`, and `pyenv` into a backup
      folder,
-   - rebuilds the shims as `.exe` files.
+   - rebuilds the shims as `.exe` files,
+   - adds the PowerShell profile line,
+   - links your pyenv-win-venv envs in as virtualenvs, leaving their files
+     where they are.
 
    This matters because a `pyenv.ps1` would win over `pyenv.exe` in
    PowerShell.
 
 Installed versions, the global `version` file, and `.python-version` files
-stay as they are. `pyenv migrate --restore` undoes the migration.
+stay as they are. `pyenv migrate --restore` undoes exactly what the
+migration did.
+
+Without pyenv-win, `pyenv setup` prepares your user: it puts the shims first
+on your user `PATH` and adds the PowerShell profile line, and running it again
+changes nothing. `pyenv init --install pwsh` adds just the profile line.
 
 ## Roadmap
 

@@ -278,8 +278,9 @@ evaluates the printed code in the current shell.
 
 `pyenv init - pwsh | Invoke-Expression` would run each output line on its own
 and break the multi-line function, hence `-join`. On Windows, `pyenv init
---install` refuses until M6's `pyenv setup` edits profiles (decided
-2026-10-04).
+--install pwsh` adds that line to the Windows PowerShell 5.1 and PowerShell 7
+profiles (M6a); other shells have no startup file rpyenv edits there, so
+`pyenv init --install <shell>` refuses for them.
 
 **No `pyenv.ps1` or `pyenv.cmd` for the CLI.** This was tested on the
 development machine, in PowerShell 5.1 and 7.6:
@@ -576,16 +577,25 @@ adds the PowerShell profile line (``iex ((pyenv init - pwsh) -join "`n")``,
 §7) to the user's Windows PowerShell 5.1 and PowerShell 7 profiles. It finds
 them where PowerShell does, including a OneDrive-redirected Documents folder,
 and leaves alone a profile that already mentions pyenv, as `pyenv init
---install` does on Linux. Until M6, `pyenv init --install` refuses on Windows
-and the line is added by hand (`pyenv init pwsh` prints it); without it,
+--install` does on Linux. `pyenv init --install pwsh` adds the same line
+(M6a); other shells have no startup file rpyenv edits. Without the line,
 `pyenv shell` in PowerShell prints the command to run and exits 1 (allowlist
-D-90). (Added 2026-10-04.)
+D-90). (Added 2026-10-04.) `pyenv setup` also warns about a `python.exe` on the
+machine `PATH` (see **`PATH` order** below), hints at `pyenv migrate` when
+pyenv-win's launchers are in this `PYENV_ROOT`'s `bin`, and writes the marker
+`PYENV_ROOT\.rpyenv-setup`. It changes only the user `Path` (keeping its
+`REG_EXPAND_SZ` type, never duplicating the entry), then broadcasts
+`WM_SETTINGCHANGE`; it leaves the `PYENV*` variables alone. Running it again
+changes nothing.
 It runs:
 
 - for a per-user install, at the end of installation;
 - for an all-users install, once per user at their next logon (through
   Windows' Active Setup mechanism), and on any `pyenv` command that finds it
-  hasn't run yet for this user.
+  hasn't run yet for this user. As built (M6a): an install is all-users when
+  the running `pyenv.exe` is under `%ProgramFiles%`, and "hasn't run yet" means
+  no `.rpyenv-setup` marker; that command prints `pyenv: set up for this user`
+  on stderr and then runs.
 
 **`pyenv migrate`** (rpyenv-only) takes over an existing pyenv-win install. It
 is needed because pyenv-win's `bin\pyenv.ps1` would otherwise win over
@@ -598,6 +608,24 @@ is needed because pyenv-win's `bin\pyenv.ps1` would otherwise win over
 - adds the PowerShell profile line, as `pyenv setup` does: removing
   `pyenv.ps1` would otherwise leave PowerShell's `pyenv shell` printing the
   command instead of applying it.
+
+It also links pyenv-win-venv envs in (decided 2026-10-08): each env in
+`%USERPROFILE%\.pyenv-win-venv\envs` whose base Python is installed in this
+`PYENV_ROOT` gets junctions at `versions\<base>\envs\<name>` and
+`versions\<name>` (the §10 layout). The env's files stay where they are; an
+env whose name is taken or whose base isn't installed is skipped with a
+message. Deleting a linked env (`virtualenv-delete`, or `uninstall` of its
+base) removes the junctions only.
+
+As built (M6a), migrate records each change in
+`PYENV_ROOT\.rpyenv-migrate\manifest.txt` as it makes it, and keeps the moved
+launchers in `PYENV_ROOT\.rpyenv-migrate\bin`. A second `pyenv migrate`
+changes nothing. `pyenv migrate --restore` undoes exactly what the manifest
+lists: it removes the junctions it made (only if they still point where it
+made them), puts back the launchers (unless a file with that name exists
+again), puts the `PATH` entries back first, and removes the profile lines it
+added. It then asks for pyenv-win's own `pyenv rehash` to bring back its
+shims. When something was left alone, the backup and manifest stay.
 
 `pyenv migrate --restore` undoes it. The per-user MSI offers to run
 `migrate` when it finds pyenv-win. For an all-users install, `pyenv setup`
