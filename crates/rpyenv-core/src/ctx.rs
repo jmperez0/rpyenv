@@ -222,7 +222,27 @@ fn same_dir(a: &Path, b: &Path) -> bool {
     a == b
 }
 
+/// pyenv-win's suffix for a native machine type (`IMAGE_FILE_MACHINE_*`).
+pub fn suffix_for_machine(machine: u16) -> &'static str {
+    match machine {
+        0xAA64 => "-arm64",
+        0x014C => "-win32",
+        _ => "",
+    }
+}
+
+/// Plan M6a, R7: the native machine, read at run time, so an x64 build on an ARM64 PC
+/// picks the `-arm64` builds; the build's own arch is the fallback.
 fn host_arch_suffix() -> &'static str {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, IsWow64Process2};
+        let (mut process, mut native) = (0u16, 0u16);
+        // SAFETY: two out-pointers to locals and this process's pseudo-handle.
+        if unsafe { IsWow64Process2(GetCurrentProcess(), &mut process, &mut native) } != 0 {
+            return suffix_for_machine(native);
+        }
+    }
     if cfg!(target_arch = "x86") {
         "-win32"
     } else if cfg!(target_arch = "aarch64") {
@@ -236,6 +256,15 @@ fn host_arch_suffix() -> &'static str {
 mod tests {
     use super::*;
     use crate::flavor::Flavor::{Pyenv, PyenvWin};
+
+    /// Plan M6a, R7: the native machine decides, as pyenv-win sees it.
+    #[test]
+    fn the_suffix_follows_the_native_machine() {
+        assert_eq!(suffix_for_machine(0xAA64), "-arm64"); // IMAGE_FILE_MACHINE_ARM64
+        assert_eq!(suffix_for_machine(0x8664), ""); // AMD64
+        assert_eq!(suffix_for_machine(0x014C), "-win32"); // I386
+        assert_eq!(suffix_for_machine(0), "", "unknown: no suffix");
+    }
 
     fn build(flavor: Flavor, pairs: &[(&str, &str)]) -> Result<Ctx, CtxError> {
         let get = |k: &str| {
