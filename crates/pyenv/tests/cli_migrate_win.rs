@@ -182,6 +182,8 @@ fn migrate_links_pyenv_win_venv_envs() {
         envs.join("work").join("pyvenv.cfg").is_file(),
         "the env's files stay"
     );
+    // Final review M2: the `envs` folder migrate created goes too.
+    assert!(!base.join("envs").exists());
 }
 
 /// Review focus 3: `--restore` touches only what migrate did.
@@ -219,6 +221,8 @@ fn uninstalling_the_base_keeps_a_linked_venv_env() {
     let r = f.pyenv(&["uninstall", "-f", "3.12.1"]);
     assert_eq!(r.code, 0, "{}{}", r.stdout, r.stderr);
     assert!(env.join("pyvenv.cfg").is_file(), "the env's files stay");
+    // Final review M7: the top-level link goes with the base.
+    assert!(std::fs::symlink_metadata(f.root.join("versions").join("work")).is_err());
 }
 
 /// Global Constraints (side-agent note): `virtualenv-delete` of a linked pyenv-win-venv env
@@ -338,4 +342,70 @@ fn a_kept_launcher_doesnt_hold_the_restore_open() {
             .unwrap(),
         "pyenv.ps1 from pyenv-win"
     );
+}
+
+/// Final review M2: a dangling `versions\<name>` link counts as taken (nothing half-linked),
+/// a `home` that isn't a version folder is refused, and an env with no `home` is named.
+#[test]
+fn odd_venv_envs_are_named_and_not_linked() {
+    let f = Fixture::new();
+    pyenv_win(&f);
+    let envs = f.base.join(".pyenv-win-venv").join("envs");
+    let base = f.root.join("versions").join("3.12.1");
+    venv_env(&envs.join("work"), &base);
+    venv_env(&envs.join("odd"), &f.root.join("versions").join(".."));
+    let nohome = envs.join("nohome");
+    std::fs::create_dir_all(&nohome).unwrap();
+    std::fs::write(nohome.join("pyvenv.cfg"), "version = 3.12.1\r\n").unwrap();
+    let gone = f.base.join("gone");
+    std::fs::create_dir_all(&gone).unwrap();
+    rpyenv_core::junction::create(&f.root.join("versions").join("work"), &gone).unwrap();
+    std::fs::remove_dir(&gone).unwrap();
+    let r = f.pyenv(&["migrate"]);
+    assert_eq!(r.code, 0, "{}{}", r.stdout, r.stderr);
+    for name in ["work", "odd", "nohome"] {
+        assert!(
+            r.stderr.contains(&envs.join(name).display().to_string()),
+            "{name}: {}",
+            r.stderr
+        );
+    }
+    assert!(std::fs::symlink_metadata(base.join("envs").join("work")).is_err());
+    assert!(!f.root.join("envs").exists());
+}
+
+/// Final review M4: a link rpyenv made later under the same name (the base reinstalled and
+/// the env re-created) isn't migrate's to remove.
+#[test]
+fn restore_keeps_a_link_made_after_migrate() {
+    let f = Fixture::new();
+    pyenv_win(&f);
+    let env = f.base.join(".pyenv-win-venv").join("envs").join("work");
+    let base = f.root.join("versions").join("3.12.1");
+    venv_env(&env, &base);
+    assert_eq!(f.pyenv(&["migrate"]).code, 0);
+    let (top, in_base) = (
+        f.root.join("versions").join("work"),
+        base.join("envs").join("work"),
+    );
+    std::fs::remove_dir(&top).unwrap();
+    std::fs::remove_dir(&in_base).unwrap();
+    venv_env(&in_base, &base);
+    rpyenv_core::junction::create(&top, &in_base).unwrap();
+    let back = f.pyenv(&["migrate", "--restore"]);
+    assert_eq!(back.code, 0, "{}{}", back.stdout, back.stderr);
+    assert!(top.join("pyvenv.cfg").is_file(), "{}", back.stderr);
+}
+
+/// Final review M3: restore removes only empty folders: a file in the backup that the
+/// manifest doesn't list stays.
+#[test]
+fn restore_never_deletes_an_unlisted_backup_file() {
+    let f = Fixture::new();
+    pyenv_win(&f);
+    assert_eq!(f.pyenv(&["migrate"]).code, 0);
+    let extra = f.root.join(".rpyenv-migrate").join("bin").join("extra.ps1");
+    std::fs::write(&extra, "x").unwrap();
+    assert_eq!(f.pyenv(&["migrate", "--restore"]).code, 0);
+    assert!(extra.is_file());
 }

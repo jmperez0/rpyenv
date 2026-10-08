@@ -156,6 +156,13 @@ fn escaping_names_remove_nothing() {
             .env("PYENV_ROOT", &root)
             .env("PYENV", &root)
             .env("PYENV_HOME", &root)
+            // Final review M7: the overrides every fixture command has (plan M6a, R1).
+            .env(
+                "RPYENV_TEST_ENV_KEY",
+                "Software\\rpyenv-test\\uninstall-args",
+            )
+            .env("RPYENV_TEST_DOCUMENTS", t.path().join("Documents"))
+            .env("RPYENV_TEST_PROGRAM_FILES", t.path().join("Program Files"))
             .env("SystemRoot", std::env::var_os("SystemRoot").unwrap())
             .current_dir(t.path())
             .output()

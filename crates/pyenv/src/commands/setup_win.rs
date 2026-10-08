@@ -121,6 +121,17 @@ pub fn run(ctx: &Ctx) -> Output {
     o
 }
 
+/// `path` is inside `dir`, comparing names as Windows does: in any case (final review M5).
+fn under(path: &std::path::Path, dir: &std::path::Path) -> bool {
+    let names = |p: &std::path::Path| -> Vec<String> {
+        p.components()
+            .map(|c| c.as_os_str().to_string_lossy().to_lowercase())
+            .collect()
+    };
+    let (path, dir) = (names(path), names(dir));
+    path.len() > dir.len() && path[..dir.len()] == dir[..]
+}
+
 /// Spec §9.4: an all-users install (this pyenv.exe under Program Files) sets the user up
 /// on their first command (plan M6a, R6). `None` when nothing was needed.
 pub fn first_run(ctx: &Ctx, cmd: &str) -> Option<Output> {
@@ -129,7 +140,7 @@ pub fn first_run(ctx: &Ctx, cmd: &str) -> Option<Output> {
     }
     let exe = std::env::current_exe().ok()?;
     let pf = rpyenv_core::winenv::program_files()?;
-    if !exe.starts_with(&pf) {
+    if !under(&exe, &pf) {
         return None;
     }
     let r = run(ctx);

@@ -106,21 +106,18 @@ fn run_pyenv(args: &[&str], raw: &[OsString], ctx: &Ctx) -> Output {
 /// pyenv-win's `pyenv.bat`, with command names matched case-insensitively (allowlist D-10).
 fn run_pyenv_win(args: &[&str], raw: &[OsString], ctx: &Ctx) -> Output {
     // Spec §9.4: an all-users install sets the user up before their first command runs.
+    // Printed now, before the command runs (`exec` runs a child; final review M5).
     #[cfg(windows)]
-    let first = commands::setup_win::first_run(
+    if let Some(first) = commands::setup_win::first_run(
         ctx,
         &args
             .first()
             .map(|c| c.to_ascii_lowercase())
             .unwrap_or_default(),
-    );
-    #[allow(unused_mut)]
-    let mut out = dispatch_win(args, raw, ctx);
-    #[cfg(windows)]
-    if let Some(f) = first {
-        out.stderr.insert_str(0, &f.stderr);
+    ) {
+        first.emit(Flavor::PyenvWin);
     }
-    out
+    dispatch_win(args, raw, ctx)
 }
 
 fn dispatch_win(args: &[&str], raw: &[OsString], ctx: &Ctx) -> Output {
