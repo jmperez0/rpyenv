@@ -17,6 +17,7 @@ pub mod livewatch_linux;
 #[cfg(windows)]
 pub mod livewatch_win;
 pub mod lookup;
+pub mod pathlist;
 pub mod paths;
 pub mod pathsearch;
 pub mod pe;
@@ -35,6 +36,8 @@ pub mod vtscan;
 pub mod wincmd;
 #[cfg(windows)]
 pub mod wincp;
+#[cfg(windows)]
+pub mod winenv;
 #[cfg(windows)]
 pub mod winproc;
 pub mod winresolve;
