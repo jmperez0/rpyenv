@@ -31,6 +31,13 @@ pub struct Fixture {
 
 impl Fixture {
     pub fn new() -> Fixture {
+        // The binaries honor the RPYENV_TEST_* overrides only in debug builds (plan M6a, R1):
+        // a release binary would edit the real user PATH and PowerShell profiles.
+        if !cfg!(debug_assertions) {
+            panic!(
+                "run the CLI tests without --release: a release pyenv ignores the test overrides"
+            );
+        }
         let tmp = tempfile::tempdir().unwrap();
         // Review focus 2: a space and a non-ASCII letter in every path.
         let base = tmp.path().join("py env ñ");
