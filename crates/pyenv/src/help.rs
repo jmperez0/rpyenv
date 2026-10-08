@@ -136,6 +136,8 @@ const PYENV_WIN: &[Topic] = &[
     topic("shims", None, None,
         "Usage: pyenv shims\n       pyenv shims --short\n\nList the existing pyenv shims\n\n"),
     #[cfg(windows)]
+    topic("migrate", None, None, commands::migrate_win::HELP),
+    #[cfg(windows)]
     topic("setup", None, None, commands::setup_win::HELP),
     topic("uninstall", None, None, commands::uninstall_win::HELP),
     topic("version", None, None,
