@@ -135,6 +135,8 @@ const PYENV_WIN: &[Topic] = &[
     topic("shell", None, None, commands::shell_win::HELP),
     topic("shims", None, None,
         "Usage: pyenv shims\n       pyenv shims --short\n\nList the existing pyenv shims\n\n"),
+    #[cfg(windows)]
+    topic("setup", None, None, commands::setup_win::HELP),
     topic("uninstall", None, None, commands::uninstall_win::HELP),
     topic("version", None, None,
         "Usage: pyenv version\n\nShows the currently selected Python version and how it was selected.\nTo obtain only the version string, use `pyenv vname' or `pyenv version-name`.\n"),
