@@ -2,7 +2,7 @@
 //! folders (spec §9.4). In debug builds, `RPYENV_TEST_ENV_KEY` redirects both
 //! environments to `HKCU\<key>\user` and `HKCU\<key>\machine` and skips the broadcast;
 //! `RPYENV_TEST_DOCUMENTS` and `RPYENV_TEST_PROGRAM_FILES` replace the known folders
-//! (plan M6a, R1). Tests always set them.
+//! (plan M6a, R1), and in unit-test builds of any profile. Tests always set them.
 
 use std::io;
 use std::path::PathBuf;
@@ -31,9 +31,9 @@ fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
 }
 
-/// The test override (debug builds only).
+/// The test override (debug and unit-test builds only).
 fn test_key() -> Option<String> {
-    if cfg!(debug_assertions) {
+    if cfg!(any(debug_assertions, test)) {
         std::env::var("RPYENV_TEST_ENV_KEY")
             .ok()
             .filter(|k| !k.is_empty())
@@ -179,7 +179,7 @@ pub fn expand(s: &str) -> String {
 }
 
 fn override_dir(var: &str) -> Option<PathBuf> {
-    if cfg!(debug_assertions) {
+    if cfg!(any(debug_assertions, test)) {
         std::env::var_os(var)
             .filter(|v| !v.is_empty())
             .map(PathBuf::from)
@@ -224,10 +224,14 @@ pub fn program_files() -> Option<PathBuf> {
 mod tests {
     use super::*;
 
+    /// The only test here that sets `RPYENV_TEST_ENV_KEY` (tests share the process).
     #[test]
     fn a_value_round_trips_through_the_test_key_keeping_its_type() {
         let key = format!("Software\\rpyenv-test\\unit-{}", std::process::id());
         std::env::set_var("RPYENV_TEST_ENV_KEY", &key);
+        // `cargo test --release` has no debug assertions: the override must hold there
+        // too, or the writes below would reach the real user `Path`.
+        assert_eq!(location(Scope::User).1, format!("{key}\\user"));
         assert!(get(Scope::User, "Path").is_none());
         let v = Value {
             text: r"%USERPROFILE%\x;C:\y".into(),
