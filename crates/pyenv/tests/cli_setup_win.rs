@@ -217,3 +217,64 @@ fn setup_leaves_an_unreadable_path_alone_and_fails() {
     );
     assert!(!f.root.join(".rpyenv-setup").exists());
 }
+
+fn all_users_bin(f: &Fixture) -> std::path::PathBuf {
+    let pf_bin = f.base.join("Program Files").join("rpyenv").join("bin");
+    std::fs::create_dir_all(&pf_bin).unwrap();
+    for exe in ["pyenv.exe", "pyenv-shim.exe", "pyenv-shimw.exe"] {
+        let src = std::path::Path::new(env!("CARGO_BIN_EXE_pyenv")).with_file_name(exe);
+        std::fs::copy(&src, pf_bin.join(exe)).unwrap();
+    }
+    pf_bin
+}
+
+/// Final review M5: Program Files matches in any case, as Windows paths do.
+#[test]
+fn first_run_matches_program_files_in_any_case() {
+    let f = Fixture::new();
+    let pf_bin = all_users_bin(&f);
+    let upper = f
+        .base
+        .join("Program Files")
+        .display()
+        .to_string()
+        .to_uppercase();
+    let out = f
+        .command(
+            &pf_bin.join("pyenv.exe"),
+            &f.work,
+            &[("RPYENV_TEST_PROGRAM_FILES", upper.as_str())],
+        )
+        .arg("root")
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("set up for this user"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// Final review M5: the first-run line prints before `pyenv exec` runs its command.
+#[test]
+fn first_run_prints_before_exec_runs_the_command() {
+    let f = Fixture::new();
+    let pf_bin = all_users_bin(&f);
+    f.version("3.12.1");
+    let cmd = std::path::Path::new(&std::env::var_os("SystemRoot").unwrap())
+        .join("System32")
+        .join("cmd.exe");
+    std::fs::copy(cmd, f.root.join("versions").join("3.12.1").join("tool.exe")).unwrap();
+    let out = f
+        .command(
+            &pf_bin.join("pyenv.exe"),
+            &f.work,
+            &[("PYENV_VERSION", "3.12.1")],
+        )
+        .args(["exec", "tool", "/d", "/c", "echo from-the-child 1>&2"])
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    let (setup, child) = (err.find("set up for this user"), err.find("from-the-child"));
+    assert!(setup.is_some() && child.is_some() && setup < child, "{err}");
+}

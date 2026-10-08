@@ -20,14 +20,22 @@ fn dir(ctx: &Ctx) -> PathBuf {
     ctx.root.join(".rpyenv-migrate")
 }
 
-fn record(ctx: &Ctx, line: &str) {
-    if let Ok(mut f) = std::fs::OpenOptions::new()
+/// Appends `line` to the manifest. A line that can't be written is reported (final review
+/// M3): `--restore` won't know to undo that step.
+fn record(ctx: &Ctx, o: &mut Output, line: &str) -> bool {
+    let manifest = dir(ctx).join("manifest.txt");
+    let written = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(dir(ctx).join("manifest.txt"))
-    {
-        let _ = writeln!(f, "{line}");
+        .open(&manifest)
+        .and_then(|mut f| writeln!(f, "{line}"));
+    if let Err(e) = &written {
+        o.err(format!(
+            "pyenv: cannot record in {} ({e}); `--restore` won't undo: {line}",
+            manifest.display()
+        ));
     }
+    written.is_ok()
 }
 
 pub fn migrate(ctx: &Ctx, args: &[&str]) -> Output {
@@ -96,7 +104,7 @@ fn forward(ctx: &Ctx) -> Output {
             std::fs::rename(&from, &to)
         };
         match moved {
-            Ok(()) => record(ctx, &format!("bin\t{name}")),
+            Ok(()) => failed |= !record(ctx, &mut o, &format!("bin\t{name}")),
             Err(e) => {
                 o.err(format!("pyenv: cannot move {}: {e}", from.display()));
                 failed = true;
@@ -107,7 +115,15 @@ fn forward(ctx: &Ctx) -> Output {
         let target = bin.display().to_string();
         let (text, gone) =
             pathlist::without(&v.text, &|e| pathlist::same(&winenv::expand(e), &target));
-        if !gone.is_empty() {
+        // Recorded first (final review M3): putting back an entry that is still there is
+        // harmless, losing one isn't.
+        if !gone.is_empty()
+            && !gone
+                .iter()
+                .all(|g| record(ctx, &mut o, &format!("path\t{g}")))
+        {
+            failed = true;
+        } else if !gone.is_empty() {
             match winenv::set_user(
                 "Path",
                 &winenv::Value {
@@ -116,9 +132,6 @@ fn forward(ctx: &Ctx) -> Output {
                 },
             ) {
                 Ok(()) => {
-                    for g in &gone {
-                        record(ctx, &format!("path\t{g}"));
-                    }
                     o.out(format!("pyenv: took {target} off your user PATH"));
                     winenv::broadcast();
                 }
@@ -136,7 +149,7 @@ fn forward(ctx: &Ctx) -> Output {
         for p in pwsh_profile::paths(&docs) {
             match pwsh_profile::add(&p) {
                 Ok(Added::Added) => {
-                    record(ctx, &format!("profile\t{}", p.display()));
+                    failed |= !record(ctx, &mut o, &format!("profile\t{}", p.display()));
                     o.out(format!(
                         "pyenv: added the PowerShell line to {}",
                         p.display()
@@ -146,7 +159,7 @@ fn forward(ctx: &Ctx) -> Output {
                 // so `--restore` takes it out whoever added it.
                 Ok(Added::Mentions) => {
                     if pwsh_profile::has_line(&p).unwrap_or(false) {
-                        record(ctx, &format!("profile\t{}", p.display()));
+                        failed |= !record(ctx, &mut o, &format!("profile\t{}", p.display()));
                     }
                 }
                 Err(e) => {
@@ -157,7 +170,7 @@ fn forward(ctx: &Ctx) -> Output {
         }
     }
     if let Some(envs) = envs_dir {
-        link_venvs(ctx, &envs, &mut o);
+        failed |= !link_venvs(ctx, &envs, &mut o);
     }
     if failed {
         o.err("pyenv: migrate didn't finish; `pyenv migrate --restore` undoes what it did");
@@ -169,57 +182,91 @@ fn forward(ctx: &Ctx) -> Output {
 }
 
 /// Links each pyenv-win-venv env whose base is installed here: `versions\<base>\envs\<name>`
-/// and `versions\<name>` (spec §10 layout), recording both.
-fn link_venvs(ctx: &Ctx, envs: &Path, o: &mut Output) {
+/// and `versions\<name>` (spec §10 layout), recording both. False when a step failed.
+fn link_venvs(ctx: &Ctx, envs: &Path, o: &mut Output) -> bool {
     let Ok(entries) = std::fs::read_dir(envs) else {
-        return;
+        return true;
     };
     let versions = ctx.versions_dir();
+    let mut ok = true;
     for e in entries.flatten() {
         let env = e.path();
         let name = e.file_name().to_string_lossy().into_owned();
         if !env.is_dir() || !crate::install::is_safe_win_segment(&name) {
             continue;
         }
-        let Some(home) = rpyenv_core::venv::read_cfg(&env, ctx.flavor).and_then(|c| c.home) else {
+        // Not an env (no pyvenv.cfg): not ours to mention.
+        let Some(cfg) = rpyenv_core::venv::read_cfg(&env, ctx.flavor) else {
             continue;
         };
-        let base_ok = home.parent().is_some_and(|p| {
-            pathlist::same(&p.display().to_string(), &versions.display().to_string())
-        }) && home.is_dir();
-        if !base_ok {
-            o.err(format!(
-                "pyenv: {} not linked: its Python ({}) isn't installed here",
-                env.display(),
-                home.display()
-            ));
+        let not_linked = |o: &mut Output, why: String| {
+            o.err(format!("pyenv: {} not linked: {why}", env.display()))
+        };
+        let Some(home) = cfg.home else {
+            not_linked(o, "its pyvenv.cfg names no Python (`home`)".into());
             continue;
-        }
-        let in_base = home.join("envs").join(&name);
+        };
+        // Final review M2: the base is a version folder by name, and the links are built
+        // from `versions`, never from the cfg's spelling of `home`.
+        let base = home
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .filter(|n| crate::install::is_safe_win_segment(n))
+            .filter(|_| {
+                home.parent().is_some_and(|p| {
+                    pathlist::same(&p.display().to_string(), &versions.display().to_string())
+                })
+            })
+            .map(|n| versions.join(n))
+            .filter(|b| b.is_dir());
+        let Some(base) = base else {
+            not_linked(
+                o,
+                format!("its Python ({}) isn't installed here", home.display()),
+            );
+            continue;
+        };
+        let in_base = base.join("envs").join(&name);
         let top = versions.join(&name);
-        if top.exists() || in_base.exists() {
-            o.err(format!(
-                "pyenv: {} not linked: {} is taken",
-                env.display(),
-                name
-            ));
+        // A dangling link is taken too.
+        let taken = |p: &Path| std::fs::symlink_metadata(p).is_ok();
+        if taken(&top) || taken(&in_base) {
+            not_linked(o, format!("{name} is taken"));
             continue;
         }
-        let _ = std::fs::create_dir_all(home.join("envs"));
-        if rpyenv_core::junction::create(&in_base, &env).is_ok() {
-            record(
+        let envs_dir = base.join("envs");
+        if !envs_dir.exists() {
+            if let Err(e) = std::fs::create_dir(&envs_dir) {
+                not_linked(o, format!("cannot create {}: {e}", envs_dir.display()));
+                ok = false;
+                continue;
+            }
+            ok &= record(ctx, o, &format!("dir\t{}", envs_dir.display()));
+        }
+        let linked = rpyenv_core::junction::create(&in_base, &env).and_then(|()| {
+            ok &= record(
                 ctx,
+                o,
                 &format!("junction\t{}\t{}", in_base.display(), env.display()),
             );
-            if rpyenv_core::junction::create(&top, &in_base).is_ok() {
-                record(
+            rpyenv_core::junction::create(&top, &in_base)
+        });
+        match linked {
+            Ok(()) => {
+                ok &= record(
                     ctx,
+                    o,
                     &format!("junction\t{}\t{}", top.display(), in_base.display()),
                 );
                 o.out(format!("pyenv: linked the pyenv-win-venv env {name}"));
             }
+            Err(e) => {
+                not_linked(o, e.to_string());
+                ok = false;
+            }
         }
     }
+    ok
 }
 
 /// Undoes what the manifest lists. A step that fails is reported and stays in the manifest
@@ -233,14 +280,32 @@ fn restore(ctx: &Ctx) -> Output {
     };
     let lines: Vec<&str> = text.lines().collect();
     let mut left = vec![false; lines.len()];
+    let junctions: Vec<(usize, &str, &str)> = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(i, l)| match l.split('\t').collect::<Vec<_>>()[..] {
+            ["junction", link, target] => Some((i, link, target)),
+            _ => None,
+        })
+        .collect();
+    let as_made = |link: &str, target: &str| {
+        let link = Path::new(link);
+        std::fs::symlink_metadata(link).is_ok_and(|m| m.file_type().is_symlink())
+            && std::fs::read_link(link)
+                .is_ok_and(|t| pathlist::same(&t.display().to_string(), target))
+    };
+    let made: Vec<bool> = junctions.iter().map(|&(_, l, t)| as_made(l, t)).collect();
     // Junctions first, newest first: `versions\<name>` before the one it points to.
-    for (i, l) in lines.iter().enumerate().rev() {
-        let f: Vec<&str> = l.split('\t').collect();
-        if let ["junction", link, target] = f[..] {
+    for (k, &(i, link, target)) in junctions.iter().enumerate().rev() {
+        {
+            // Final review M4: `versions\<name>` is migrate's only while what it points to
+            // is migrate's link too, not a folder rpyenv made later under the same name.
+            let ours = made[k]
+                && junctions
+                    .iter()
+                    .zip(&made)
+                    .all(|(&(_, l, _), &m)| m || !pathlist::same(l, target));
             let link = Path::new(link);
-            let ours = std::fs::symlink_metadata(link).is_ok_and(|m| m.file_type().is_symlink())
-                && std::fs::read_link(link)
-                    .is_ok_and(|t| pathlist::same(&t.display().to_string(), target));
             if ours {
                 if let Err(e) = std::fs::remove_dir(link) {
                     o.err(format!("pyenv: cannot remove {}: {e}", link.display()));
@@ -252,6 +317,12 @@ fn restore(ctx: &Ctx) -> Output {
                     link.display()
                 ));
             }
+        }
+    }
+    for l in lines.iter().rev() {
+        if let Some(d) = l.strip_prefix("dir\t") {
+            // Not empty: the user put something there since; it stays.
+            let _ = std::fs::remove_dir(d);
         }
     }
     let bin = ctx.root.join("bin");

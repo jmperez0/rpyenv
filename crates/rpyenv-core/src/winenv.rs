@@ -224,9 +224,16 @@ pub fn documents() -> Option<PathBuf> {
         .or_else(|| known_folder(&windows_sys::Win32::UI::Shell::FOLDERID_Documents))
 }
 
-/// `%ProgramFiles%`, where an all-users install lives.
+/// `%ProgramFiles%`, where an all-users install lives. The variable Windows sets in every
+/// process comes first: the known folder loads the shell, which the all-users check on a
+/// per-user install's commands shouldn't pay for (final review M5).
 pub fn program_files() -> Option<PathBuf> {
     override_dir("RPYENV_TEST_PROGRAM_FILES")
+        .or_else(|| {
+            std::env::var_os("ProgramFiles")
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from)
+        })
         .or_else(|| known_folder(&windows_sys::Win32::UI::Shell::FOLDERID_ProgramFiles))
 }
 
@@ -253,5 +260,11 @@ mod tests {
         let _ = std::process::Command::new("reg")
             .args(["delete", &format!("HKCU\\{key}"), "/f"])
             .output();
+        // The parent too, unless something else still uses it (it has subkeys then).
+        let parent = wide("Software\\rpyenv-test");
+        // SAFETY: a NUL-terminated name; RegDeleteKeyW only deletes a key without subkeys.
+        unsafe {
+            windows_sys::Win32::System::Registry::RegDeleteKeyW(HKEY_CURRENT_USER, parent.as_ptr());
+        }
     }
 }
