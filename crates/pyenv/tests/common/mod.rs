@@ -25,6 +25,8 @@ pub struct Fixture {
     pub work: PathBuf,
     /// The only directory on PATH: `<base>/sys/bin`.
     pub syspath: PathBuf,
+    /// The `HKCU` subkey standing in for the user and machine environments (plan M6a, R1).
+    pub test_key: String,
 }
 
 impl Fixture {
@@ -38,12 +40,17 @@ impl Fixture {
         for d in [&root.join("versions"), &work, &syspath] {
             std::fs::create_dir_all(d).unwrap();
         }
+        let test_key = format!(
+            "Software\\rpyenv-test\\{}",
+            tmp.path().file_name().unwrap().to_string_lossy()
+        );
         Fixture {
             _tmp: tmp,
             base,
             root,
             work,
             syspath,
+            test_key,
         }
     }
 
@@ -113,7 +120,12 @@ impl Fixture {
             .env("HOME", &self.base)
             .env("USERPROFILE", &self.base)
             .env("PATH", &self.syspath)
-            .env("PWD", dir);
+            .env("PWD", dir)
+            // Plan M6a, R1: setup, migrate and init --install never reach the real registry,
+            // profiles or Program Files from a test.
+            .env("RPYENV_TEST_ENV_KEY", &self.test_key)
+            .env("RPYENV_TEST_DOCUMENTS", self.base.join("Documents"))
+            .env("RPYENV_TEST_PROGRAM_FILES", self.base.join("Program Files"));
         if let Some(v) = std::env::var_os("SystemRoot") {
             cmd.env("SystemRoot", v);
         }
@@ -144,6 +156,15 @@ impl Fixture {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         panic!("a script stayed busy (ETXTBSY) for 2 s");
+    }
+}
+
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        #[cfg(windows)]
+        let _ = std::process::Command::new("reg")
+            .args(["delete", &format!("HKCU\\{}", self.test_key), "/f"])
+            .output();
     }
 }
 
