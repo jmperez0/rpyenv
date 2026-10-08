@@ -99,3 +99,21 @@ pub fn run(ctx: &Ctx) -> Output {
     }
     o
 }
+
+/// Spec §9.4: an all-users install (this pyenv.exe under Program Files) sets the user up
+/// on their first command (plan M6a, R6). `None` when nothing was needed.
+pub fn first_run(ctx: &Ctx, cmd: &str) -> Option<Output> {
+    if cmd == "setup" || ctx.root.join(MARKER).exists() {
+        return None;
+    }
+    let exe = std::env::current_exe().ok()?;
+    let pf = rpyenv_core::winenv::program_files()?;
+    if !exe.starts_with(&pf) {
+        return None;
+    }
+    let r = run(ctx);
+    let mut o = Output::new();
+    o.err("pyenv: set up for this user (see `pyenv setup`)");
+    o.stderr.push_str(&r.stderr);
+    Some(o)
+}
