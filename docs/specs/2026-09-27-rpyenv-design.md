@@ -595,7 +595,9 @@ It runs:
   hasn't run yet for this user. As built (M6a): an install is all-users when
   the running `pyenv.exe` is under `%ProgramFiles%`, and "hasn't run yet" means
   no `.rpyenv-setup` marker; that command prints `pyenv: set up for this user`
-  on stderr and then runs.
+  on stderr and then runs. A first run that fails writes
+  `.rpyenv-setup-failed` and is tried again a day later rather than on every
+  command; `pyenv setup` retries at once.
 
 **`pyenv migrate`** (rpyenv-only) takes over an existing pyenv-win install. It
 is needed because pyenv-win's `bin\pyenv.ps1` would otherwise win over
@@ -628,7 +630,9 @@ added, including a line `pyenv setup` added before. It then asks for
 pyenv-win's own `pyenv rehash` to bring back its shims. A step that fails is
 reported, fails the command, and stays in the manifest, so running `--restore`
 again finishes the job; a launcher kept because it exists again is final, and
-the old one stays in the backup. Migrate and setup stop without changing the
+the old one stays in the backup (a later `pyenv migrate` stops, changing
+nothing, until it's moved out); a launcher whose backup is gone is reported
+and is final too. Migrate and setup stop without changing the
 user `Path` when they can't read it, and either command exits 1 when a step
 fails; setup writes its marker only when every step succeeded.
 
