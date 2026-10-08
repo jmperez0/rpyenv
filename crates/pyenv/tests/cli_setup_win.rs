@@ -145,3 +145,45 @@ fn setup_hints_at_migrate_when_pyenv_win_is_there() {
     let r = f.pyenv(&["setup"]);
     assert!(r.stderr.contains("pyenv migrate"), "{}", r.stderr);
 }
+
+/// Spec §9.4: an all-users install (pyenv.exe under Program Files) sets each user up on
+/// their first `pyenv` command; a per-user install doesn't.
+#[test]
+fn an_all_users_install_sets_the_user_up_on_first_use() {
+    let f = Fixture::new();
+    let pf_bin = f.base.join("Program Files").join("rpyenv").join("bin");
+    std::fs::create_dir_all(&pf_bin).unwrap();
+    for exe in ["pyenv.exe", "pyenv-shim.exe", "pyenv-shimw.exe"] {
+        let src = std::path::Path::new(env!("CARGO_BIN_EXE_pyenv")).with_file_name(exe);
+        std::fs::copy(&src, pf_bin.join(exe)).unwrap();
+    }
+    let out = f
+        .command(&pf_bin.join("pyenv.exe"), &f.work, &[])
+        .arg("root")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("set up for this user"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(f.root.join(".rpyenv-setup").is_file());
+    let again = f
+        .command(&pf_bin.join("pyenv.exe"), &f.work, &[])
+        .arg("root")
+        .output()
+        .unwrap();
+    assert!(
+        again.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&again.stderr)
+    );
+}
+
+#[test]
+fn a_per_user_install_doesnt_set_up_on_its_own() {
+    let f = Fixture::new();
+    assert_eq!(f.pyenv(&["root"]).code, 0);
+    assert!(!f.root.join(".rpyenv-setup").exists());
+}
