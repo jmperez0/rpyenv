@@ -409,3 +409,141 @@ fn restore_never_deletes_an_unlisted_backup_file() {
     assert_eq!(f.pyenv(&["migrate", "--restore"]).code, 0);
     assert!(extra.is_file());
 }
+
+fn attrib_link(link: &std::path::Path, flag: &str) {
+    let out = std::process::Command::new("attrib")
+        .arg(flag)
+        .arg(link)
+        .arg("/L")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+}
+
+fn set_readonly(p: &std::path::Path, on: bool) {
+    let mut perms = std::fs::metadata(p).unwrap().permissions();
+    #[allow(clippy::permissions_set_readonly_false)]
+    perms.set_readonly(on);
+    std::fs::set_permissions(p, perms).unwrap();
+}
+
+fn linked_work(f: &Fixture) -> (std::path::PathBuf, std::path::PathBuf) {
+    let env = f.base.join(".pyenv-win-venv").join("envs").join("work");
+    let base = f.root.join("versions").join("3.12.1");
+    venv_env(&env, &base);
+    assert_eq!(f.pyenv(&["migrate"]).code, 0);
+    (
+        f.root.join("versions").join("work"),
+        base.join("envs").join("work"),
+    )
+}
+
+/// Re-review 1: `versions\<name>` left dangling (its target removed) is still migrate's.
+#[test]
+fn restore_removes_a_link_left_dangling() {
+    let f = Fixture::new();
+    pyenv_win(&f);
+    let (top, in_base) = linked_work(&f);
+    std::fs::remove_dir(&in_base).unwrap();
+    let back = f.pyenv(&["migrate", "--restore"]);
+    assert_eq!(back.code, 0, "{}{}", back.stdout, back.stderr);
+    assert!(std::fs::symlink_metadata(&top).is_err());
+}
+
+/// Re-review 2 and I3: a link that can't be removed stays in the manifest with the folder
+/// it's in, and only those: the next `--restore` removes both.
+#[test]
+fn a_link_that_cant_go_stays_listed_with_its_folder() {
+    let f = Fixture::new();
+    pyenv_win(&f);
+    let (top, in_base) = linked_work(&f);
+    attrib_link(&in_base, "+r");
+    let back = f.pyenv(&["migrate", "--restore"]);
+    attrib_link(&in_base, "-r");
+    assert_eq!(back.code, 1, "{}{}", back.stdout, back.stderr);
+    assert!(std::fs::symlink_metadata(&top).is_err());
+    let manifest =
+        std::fs::read_to_string(f.root.join(".rpyenv-migrate").join("manifest.txt")).unwrap();
+    let kinds: Vec<&str> = manifest
+        .lines()
+        .map(|l| l.split('\t').next().unwrap())
+        .collect();
+    assert_eq!(kinds, ["dir", "junction"], "{manifest}");
+    let again = f.pyenv(&["migrate", "--restore"]);
+    assert_eq!(again.code, 0, "{}{}", again.stdout, again.stderr);
+    assert!(!in_base.parent().unwrap().exists());
+    assert!(!f.root.join(".rpyenv-migrate").exists());
+}
+
+/// Re-review 3: a launcher whose backup is gone can't come back; that's final, not a
+/// failure every `--restore` repeats.
+#[test]
+fn restore_finishes_when_a_backup_is_gone() {
+    let f = Fixture::new();
+    pyenv_win(&f);
+    assert_eq!(f.pyenv(&["migrate"]).code, 0);
+    std::fs::remove_file(f.root.join(".rpyenv-migrate").join("bin").join("pyenv.bat")).unwrap();
+    let back = f.pyenv(&["migrate", "--restore"]);
+    assert_eq!(back.code, 0, "{}{}", back.stdout, back.stderr);
+    assert!(back.stderr.contains("pyenv.bat"), "{}", back.stderr);
+    let again = f.pyenv(&["migrate", "--restore"]);
+    assert!(
+        again.stderr.contains("nothing to restore"),
+        "{}",
+        again.stderr
+    );
+}
+
+/// Re-review 4: a manifest restore can't remove fails the command.
+#[test]
+fn restore_fails_when_it_cannot_remove_the_manifest() {
+    let f = Fixture::new();
+    pyenv_win(&f);
+    assert_eq!(f.pyenv(&["migrate"]).code, 0);
+    let manifest = f.root.join(".rpyenv-migrate").join("manifest.txt");
+    // Open without delete sharing (std's remove_file deletes a read-only file regardless).
+    use std::os::windows::fs::OpenOptionsExt;
+    let held = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(1) // FILE_SHARE_READ only
+        .open(&manifest)
+        .unwrap();
+    let back = f.pyenv(&["migrate", "--restore"]);
+    drop(held);
+    assert_eq!(back.code, 1, "{}{}", back.stdout, back.stderr);
+    assert!(back.stderr.contains("manifest"), "{}", back.stderr);
+}
+
+/// Re-review 5: a launcher kept in the backup stops a new migrate before anything changes.
+#[test]
+fn migrate_stops_when_a_kept_launcher_is_in_the_way() {
+    let f = Fixture::new();
+    pyenv_win(&f);
+    assert_eq!(f.pyenv(&["migrate"]).code, 0);
+    std::fs::write(f.root.join("bin").join("pyenv.ps1"), "a newer pyenv.ps1").unwrap();
+    assert_eq!(f.pyenv(&["migrate", "--restore"]).code, 0);
+    let r = f.pyenv(&["migrate"]);
+    assert_eq!(r.code, 1, "{}{}", r.stdout, r.stderr);
+    assert!(f.root.join("bin").join("pyenv.bat").is_file());
+    assert!(reg_get(&f, "user", "Path").contains(&f.root.join("bin").display().to_string()));
+    assert!(!f.root.join(".rpyenv-migrate").join("manifest.txt").exists());
+}
+
+/// Re-review (M1 untested for migrate): a step that fails fails migrate.
+#[test]
+fn migrate_fails_when_a_profile_cannot_be_written() {
+    let f = Fixture::new();
+    pyenv_win(&f);
+    let p7 = f
+        .base
+        .join("Documents")
+        .join("PowerShell")
+        .join("Microsoft.PowerShell_profile.ps1");
+    std::fs::create_dir_all(p7.parent().unwrap()).unwrap();
+    std::fs::write(&p7, "Set-Alias ll ls\r\n").unwrap();
+    set_readonly(&p7, true);
+    let r = f.pyenv(&["migrate"]);
+    set_readonly(&p7, false);
+    assert_eq!(r.code, 1, "{}{}", r.stdout, r.stderr);
+    assert!(r.stderr.contains(&p7.display().to_string()), "{}", r.stderr);
+}

@@ -48,7 +48,7 @@ impl Fixture {
             std::fs::create_dir_all(d).unwrap();
         }
         let test_key = format!(
-            "Software\\rpyenv-test\\{}",
+            "Software\\rpyenv-test-{}",
             tmp.path().file_name().unwrap().to_string_lossy()
         );
         Fixture {
@@ -173,23 +173,7 @@ impl Drop for Fixture {
             let _ = std::process::Command::new("reg")
                 .args(["delete", &format!("HKCU\\{}", self.test_key), "/f"])
                 .output();
-            delete_parent_key_if_empty();
         }
-    }
-}
-
-/// `HKCU\Software\rpyenv-test`, once no test is using it: RegDeleteKeyW refuses a key that
-/// has subkeys, so a parallel test's key keeps it (final review M7).
-#[cfg(windows)]
-fn delete_parent_key_if_empty() {
-    use windows_sys::Win32::System::Registry::{RegDeleteKeyW, HKEY_CURRENT_USER};
-    let name: Vec<u16> = "Software\\rpyenv-test"
-        .encode_utf16()
-        .chain(Some(0))
-        .collect();
-    // SAFETY: a NUL-terminated name; the call only deletes a key without subkeys.
-    unsafe {
-        RegDeleteKeyW(HKEY_CURRENT_USER, name.as_ptr());
     }
 }
 
