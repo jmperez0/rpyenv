@@ -14,7 +14,7 @@ use std::sync::{Mutex, OnceLock};
 use windows_sys::core::{BOOL, HRESULT};
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE, TRUE};
 use windows_sys::Win32::Foundation::{DuplicateHandle, DUPLICATE_SAME_ACCESS};
-use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE, WAIT_OBJECT_0};
+use windows_sys::Win32::Foundation::{GetLastError, GENERIC_READ, GENERIC_WRITE, WAIT_OBJECT_0};
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
 };
@@ -240,6 +240,7 @@ pub unsafe fn watch_child(process: HANDLE) {
 /// the child, until Windows' own timeout ends both. On a shared console the child is
 /// usually done already: the console host closes the most recently attached first.
 pub(crate) unsafe extern "system" fn on_console_event(event: u32) -> BOOL {
+    debuglog::append(&format!("event={event}"));
     if matches!(
         event,
         CTRL_CLOSE_EVENT | CTRL_LOGOFF_EVENT | CTRL_SHUTDOWN_EVENT
@@ -466,7 +467,7 @@ pub fn hold_after(code: u32, asked_by_console_parent: bool) {
         SetConsoleMode(conin, 0);
         FlushConsoleInputBuffer(conin);
         debuglog::append(&format!("hold={}", hold.name()));
-        loop {
+        let ended = loop {
             let left = if wait_ms == INFINITE {
                 INFINITE
             } else {
@@ -474,24 +475,26 @@ pub fn hold_after(code: u32, asked_by_console_parent: bool) {
                     .saturating_duration_since(std::time::Instant::now())
                     .as_millis() as u32
             };
-            if WaitForSingleObject(conin, left) != WAIT_OBJECT_0 {
-                break;
+            let waited = WaitForSingleObject(conin, left);
+            if waited != WAIT_OBJECT_0 {
+                break format!("wait={waited:#x} error={}", GetLastError());
             }
             let mut records: [INPUT_RECORD; 16] = std::mem::zeroed();
             let mut n = 0u32;
             if ReadConsoleInputW(conin, records.as_mut_ptr(), 16, &mut n) == 0 {
-                break;
+                break format!("read error={}", GetLastError());
             }
-            if records[..n as usize].iter().any(|r| {
+            if let Some(r) = records[..n as usize].iter().find(|r| {
                 u32::from(r.EventType) == KEY_EVENT
                     && console::ends_hold(
                         r.Event.KeyEvent.wVirtualKeyCode,
                         r.Event.KeyEvent.bKeyDown != 0,
                     )
             }) {
-                break;
+                break format!("key vk={:#x}", r.Event.KeyEvent.wVirtualKeyCode);
             }
-        }
+        };
+        debuglog::append(&format!("hold-end={ended}"));
         CloseHandle(conin);
         CloseHandle(conout);
     }
