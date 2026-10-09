@@ -25,6 +25,28 @@ unsafe extern "system" fn catch(event: u32) -> windows_sys::core::BOOL {
     1
 }
 
+/// Exits 0 when process `pid`'s console window is minimized, 1 when it isn't, and 2 when
+/// that console can't be reached.
+#[cfg(windows)]
+fn window_minimized(pid: u32) -> i32 {
+    use windows_sys::Win32::System::Console::{AttachConsole, FreeConsole, GetConsoleWindow};
+    use windows_sys::Win32::UI::WindowsAndMessaging::IsIconic;
+    // SAFETY: console attachment of this helper only; IsIconic reads the window's state.
+    unsafe {
+        FreeConsole();
+        if AttachConsole(pid) == 0 {
+            return 2;
+        }
+        let hwnd = GetConsoleWindow();
+        FreeConsole();
+        if IsIconic(hwnd) != 0 {
+            0
+        } else {
+            1
+        }
+    }
+}
+
 /// Posts `WM_CLOSE` to process `pid`'s console window, as clicking its close button does.
 /// Exits 4 when the window isn't conhost's (Windows Terminal hosts it elsewhere).
 #[cfg(windows)]
@@ -113,29 +135,117 @@ fn spawn_like_explorer(exe: &std::ffi::OsStr) -> i32 {
             SetStdHandle(h, std::ptr::null_mut());
         }
     }
-    let mut cmd = std::process::Command::new(exe);
-    cmd.args(std::env::args_os().skip(1))
-        .env_remove("ARGV_ECHO_SPAWN")
-        .env_remove("ARGV_ECHO_SPAWN_EXIT")
-        .env_remove("ARGV_ECHO_SPAWN_STDOUT");
     // Some callers give a file for stdout only.
-    if let Some(p) = std::env::var_os("ARGV_ECHO_SPAWN_STDOUT") {
-        if let Ok(f) = std::fs::File::create(p) {
-            cmd.stdout(f);
-        }
-    }
+    let stdout =
+        std::env::var_os("ARGV_ECHO_SPAWN_STDOUT").and_then(|p| std::fs::File::create(p).ok());
     let code = if std::env::var_os("ARGV_ECHO_SPAWN_HIDDEN").is_some() {
         spawn_hidden(exe)
     } else {
-        match cmd.status() {
-            Ok(s) => i64::from(s.code().unwrap_or(-1) as u32),
-            Err(_) => -2,
-        }
+        spawn_minimized(exe, stdout.as_ref())
     };
     if let Some(p) = exit_file {
         let _ = std::fs::write(p, code.to_string());
     }
     0
+}
+
+/// `arg` quoted for a Windows command line as the C runtime reads it back (and as std's
+/// `Command` writes it): in quotes when it's empty or has a space or tab, with the
+/// backslashes before a quote, and before the closing quote, doubled.
+#[cfg(windows)]
+fn push_arg(line: &mut Vec<u16>, arg: &std::ffi::OsStr) {
+    use std::os::windows::ffi::OsStrExt;
+    let units: Vec<u16> = arg.encode_wide().collect();
+    let quote = units.is_empty() || units.iter().any(|&u| u == 0x20 || u == 0x09);
+    line.push(0x20);
+    if quote {
+        line.push(0x22);
+    }
+    let mut backslashes = 0;
+    for &u in &units {
+        if u == 0x5C {
+            backslashes += 1;
+        } else {
+            if u == 0x22 {
+                line.extend(std::iter::repeat_n(0x5C, backslashes + 1));
+            }
+            backslashes = 0;
+        }
+        line.push(u);
+    }
+    if quote {
+        line.extend(std::iter::repeat_n(0x5C, backslashes));
+        line.push(0x22);
+    }
+}
+
+/// Starts `exe` with this helper's arguments as std's `Command` does (the program in
+/// quotes, `push_arg` quoting, handles inherited, standard handles given only when
+/// `stdout` is), but minimized and not activated (`SW_SHOWMINNOACTIVE`): the window the
+/// shim opens never takes the keyboard, so a key typed in another window during a test
+/// can't end its hold. Waits and returns the exit code (-2 when it can't start).
+#[cfg(windows)]
+fn spawn_minimized(exe: &std::ffi::OsStr, stdout: Option<&std::fs::File>) -> i64 {
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::{SetHandleInformation, HANDLE_FLAG_INHERIT};
+    use windows_sys::Win32::System::Threading::{
+        CreateProcessW, GetExitCodeProcess, WaitForSingleObject, INFINITE, PROCESS_INFORMATION,
+        STARTF_USESHOWWINDOW, STARTF_USESTDHANDLES, STARTUPINFOW,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SW_SHOWMINNOACTIVE, SW_SHOWNOACTIVATE};
+    // `ARGV_ECHO_SPAWN_SHOW=noactivate`: shown, still never activated (a test that must
+    // close the window: a minimized LAZY window's close is under investigation).
+    let show = match std::env::var("ARGV_ECHO_SPAWN_SHOW").as_deref() {
+        Ok("noactivate") => SW_SHOWNOACTIVATE,
+        _ => SW_SHOWMINNOACTIVE,
+    };
+    std::env::remove_var("ARGV_ECHO_SPAWN");
+    std::env::remove_var("ARGV_ECHO_SPAWN_EXIT");
+    std::env::remove_var("ARGV_ECHO_SPAWN_STDOUT");
+    std::env::remove_var("ARGV_ECHO_SPAWN_SHOW");
+    let mut line: Vec<u16> = vec![0x22];
+    line.extend(exe.encode_wide());
+    line.push(0x22);
+    for a in std::env::args_os().skip(1) {
+        push_arg(&mut line, &a);
+    }
+    line.push(0);
+    // SAFETY: a zeroed STARTUPINFOW with its size, flags and handles set; the stdout file
+    // stays open for the call; locals for every out-pointer; the command line is
+    // NUL-terminated and mutable.
+    unsafe {
+        let mut si: STARTUPINFOW = std::mem::zeroed();
+        si.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
+        si.dwFlags = STARTF_USESHOWWINDOW;
+        si.wShowWindow = show as u16;
+        if let Some(f) = stdout {
+            let h = f.as_raw_handle();
+            SetHandleInformation(h, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+            si.dwFlags |= STARTF_USESTDHANDLES;
+            si.hStdOutput = h;
+        }
+        let mut pi: PROCESS_INFORMATION = std::mem::zeroed();
+        if CreateProcessW(
+            std::ptr::null(),
+            line.as_mut_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            1,
+            0,
+            std::ptr::null(),
+            std::ptr::null(),
+            &si,
+            &mut pi,
+        ) == 0
+        {
+            return -2;
+        }
+        WaitForSingleObject(pi.hProcess, INFINITE);
+        let mut code = 0u32;
+        GetExitCodeProcess(pi.hProcess, &mut code);
+        i64::from(code)
+    }
 }
 
 /// Starts `exe` with this helper's arguments as `WshShell.Run cmd, 0, True` does: no
@@ -209,6 +319,8 @@ fn attach_to(pid: u32, name: &str) -> Result<windows_sys::Win32::Foundation::HAN
         let out = GetStdHandle(STD_OUTPUT_HANDLE);
         FreeConsole();
         if AttachConsole(pid) == 0 {
+            let error = windows_sys::Win32::Foundation::GetLastError();
+            eprintln!("AttachConsole({pid}) failed: error {error}");
             return Err(2);
         }
         SetStdHandle(STD_OUTPUT_HANDLE, out);
@@ -447,6 +559,13 @@ pub fn main() {
     #[cfg(windows)]
     if let Some(exe) = std::env::var_os("ARGV_ECHO_SPAWN") {
         std::process::exit(spawn_like_explorer(&exe));
+    }
+    #[cfg(windows)]
+    if let Some(pid) = std::env::var("ARGV_ECHO_MINIMIZED_PID")
+        .ok()
+        .and_then(|p| p.parse::<u32>().ok())
+    {
+        std::process::exit(window_minimized(pid));
     }
     #[cfg(windows)]
     if let Some(pid) = std::env::var("ARGV_ECHO_SCREEN_PID")

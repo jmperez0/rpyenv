@@ -546,6 +546,39 @@ fn shim_pid(log_text: &str) -> u32 {
         .unwrap_or_else(|| panic!("no pid= in:\n{log_text}"))
 }
 
+/// The text on the console of the shim holding its window, which logs to `log`. When it
+/// can't be read, the shim's log says how far it got (`hold-end=` when the hold ended).
+fn held_screen(pid: u32, log: &std::path::Path) -> String {
+    let out = Command::new(built("argv-echo"))
+        .env("ARGV_ECHO_SCREEN_PID", pid.to_string())
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "cannot read the console of {pid}: {}\nthe shim's log:\n{}",
+        String::from_utf8_lossy(&out.stderr),
+        std::fs::read_to_string(log).unwrap_or_default()
+    );
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// Whether process `pid`'s console window is minimized.
+fn minimized(pid: u32) -> bool {
+    let code = Command::new(built("argv-echo"))
+        .env("ARGV_ECHO_MINIMIZED_PID", pid.to_string())
+        .stdin(Stdio::null())
+        .status()
+        .unwrap()
+        .code();
+    assert!(
+        matches!(code, Some(0 | 1)),
+        "cannot reach the console of {pid}"
+    );
+    code == Some(0)
+}
+
 /// The text on process `pid`'s console.
 fn screen(pid: u32) -> String {
     let out = Command::new(built("argv-echo"))
@@ -556,7 +589,8 @@ fn screen(pid: u32) -> String {
     assert_eq!(
         out.status.code(),
         Some(0),
-        "cannot read the console of {pid}"
+        "cannot read the console of {pid}: {}",
+        String::from_utf8_lossy(&out.stderr)
     );
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
@@ -747,13 +781,14 @@ fn win_an_error_with_nowhere_to_print_gets_a_window_that_waits() {
         ],
         &[],
     );
+    let _end = EndHeldShim(&log);
     if !api() {
         assert_ne!(explorer_exit(helper, &exit), 0);
         return;
     }
     let text = wait_log(&log, "hold=key");
     let pid = shim_pid(&text);
-    let shown = screen(pid);
+    let shown = held_screen(pid, &log);
     assert!(shown.contains("9.9.9"), "{shown}");
     type_keys(pid, "x");
     assert_ne!(explorer_exit(helper, &exit), 0);
@@ -819,12 +854,13 @@ fn win_eager_a_start_failure_keeps_its_window() {
         ],
         &[],
     );
+    let _end = EndHeldShim(&log);
     if !api() {
         assert_ne!(explorer_exit(helper, &exit), 0);
         return;
     }
     let pid = shim_pid(&wait_log(&log, "hold=key"));
-    let shown = screen(pid);
+    let shown = held_screen(pid, &log);
     assert!(shown.contains("python"), "{shown}");
     type_keys(pid, "x");
     assert_ne!(explorer_exit(helper, &exit), 0);
@@ -1058,6 +1094,39 @@ fn gone(pid: u32) -> bool {
     }
 }
 
+/// When a test that holds a shim's window fails, ends the shim it logged to the log at
+/// this path: a window waiting for a key would otherwise stay open after the test.
+struct EndHeldShim<'a>(&'a std::path::Path);
+
+impl Drop for EndHeldShim<'_> {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            return;
+        }
+        let text = std::fs::read_to_string(self.0).unwrap_or_default();
+        let Some(pid) = text
+            .split_whitespace()
+            .find_map(|w| w.strip_prefix("pid="))
+            .and_then(|p| p.parse::<u32>().ok())
+        else {
+            return;
+        };
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, TerminateProcess, PROCESS_TERMINATE,
+        };
+        // SAFETY: opens a process by id for termination and closes the handle after; any
+        // failure is ignored, as this runs while the test is already failing.
+        unsafe {
+            let h = OpenProcess(PROCESS_TERMINATE, 0, pid);
+            if !h.is_null() {
+                TerminateProcess(h, 1);
+                CloseHandle(h);
+            }
+        }
+    }
+}
+
 /// Ends process `pid` at once, as `taskkill /F` does.
 fn terminate(pid: u32) {
     use windows_sys::Win32::Foundation::CloseHandle;
@@ -1198,13 +1267,17 @@ fn win_lazy_holds_a_failed_programs_window_until_a_key() {
         ],
         &[],
     );
+    let _end = EndHeldShim(&log);
     if !api() {
         assert_eq!(explorer_exit(helper, &exit), 3);
         return;
     }
     let pid = shim_pid(&wait_log(&log, "hold=key"));
-    let shown = screen(pid);
+    let shown = held_screen(pid, &log);
     assert!(shown.contains("exited with code 3"), "{shown}");
+    // A test window opens minimized and never takes the keyboard: a key typed in another
+    // window must not reach it and end its hold.
+    assert!(minimized(pid), "the test window took the keyboard");
     type_keys(pid, "x");
     assert_eq!(explorer_exit(helper, &exit), 3);
 }
@@ -1359,6 +1432,9 @@ fn win_lazy_closing_the_window_reaches_the_program() {
             ("ARGV_ECHO_PROMPT", v("x")),
             ("ARGV_ECHO_READY", ready.as_os_str()),
             ("ARGV_ECHO_SLEEP_MS", v("20000")),
+            // Shown, as Explorer shows it: closing a minimized LAZY window never reaches the
+            // shim (found 2026-10-09; investigated separately).
+            ("ARGV_ECHO_SPAWN_SHOW", v("noactivate")),
         ],
         &[],
     );
@@ -1371,7 +1447,8 @@ fn win_lazy_closing_the_window_reaches_the_program() {
     std::thread::sleep(Duration::from_millis(1500));
     assert!(
         cleaned.exists(),
-        "the program never got to finish its close handler"
+        "the program never got to finish its close handler:\n{}",
+        std::fs::read_to_string(&log).unwrap_or_default()
     );
 }
 
