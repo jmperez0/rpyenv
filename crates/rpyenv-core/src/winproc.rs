@@ -256,10 +256,13 @@ pub(crate) unsafe extern "system" fn on_console_event(event: u32) -> BOOL {
 
 /// Console events reach the child, which shares the console (`on_console_event` says what
 /// the shim does with each). It uses a handler, never `SetConsoleCtrlHandler(NULL, TRUE)`,
-/// which children would inherit (spec §5.3).
+/// which children would inherit (spec §5.3). Safe to call again: the handler is registered
+/// once (`alloc_default` calls it after a console is made).
 pub fn ignore_console_events() {
-    // SAFETY: registers a handler that touches only this module's atomics and lock.
+    // SAFETY: registers a handler that touches only this module's atomics and lock; the
+    // removal first keeps it registered once.
     unsafe {
+        SetConsoleCtrlHandler(Some(on_console_event), 0);
         SetConsoleCtrlHandler(Some(on_console_event), TRUE);
     }
 }
@@ -356,6 +359,13 @@ pub fn alloc_default() -> Alloc {
             }
         }
     };
+    if alloc != Alloc::None {
+        // The handler `spawn_and_wait` registered before this process had a console isn't
+        // called for that console's events on newer Windows builds (seen on 10.0.26300:
+        // closing the window then ended the shim at once, and a LAZY program never got its
+        // close event). Registered again now that the console exists.
+        ignore_console_events();
+    }
     debuglog::append(&format!(
         "console={} pid={}",
         alloc.name(),
