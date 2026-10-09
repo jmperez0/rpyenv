@@ -497,8 +497,22 @@ fn launch_like_explorer(
     args: &[&str],
 ) -> (std::process::Child, std::path::PathBuf) {
     let exit = unique(&f.base, "exit");
-    let helper = f
-        .command(&built("argv-echo"), env)
+    // CI has no keyboard to steal: its windows open as Explorer opens them. On the
+    // development host they never take the keyboard (minimized, unless a test asks for a
+    // shown window), so typing elsewhere can't end a held window.
+    let asked = env.iter().any(|(k, _)| *k == "ARGV_ECHO_SPAWN_SHOW");
+    let show = if on_ci() {
+        Some("normal")
+    } else if asked {
+        None
+    } else {
+        Some("minimized")
+    };
+    let mut cmd = f.command(&built("argv-echo"), env);
+    if let Some(show) = show {
+        cmd.env("ARGV_ECHO_SPAWN_SHOW", show);
+    }
+    let helper = cmd
         .env("ARGV_ECHO_SPAWN", f.shim(name))
         .env("ARGV_ECHO_SPAWN_EXIT", &exit)
         .args(args)
@@ -509,6 +523,11 @@ fn launch_like_explorer(
         .spawn()
         .unwrap();
     (helper, exit)
+}
+
+/// On a CI runner (GitHub Actions sets `CI`), where no keyboard can reach a test window.
+fn on_ci() -> bool {
+    std::env::var_os("CI").is_some_and(|v| !v.is_empty())
 }
 
 /// Waits for the helper; the shim's exit code, as a DWORD.
@@ -1275,9 +1294,11 @@ fn win_lazy_holds_a_failed_programs_window_until_a_key() {
     let pid = shim_pid(&wait_log(&log, "hold=key"));
     let shown = held_screen(pid, &log);
     assert!(shown.contains("exited with code 3"), "{shown}");
-    // A test window opens minimized and never takes the keyboard: a key typed in another
-    // window must not reach it and end its hold.
-    assert!(minimized(pid), "the test window took the keyboard");
+    // On the development host a test window opens minimized and never takes the keyboard:
+    // a key typed in another window must not reach it and end its hold.
+    if !on_ci() {
+        assert!(minimized(pid), "the test window took the keyboard");
+    }
     type_keys(pid, "x");
     assert_eq!(explorer_exit(helper, &exit), 3);
 }
@@ -1432,8 +1453,8 @@ fn win_lazy_closing_the_window_reaches_the_program() {
             ("ARGV_ECHO_PROMPT", v("x")),
             ("ARGV_ECHO_READY", ready.as_os_str()),
             ("ARGV_ECHO_SLEEP_MS", v("20000")),
-            // Shown, as Explorer shows it: closing a minimized LAZY window never reaches the
-            // shim (found 2026-10-09; investigated separately).
+            // Shown (CI opens every window normally): closing a minimized LAZY window never
+            // reaches the shim (found 2026-10-09; investigated separately).
             ("ARGV_ECHO_SPAWN_SHOW", v("noactivate")),
         ],
         &[],
