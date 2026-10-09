@@ -141,7 +141,7 @@ fn spawn_like_explorer(exe: &std::ffi::OsStr) -> i32 {
     let code = if std::env::var_os("ARGV_ECHO_SPAWN_HIDDEN").is_some() {
         spawn_hidden(exe)
     } else {
-        spawn_minimized(exe, stdout.as_ref())
+        spawn_with_show(exe, stdout.as_ref())
     };
     if let Some(p) = exit_file {
         let _ = std::fs::write(p, code.to_string());
@@ -181,11 +181,12 @@ fn push_arg(line: &mut Vec<u16>, arg: &std::ffi::OsStr) {
 
 /// Starts `exe` with this helper's arguments as std's `Command` does (the program in
 /// quotes, `push_arg` quoting, handles inherited, standard handles given only when
-/// `stdout` is), but minimized and not activated (`SW_SHOWMINNOACTIVE`): the window the
-/// shim opens never takes the keyboard, so a key typed in another window during a test
-/// can't end its hold. Waits and returns the exit code (-2 when it can't start).
+/// `stdout` is), with the show-window state `ARGV_ECHO_SPAWN_SHOW` asks for. On the
+/// development host the window the shim opens never takes the keyboard, so a key typed in
+/// another window during a test can't end its hold. Waits and returns the exit code (-2
+/// when it can't start).
 #[cfg(windows)]
-fn spawn_minimized(exe: &std::ffi::OsStr, stdout: Option<&std::fs::File>) -> i64 {
+fn spawn_with_show(exe: &std::ffi::OsStr, stdout: Option<&std::fs::File>) -> i64 {
     use std::os::windows::ffi::OsStrExt;
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Foundation::{SetHandleInformation, HANDLE_FLAG_INHERIT};
@@ -194,11 +195,13 @@ fn spawn_minimized(exe: &std::ffi::OsStr, stdout: Option<&std::fs::File>) -> i64
         STARTF_USESHOWWINDOW, STARTF_USESTDHANDLES, STARTUPINFOW,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{SW_SHOWMINNOACTIVE, SW_SHOWNOACTIVATE};
-    // `ARGV_ECHO_SPAWN_SHOW=noactivate`: shown, still never activated (a test that must
-    // close the window: a minimized LAZY window's close is under investigation).
+    // `ARGV_ECHO_SPAWN_SHOW`: `normal` gives no show-window flag, exactly as std's Command
+    // (CI, where no keyboard can reach a window); `noactivate` shows it without activating
+    // it; anything else, minimized and not activated (the development host).
     let show = match std::env::var("ARGV_ECHO_SPAWN_SHOW").as_deref() {
-        Ok("noactivate") => SW_SHOWNOACTIVATE,
-        _ => SW_SHOWMINNOACTIVE,
+        Ok("normal") => None,
+        Ok("noactivate") => Some(SW_SHOWNOACTIVATE),
+        _ => Some(SW_SHOWMINNOACTIVE),
     };
     std::env::remove_var("ARGV_ECHO_SPAWN");
     std::env::remove_var("ARGV_ECHO_SPAWN_EXIT");
@@ -217,8 +220,10 @@ fn spawn_minimized(exe: &std::ffi::OsStr, stdout: Option<&std::fs::File>) -> i64
     unsafe {
         let mut si: STARTUPINFOW = std::mem::zeroed();
         si.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
-        si.dwFlags = STARTF_USESHOWWINDOW;
-        si.wShowWindow = show as u16;
+        if let Some(show) = show {
+            si.dwFlags = STARTF_USESHOWWINDOW;
+            si.wShowWindow = show as u16;
+        }
         if let Some(f) = stdout {
             let h = f.as_raw_handle();
             SetHandleInformation(h, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
