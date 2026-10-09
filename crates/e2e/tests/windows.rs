@@ -1427,6 +1427,12 @@ fn win_closing_the_window_lets_the_program_finish_its_cleanup() {
         cleaned.exists(),
         "the program was ended before its cleanup finished"
     );
+    // The shim's own handler ran (CTRL_CLOSE_EVENT is 2): it waits for the program.
+    let text = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(
+        text.contains("event=2"),
+        "the shim never got the close event:\n{text}"
+    );
 }
 
 /// R8 in LAZY: closing the shim's window closes the pseudo-console, and the program's
@@ -1453,9 +1459,6 @@ fn win_lazy_closing_the_window_reaches_the_program() {
             ("ARGV_ECHO_PROMPT", v("x")),
             ("ARGV_ECHO_READY", ready.as_os_str()),
             ("ARGV_ECHO_SLEEP_MS", v("20000")),
-            // Shown (CI opens every window normally): closing a minimized LAZY window never
-            // reaches the shim (found 2026-10-09; investigated separately).
-            ("ARGV_ECHO_SPAWN_SHOW", v("noactivate")),
         ],
         &[],
     );
@@ -1466,10 +1469,17 @@ fn win_lazy_closing_the_window_reaches_the_program() {
     }
     helper.wait().unwrap();
     std::thread::sleep(Duration::from_millis(1500));
+    let text = std::fs::read_to_string(&log).unwrap_or_default();
     assert!(
         cleaned.exists(),
-        "the program never got to finish its close handler:\n{}",
-        std::fs::read_to_string(&log).unwrap_or_default()
+        "the program never got to finish its close handler:\n{text}"
+    );
+    // The shim's own handler ran (CTRL_CLOSE_EVENT is 2) and closed the pseudo-console. It
+    // registers again once it has a console: newer Windows builds (10.0.26300) don't call a
+    // handler registered before the process had one.
+    assert!(
+        text.contains("event=2"),
+        "the shim never got the close event:\n{text}"
     );
 }
 
