@@ -1,0 +1,27 @@
+name: Packaging
+# Builds and verifies the release assets on pull requests that touch packaging (M6b
+# design §7.3), so a break shows before a tag.
+on:
+  pull_request:
+    paths:
+      - "installer/**"
+      - "install.sh"
+      - "ci/package_linux.sh"
+      - "ci/check_real_install.sh"
+      - "ci/test_install_sh.py"
+      - "ci/pe_imports.py"
+      - ".cargo/**"
+      - ".config/dotnet-tools.json"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/build.yml"
+      - ".github/workflows/packaging.yml"
+      - ".github/workflows/release.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    uses: ./.github/workflows/build.yml
+    secrets: inherit
