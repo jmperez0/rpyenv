@@ -44,7 +44,11 @@ def msiexec(args: str, expect=(0, 3010)) -> int:
     if code not in expect:
         raw = log.read_bytes() if log.exists() else b""
         text = raw.decode("utf-16", "replace") if raw[:2] == b"\xff\xfe" else raw.decode("utf-8", "replace")
-        raise AssertionError(f"msiexec {args}: exit {code}, expected {expect}\n{text[-6000:]}")
+        lines = text.splitlines()
+        # The failing action is the first "Return value 3"; show what led to it.
+        failed = next((i for i, line in enumerate(lines) if "Return value 3" in line), None)
+        shown = lines[max(0, failed - 40):failed + 5] if failed is not None else lines[-80:]
+        raise AssertionError(f"msiexec {args}: exit {code}, expected {expect}\n" + "\n".join(shown))
     return code
 
 
@@ -166,6 +170,46 @@ def all_users(msi: Path) -> None:
     check(reg(winreg.HKEY_LOCAL_MACHINE, ACTIVE_SETUP, "StubPath") is None, "Active Setup key removed")
 
 
+def as_user(name: str, password: str, args: str) -> int:
+    """Runs `msiexec <args> /qn` as local user `name`, with its profile loaded; its exit code."""
+    log = Path(os.environ.get("PUBLIC", r"C:\Users\Public")) / f"rpyenv-{name}.log"
+    script = (
+        f"$c = New-Object System.Management.Automation.PSCredential('{name}', "
+        f"(ConvertTo-SecureString '{password}' -AsPlainText -Force)); "
+        f"$p = Start-Process msiexec -ArgumentList '{args} /qn /l*v \"{log}\"' -Credential $c "
+        "-LoadUserProfile -WorkingDirectory C:\\ -Wait -PassThru; exit $p.ExitCode"
+    )
+    return subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script]).returncode
+
+
+def standard_user(msi: Path) -> None:
+    """Side-agent note (2026-10-10): "Just for me" must need no administrator rights.
+
+    Installs and uninstalls as a fresh standard account. With /qn there is no prompt, so a
+    step that needs elevation fails instead of asking.
+    """
+    import secrets
+
+    name = "rpyenvstd"
+    password = secrets.token_urlsafe(18) + "Aa1-"
+    subprocess.run(["net", "user", name, password, "/add"], check=True, capture_output=True)
+    try:
+        members = subprocess.run(["net", "localgroup", "Administrators"], capture_output=True, text=True).stdout
+        check(name not in members, f"{name} is a standard account, not an administrator")
+        home = Path(os.environ["SystemDrive"] + "\\") / "Users" / name
+        code = as_user(name, password, f'/i "{msi}"')
+        check(code in (0, 3010), f"just for me as a standard user: msiexec exit {code}")
+        check((home / "AppData" / "Local" / "Programs" / "rpyenv" / "bin" / "pyenv.exe").is_file(),
+              "pyenv.exe in the standard user's LocalAppData\\Programs")
+        check((home / ".pyenv" / "pyenv-win" / ".rpyenv-setup").is_file(), "setup ran for the standard user")
+        code = as_user(name, password, f'/x "{msi}"')
+        check(code in (0, 3010), f"uninstall as a standard user: msiexec exit {code}")
+        check(not (home / "AppData" / "Local" / "Programs" / "rpyenv" / "bin" / "pyenv.exe").exists(),
+              "uninstalled for the standard user")
+    finally:
+        subprocess.run(["net", "user", name, "/delete"], capture_output=True)
+
+
 def missing_exe(msi: Path) -> None:
     msiexec(f'/i "{msi}"')
     (USER_DIR / "bin" / "pyenv.exe").unlink()
@@ -195,6 +239,7 @@ def main(argv) -> int:
         ("upgrade", lambda: upgrade(msi, next_msi)),
         ("scope_refusal", lambda: scope_refusal(msi)),
         ("all_users", lambda: all_users(msi)),
+        ("standard_user", lambda: standard_user(msi)),
         ("missing_exe", lambda: missing_exe(msi)),  # last: it leaves setup's changes behind
     ]:
         run()
