@@ -219,12 +219,41 @@ def as_user(name: str, password: str, args: str) -> int:
     return code
 
 
+INSTALLER_POLICY = r"SOFTWARE\Policies\Microsoft\Windows\Installer"
+
+
+def set_disable_msi(value):
+    """Sets (or with None, deletes) the machine's DisableMSI policy; returns the old value."""
+    old = reg(winreg.HKEY_LOCAL_MACHINE, INSTALLER_POLICY, "DisableMSI")
+    with winreg.CreateKeyEx(winreg.HKEY_LOCAL_MACHINE, INSTALLER_POLICY, 0,
+                            winreg.KEY_SET_VALUE | winreg.KEY_WOW64_64KEY) as k:
+        if value is None:
+            try:
+                winreg.DeleteValue(k, "DisableMSI")
+            except FileNotFoundError:
+                pass
+        else:
+            winreg.SetValueEx(k, "DisableMSI", 0, winreg.REG_DWORD, value)
+    return old
+
+
 def standard_user(msi: Path) -> None:
     """Side-agent note (2026-10-10): "Just for me" must need no administrator rights.
 
     Installs and uninstalls as a fresh standard account. With /qn there is no prompt, so a
     step that needs elevation fails instead of asking.
     """
+    # Windows Server turns Windows Installer off for non-administrators (machine policy
+    # DisableMsi is 1 on the windows-2025 runner; error 1625). Client Windows, what "just for
+    # me" is for, allows it: behave like it for this scenario, then put the policy back.
+    old_policy = set_disable_msi(0)
+    try:
+        standard_user_install(msi)
+    finally:
+        set_disable_msi(old_policy)
+
+
+def standard_user_install(msi: Path) -> None:
     import secrets
 
     name = "rpyenvstd"
