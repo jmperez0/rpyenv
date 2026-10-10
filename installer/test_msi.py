@@ -47,7 +47,7 @@ def msiexec(args: str, expect=(0, 3010)) -> int:
     _log_count += 1
     LOGS.mkdir(exist_ok=True)
     log = (LOGS / f"{_log_count:02d}-msiexec.log").resolve()
-    code = subprocess.run(f'msiexec {args} /qn /l*v "{log}"').returncode
+    code = subprocess.run(f'msiexec {args} /qn /l*v "{log}"', timeout=900).returncode
     if code not in expect:
         raw = log.read_bytes() if log.exists() else b""
         text = raw.decode("utf-16", "replace") if raw[:2] == b"\xff\xfe" else raw.decode("utf-8", "replace")
@@ -198,13 +198,21 @@ def as_user(name: str, password: str, args: str) -> int:
     global _log_count
     _log_count += 1
     log = PUBLIC / f"rpyenv-{name}-{_log_count:02d}.log"
+    # pwsh, not Windows PowerShell: started from a PowerShell 7 step, `powershell` inherits
+    # its module path and can't load ConvertTo-SecureString. WaitForExit waits for msiexec
+    # alone (Start-Process -Wait also waits for every descendant); reading Handle first keeps
+    # the exit code readable.
     script = (
+        "$ErrorActionPreference = 'Stop'; "
         f"$c = New-Object System.Management.Automation.PSCredential('{name}', "
         f"(ConvertTo-SecureString '{password}' -AsPlainText -Force)); "
         f"$p = Start-Process msiexec -ArgumentList '{args} /qn /l*v \"{log}\"' -Credential $c "
-        "-LoadUserProfile -WorkingDirectory C:\\ -Wait -PassThru; exit $p.ExitCode"
+        "-LoadUserProfile -WorkingDirectory C:\\ -PassThru; $null = $p.Handle; "
+        "$p.WaitForExit(); exit $p.ExitCode"
     )
-    code = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script]).returncode
+    code = subprocess.run(
+        ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script], timeout=900
+    ).returncode
     if log.exists():
         LOGS.mkdir(exist_ok=True)
         shutil.copy(log, LOGS / log.name)
