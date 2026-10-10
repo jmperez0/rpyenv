@@ -124,7 +124,7 @@ def migrate(msi: Path) -> None:
     before = reg(winreg.HKEY_CURRENT_USER, "Environment", "Path") or ""
     set_user_path(f"{bin_dir};{before}")
     try:
-        msiexec(f'/i "{msi}" MIGRATE=1')
+        msiexec(f'/i "{msi}" MIGRATEPYENVWIN=1')
         check((ROOT / ".rpyenv-migrate" / "bin" / "pyenv.ps1").is_file(), "pyenv-win's launchers backed up")
         check(not (bin_dir / "pyenv.ps1").exists(), "pyenv-win's launchers moved aside")
         check(low(bin_dir) not in user_path(), "pyenv-win's bin off the user PATH")

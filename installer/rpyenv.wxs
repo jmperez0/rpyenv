@@ -19,7 +19,8 @@
 
     <!-- Options (design §4.3), public so a silent install can set them. -->
     <Property Id="LIVEREHASH" Secure="yes" />
-    <Property Id="MIGRATE" Secure="yes" />
+    <!-- Not MIGRATE: Windows Installer reserves it (MigrateFeatureStates, error 2601). -->
+    <Property Id="MIGRATEPYENVWIN" Secure="yes" />
     <Property Id="RPYENV_SCOPE" Value="user" />
 
     <!-- pyenv-win in this user's profile: the migrate checkbox shows, checked. -->
@@ -28,7 +29,7 @@
         <FileSearch Name="pyenv.ps1" />
       </DirectorySearch>
     </Property>
-    <SetProperty Id="MIGRATE" Value="1" After="AppSearch" Sequence="ui" Condition="PYENVWIN_FOUND AND NOT MIGRATE" />
+    <SetProperty Id="MIGRATEPYENVWIN" Value="1" After="AppSearch" Sequence="ui" Condition="PYENVWIN_FOUND AND NOT MIGRATEPYENVWIN" />
 
     <!-- One install per machine (design §4.5, plan P6). -->
     <Property Id="RPYENV_USER_INSTALLED">
@@ -106,7 +107,7 @@
     <InstallExecuteSequence>
       <Custom Action="RefuseMachineOverUser" After="AppSearch" Condition="NOT Installed AND ALLUSERS=1 AND RPYENV_USER_INSTALLED" />
       <Custom Action="RefuseUserOverMachine" After="RefuseMachineOverUser" Condition="NOT Installed AND ALLUSERS&lt;&gt;1 AND RPYENV_MACHINE_INSTALLED" />
-      <Custom Action="RpyenvMigrate" After="WriteEnvironmentStrings" Condition="NOT Installed AND ALLUSERS&lt;&gt;1 AND MIGRATE=1" />
+      <Custom Action="RpyenvMigrate" After="WriteEnvironmentStrings" Condition="NOT Installed AND ALLUSERS&lt;&gt;1 AND MIGRATEPYENVWIN=1" />
       <Custom Action="RpyenvSetup" After="RpyenvMigrate" Condition="NOT Installed AND ALLUSERS&lt;&gt;1" />
       <Custom Action="RpyenvRestore" Before="RemoveEnvironmentStrings" Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
       <Custom Action="RpyenvUndo" After="RpyenvRestore" Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
@@ -142,7 +143,7 @@
           </RadioButtonGroup>
         </Control>
         <Control Id="LiveRehash" Type="CheckBox" X="20" Y="110" Width="330" Height="18" Property="LIVEREHASH" CheckBoxValue="1" Text="Enable &amp;live rehash: new scripts get shims while a program runs" />
-        <Control Id="Migrate" Type="CheckBox" X="20" Y="134" Width="330" Height="18" Property="MIGRATE" CheckBoxValue="1" Text="Move &amp;pyenv-win aside so rpyenv takes over (pyenv migrate)" Hidden="yes" ShowCondition="PYENVWIN_FOUND AND RPYENV_SCOPE=&quot;user&quot;" HideCondition="NOT PYENVWIN_FOUND OR RPYENV_SCOPE&lt;&gt;&quot;user&quot;" />
+        <Control Id="Migrate" Type="CheckBox" X="20" Y="134" Width="330" Height="18" Property="MIGRATEPYENVWIN" CheckBoxValue="1" Text="Move &amp;pyenv-win aside so rpyenv takes over (pyenv migrate)" Hidden="yes" ShowCondition="PYENVWIN_FOUND AND RPYENV_SCOPE=&quot;user&quot;" HideCondition="NOT PYENVWIN_FOUND OR RPYENV_SCOPE&lt;&gt;&quot;user&quot;" />
         <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
         <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="!(loc.WixUIBack)" />
         <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="!(loc.WixUINext)" />
@@ -156,7 +157,7 @@
       <Publish Dialog="OptionsDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" />
       <Publish Dialog="OptionsDlg" Control="Next" Property="MSIINSTALLPERUSER" Value="1" Order="1" Condition="RPYENV_SCOPE=&quot;user&quot;" />
       <Publish Dialog="OptionsDlg" Control="Next" Property="MSIINSTALLPERUSER" Value="{}" Order="2" Condition="RPYENV_SCOPE=&quot;machine&quot;" />
-      <Publish Dialog="OptionsDlg" Control="Next" Property="MIGRATE" Value="{}" Order="3" Condition="RPYENV_SCOPE=&quot;machine&quot;" />
+      <Publish Dialog="OptionsDlg" Control="Next" Property="MIGRATEPYENVWIN" Value="{}" Order="3" Condition="RPYENV_SCOPE=&quot;machine&quot;" />
       <Publish Dialog="OptionsDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg" Order="4" />
       <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="OptionsDlg" Order="1" Condition="NOT Installed" />
       <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="MaintenanceTypeDlg" Order="2" Condition="Installed AND NOT PATCH" />
