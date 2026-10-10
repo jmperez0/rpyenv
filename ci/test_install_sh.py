@@ -245,6 +245,7 @@ class InstallShTest(unittest.TestCase):
         self.upstream_checkout()
         r = self.run_install("--uninstall")
         self.assertNotEqual(r.returncode, 0)
+        self.assertIn("upstream pyenv", r.stderr)
         self.assertTrue((self.root / "bin" / "pyenv").is_symlink(), "upstream's pyenv stays")
 
     def test_a_pyenv_root_with_spaces_and_non_ascii(self):
