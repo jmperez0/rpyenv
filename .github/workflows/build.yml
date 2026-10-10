@@ -1,0 +1,91 @@
+name: Build packages
+# Builds and verifies every release asset (M6b design §7). Called by packaging.yml (pull
+# requests) and release.yml (tags, manual dry runs).
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: msi (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-2025
+          - arch: arm64
+            runner: windows-11-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, 2026-10-02
+        with:
+          toolchain: "1.96"
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: "8.0.x"
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - run: cargo build --release --locked -p pyenv -p pyenv-shim -p pyenv-shimw
+      - name: Static C runtime
+        run: python ci/pe_imports.py --check target/release/pyenv.exe target/release/pyenv-shim.exe target/release/pyenv-shimw.exe
+      - name: Sign the executables (skipped until a provider is set up)
+        shell: pwsh
+        env:
+          RPYENV_SIGN_TOOL: ${{ secrets.RPYENV_SIGN_TOOL }}
+        run: ./installer/sign.ps1 target/release/pyenv.exe target/release/pyenv-shim.exe target/release/pyenv-shimw.exe
+      - name: Build the MSI
+        shell: pwsh
+        run: ./installer/build.ps1 -Arch ${{ matrix.arch }} -BinDir target/release -OutDir dist
+      - name: Build a higher-version MSI for the upgrade test
+        shell: pwsh
+        run: ./installer/build.ps1 -Arch ${{ matrix.arch }} -BinDir target/release -OutDir dist-next -Version Next
+      - name: Sign the MSI (skipped until a provider is set up)
+        shell: pwsh
+        env:
+          RPYENV_SIGN_TOOL: ${{ secrets.RPYENV_SIGN_TOOL }}
+        run: ./installer/sign.ps1 (Get-ChildItem dist/*.msi).FullName
+      - name: Check the MSI's tables
+        shell: pwsh
+        run: ./installer/test_msi_tables.ps1 (Get-ChildItem dist/*.msi).FullName
+      - name: Install, upgrade and uninstall
+        run: python installer/test_msi.py dist dist-next
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: msi-${{ matrix.arch }}
+          path: dist/*.msi
+          if-no-files-found: error
+
+  linux:
+    name: tarball (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, 2026-10-02
+        with:
+          toolchain: "1.96"
+          targets: x86_64-unknown-linux-musl, aarch64-unknown-linux-musl
+      - run: sudo apt-get update && sudo apt-get install -y musl-tools shellcheck
+      - run: sh ci/package_linux.sh dist
+      - name: install.sh tests
+        run: python3 -m unittest ci/test_install_sh.py -v
+      - run: shellcheck -s sh install.sh
+      - name: install.sh with the real tarball, no terminal
+        run: sh ci/check_real_install.sh dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: tar-${{ matrix.arch }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
