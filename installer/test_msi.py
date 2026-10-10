@@ -220,8 +220,11 @@ def standard_user(msi: Path) -> None:
     import secrets
 
     name = "rpyenvstd"
-    password = secrets.token_urlsafe(18) + "Aa1-"
-    subprocess.run(["net", "user", name, password, "/add"], check=True, capture_output=True)
+    # 14 characters at most: `net user` asks "continue (Y/N)?" for a longer password, and
+    # fails with nobody to answer. Upper, lower, digit and symbol meet the complexity rules.
+    password = secrets.token_hex(5) + "Aa1-"
+    added = subprocess.run(["net", "user", name, password, "/add"], capture_output=True, text=True)
+    check(added.returncode == 0, f"net user /add: {added.returncode}\n{added.stdout}{added.stderr}")
     try:
         members = subprocess.run(["net", "localgroup", "Administrators"], capture_output=True, text=True).stdout
         check(name not in members, f"{name} is a standard account, not an administrator")
