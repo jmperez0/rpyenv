@@ -1,6 +1,7 @@
 name: Release
-# A v* tag builds, verifies and drafts the release (M6b design §7.2); run it by hand for a
-# dry run that publishes nothing.
+# A v* tag builds, verifies and drafts the release (M6b design §7.2). Run by hand, it does
+# the same into a pre-release draft named v<version>-dryrun.<run>, which creates no tag
+# until someone publishes it: delete that draft afterwards.
 on:
   push:
     tags: ["v*"]
@@ -32,7 +33,6 @@ jobs:
 
   publish:
     needs: [version, build]
-    if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -57,4 +57,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.version.outputs.version }}
-        run: gh release create "$GITHUB_REF_NAME" assets/* --draft --generate-notes --title "rpyenv $VERSION"
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            gh release create "$GITHUB_REF_NAME" assets/* --draft --generate-notes --title "rpyenv $VERSION"
+          else
+            tag="v$VERSION-dryrun.$GITHUB_RUN_NUMBER"
+            gh release create "$tag" assets/* --draft --prerelease --target "$GITHUB_SHA" \
+              --generate-notes --title "rpyenv $VERSION (dry run $GITHUB_RUN_NUMBER)"
+          fi

@@ -2054,4 +2054,4 @@ are. `pyenv migrate --restore` undoes exactly what the migration did.
 
 ## After the plan
 
-A final whole-branch review (one reviewer on the most capable model), the fix pass, and the user's decision on minors. Then mark the PR ready. After the user merges, a **dry run** of `release.yml` from main (`gh workflow run release.yml --ref main`) must be green before anyone pushes the `v0.1.0` tag. The tag itself is the user's call.
+A final whole-branch review (one reviewer on the most capable model), the fix pass, and the user's decision on minors. Then mark the PR ready. After the user merges, a **dry run** of `release.yml` from main (`gh workflow run release.yml --ref main`) must be green before anyone pushes the `v0.1.0` tag. It publishes into a pre-release draft `v0.1.0-dryrun.<run>` (no tag); check its assets and SHA256SUMS, then delete it (`gh release delete v0.1.0-dryrun.<run> --yes`). The tag itself is the user's call.
