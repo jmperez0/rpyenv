@@ -6,9 +6,9 @@ Usage: python installer/test_msi.py <dist-dir> <next-dist-dir>
 """
 import ctypes
 import os
+import shutil
 import subprocess
 import sys
-import tempfile
 import winreg
 from ctypes import wintypes
 from pathlib import Path
@@ -38,8 +38,15 @@ def documents() -> Path:
 PROFILES = [documents() / sub / "Microsoft.PowerShell_profile.ps1" for sub in ("WindowsPowerShell", "PowerShell")]
 
 
+LOGS = Path("msi-logs")
+_log_count = 0
+
+
 def msiexec(args: str, expect=(0, 3010)) -> int:
-    log = Path(tempfile.mkdtemp()) / "msiexec.log"
+    global _log_count
+    _log_count += 1
+    LOGS.mkdir(exist_ok=True)
+    log = (LOGS / f"{_log_count:02d}-msiexec.log").resolve()
     code = subprocess.run(f'msiexec {args} /qn /l*v "{log}"').returncode
     if code not in expect:
         raw = log.read_bytes() if log.exists() else b""
@@ -150,36 +157,58 @@ def upgrade(msi: Path, next_msi: Path) -> None:
     check(not (USER_DIR / "bin" / "pyenv.exe").exists(), "the upgraded install uninstalls")
 
 
-def scope_refusal(msi: Path) -> None:
+def scope_refusal(msi: Path, next_msi: Path) -> None:
     msiexec(f'/i "{msi}"')
-    msiexec(f'/i "{msi}" ALLUSERS=1 MSIINSTALLPERUSER=""', expect=(1603,))
+    # The same package again: Windows Installer sees it installed for this user (the same
+    # product code) and runs maintenance; nothing goes to Program Files.
+    msiexec(f'/i "{msi}" ALLUSERS=1 MSIINSTALLPERUSER=""')
+    check(not (MACHINE_DIR / "bin").exists(), "the same package isn't installed for all users too")
+    # A newer package can't see the per-user install from the machine context; the
+    # scope marker refuses it (design §4.5).
+    msiexec(f'/i "{next_msi}" ALLUSERS=1 MSIINSTALLPERUSER=""', expect=(1603,))
     check(not (MACHINE_DIR / "bin").exists(), "no all-users install over a per-user one")
     msiexec(f'/x "{msi}"')
 
 
-def all_users(msi: Path) -> None:
+def all_users(msi: Path, next_msi: Path) -> None:
     msiexec(f'/i "{msi}" ALLUSERS=1 MSIINSTALLPERUSER=""')
     check((MACHINE_DIR / "bin" / "pyenv.exe").is_file(), "pyenv.exe in Program Files")
     check(low(MACHINE_DIR / "bin") in machine_path(), f"bin on the machine PATH: {machine_path()}")
     stub = reg(winreg.HKEY_LOCAL_MACHINE, ACTIVE_SETUP, "StubPath") or ""
     check(stub.lower().endswith('pyenv.exe" setup'), f"Active Setup StubPath: {stub!r}")
     check(reg(winreg.HKEY_LOCAL_MACHINE, r"Software\rpyenv", "Installed") == 1, "HKLM marker")
+    # The other direction (design §4.5): a newer just-for-me install over this one.
+    msiexec(f'/i "{next_msi}"', expect=(1603,))
+    check(not (USER_DIR / "bin" / "pyenv.exe").exists(), "no per-user install over an all-users one")
     msiexec(f'/x "{msi}" ALLUSERS=1')
     check(not (MACHINE_DIR / "bin" / "pyenv.exe").exists(), "files removed")
     check(low(MACHINE_DIR / "bin") not in machine_path(), "bin off the machine PATH")
     check(reg(winreg.HKEY_LOCAL_MACHINE, ACTIVE_SETUP, "StubPath") is None, "Active Setup key removed")
 
 
+PUBLIC = Path(os.environ.get("PUBLIC", r"C:\Users\Public"))
+
+
 def as_user(name: str, password: str, args: str) -> int:
-    """Runs `msiexec <args> /qn` as local user `name`, with its profile loaded; its exit code."""
-    log = Path(os.environ.get("PUBLIC", r"C:\Users\Public")) / f"rpyenv-{name}.log"
+    """Runs `msiexec <args> /qn` as local user `name`, with its profile loaded; its exit code.
+
+    The log goes to Public (a standard user may not write the workspace) and is copied
+    into msi-logs afterwards.
+    """
+    global _log_count
+    _log_count += 1
+    log = PUBLIC / f"rpyenv-{name}-{_log_count:02d}.log"
     script = (
         f"$c = New-Object System.Management.Automation.PSCredential('{name}', "
         f"(ConvertTo-SecureString '{password}' -AsPlainText -Force)); "
         f"$p = Start-Process msiexec -ArgumentList '{args} /qn /l*v \"{log}\"' -Credential $c "
         "-LoadUserProfile -WorkingDirectory C:\\ -Wait -PassThru; exit $p.ExitCode"
     )
-    return subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script]).returncode
+    code = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script]).returncode
+    if log.exists():
+        LOGS.mkdir(exist_ok=True)
+        shutil.copy(log, LOGS / log.name)
+    return code
 
 
 def standard_user(msi: Path) -> None:
@@ -197,6 +226,10 @@ def standard_user(msi: Path) -> None:
         members = subprocess.run(["net", "localgroup", "Administrators"], capture_output=True, text=True).stdout
         check(name not in members, f"{name} is a standard account, not an administrator")
         home = Path(os.environ["SystemDrive"] + "\\") / "Users" / name
+        # Public is readable by every user; the workspace may not be.
+        shared = PUBLIC / msi.name
+        shutil.copy(msi, shared)
+        msi = shared
         code = as_user(name, password, f'/i "{msi}"')
         check(code in (0, 3010), f"just for me as a standard user: msiexec exit {code}")
         check((home / "AppData" / "Local" / "Programs" / "rpyenv" / "bin" / "pyenv.exe").is_file(),
@@ -237,8 +270,8 @@ def main(argv) -> int:
         ("live_rehash", lambda: live_rehash(msi)),
         ("migrate", lambda: migrate(msi)),
         ("upgrade", lambda: upgrade(msi, next_msi)),
-        ("scope_refusal", lambda: scope_refusal(msi)),
-        ("all_users", lambda: all_users(msi)),
+        ("scope_refusal", lambda: scope_refusal(msi, next_msi)),
+        ("all_users", lambda: all_users(msi, next_msi)),
         ("standard_user", lambda: standard_user(msi)),
         ("missing_exe", lambda: missing_exe(msi)),  # last: it leaves setup's changes behind
     ]:
