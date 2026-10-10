@@ -1,0 +1,4 @@
+# M6b design §7.1: no Windows binary may need vcruntime140.dll, which isn't on every
+# machine (notably ARM64). Tests build the same way, so CI tests what ships.
+[target.'cfg(all(windows, target_env = "msvc"))']
+rustflags = ["-C", "target-feature=+crt-static"]

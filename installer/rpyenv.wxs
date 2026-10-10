@@ -1,0 +1,174 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  rpyenv's MSI (M6b design §4), built by installer/build.ps1 with WiX 5.0.2. One package
+  installs just for the current user (no administrator rights) or for all users (Windows
+  asks for elevation): chosen on the Options page, or on a silent install with
+  ALLUSERS=1 MSIINSTALLPERUSER="".
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="rpyenv"
+           Manufacturer="rpyenv"
+           Version="$(Version)"
+           UpgradeCode="A3154079-CE28-4416-B9A5-9FDB628BA522"
+           Scope="perUserOrMachine">
+    <SummaryInformation Description="rpyenv $(Version): pyenv in Rust" />
+    <MajorUpgrade DowngradeErrorMessage="A newer version of rpyenv is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+    <Property Id="ARPNOMODIFY" Value="1" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/jmperez0/rpyenv" />
+
+    <!-- Options (design §4.3), public so a silent install can set them. -->
+    <Property Id="LIVEREHASH" Secure="yes" />
+    <!-- Not MIGRATE: Windows Installer reserves it (MigrateFeatureStates, error 2601). -->
+    <Property Id="MIGRATEPYENVWIN" Secure="yes" />
+    <Property Id="RPYENV_SCOPE" Value="user" />
+
+    <!-- pyenv-win in this user's profile: the migrate checkbox shows, checked. -->
+    <Property Id="PYENVWIN_FOUND">
+      <DirectorySearch Id="PyenvWinBin" Path="[%USERPROFILE]\.pyenv\pyenv-win\bin" Depth="0">
+        <FileSearch Name="pyenv.ps1" />
+      </DirectorySearch>
+    </Property>
+    <SetProperty Id="MIGRATEPYENVWIN" Value="1" After="AppSearch" Sequence="ui" Condition="PYENVWIN_FOUND AND NOT MIGRATEPYENVWIN" />
+
+    <!-- One install per machine (design §4.5, plan P6). -->
+    <Property Id="RPYENV_USER_INSTALLED">
+      <RegistrySearch Root="HKCU" Key="Software\rpyenv" Name="Installed" Type="raw" />
+    </Property>
+    <Property Id="RPYENV_MACHINE_INSTALLED">
+      <RegistrySearch Root="HKLM" Key="Software\rpyenv" Name="Installed" Type="raw" Bitness="always64" />
+    </Property>
+    <CustomAction Id="RefuseMachineOverUser" Error="rpyenv is already installed just for you. Uninstall it first (Settings, Apps), then install it for all users." />
+    <CustomAction Id="RefuseUserOverMachine" Error="rpyenv is already installed for all users of this computer. Uninstall that first, or keep using it." />
+
+    <StandardDirectory Id="ProgramFiles6432Folder">
+      <Directory Id="INSTALLFOLDER" Name="rpyenv">
+        <Directory Id="BinFolder" Name="bin" />
+        <Directory Id="CompletionsFolder" Name="completions" />
+      </Directory>
+    </StandardDirectory>
+
+    <Feature Id="Main" Title="rpyenv">
+      <ComponentGroupRef Id="Files" />
+      <ComponentGroupRef Id="Environment" />
+    </Feature>
+
+    <ComponentGroup Id="Files" Directory="BinFolder">
+      <Component><File Source="$(BinDir)\pyenv.exe" /></Component>
+      <Component><File Source="$(BinDir)\pyenv-shim.exe" /></Component>
+      <Component><File Source="$(BinDir)\pyenv-shimw.exe" /></Component>
+      <Component Directory="CompletionsFolder"><File Source="$(RepoDir)\completions\pyenv.pwsh" /></Component>
+      <Component Directory="CompletionsFolder"><File Source="$(RepoDir)\completions\pyenv.bash" /></Component>
+      <Component Directory="CompletionsFolder"><File Source="$(RepoDir)\completions\pyenv.zsh" /></Component>
+      <Component Directory="CompletionsFolder"><File Source="$(RepoDir)\completions\pyenv.fish" /></Component>
+      <Component Directory="INSTALLFOLDER"><File Source="$(RepoDir)\LICENSE" Name="LICENSE.txt" /></Component>
+      <Component Directory="INSTALLFOLDER"><File Source="$(RepoDir)\README.md" /></Component>
+    </ComponentGroup>
+
+    <ComponentGroup Id="Environment" Directory="INSTALLFOLDER">
+      <!-- Just for me: bin on the user PATH; the HKCU marker is the key path. -->
+      <Component Id="UserEnvironment" Condition="ALLUSERS&lt;&gt;1">
+        <Environment Id="UserPath" Name="PATH" Value="[BinFolder]" Part="last" Action="set" System="no" />
+        <RegistryValue Root="HKCU" Key="Software\rpyenv" Name="Installed" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+      <Component Id="UserLiveRehash" Condition="ALLUSERS&lt;&gt;1 AND LIVEREHASH=1">
+        <Environment Id="UserLiveRehash" Name="RPYENV_LIVE_REHASH" Value="1" Action="set" System="no" />
+        <RegistryValue Root="HKCU" Key="Software\rpyenv" Name="LiveRehash" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+      <!-- For all users: bin on the machine PATH, the HKLM marker, Active Setup. -->
+      <Component Id="MachineEnvironment" Condition="ALLUSERS=1">
+        <Environment Id="MachinePath" Name="PATH" Value="[BinFolder]" Part="last" Action="set" System="yes" />
+        <RegistryValue Root="HKLM" Key="Software\rpyenv" Name="Installed" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+      <Component Id="MachineLiveRehash" Condition="ALLUSERS=1 AND LIVEREHASH=1">
+        <Environment Id="MachineLiveRehash" Name="RPYENV_LIVE_REHASH" Value="1" Action="set" System="yes" />
+        <RegistryValue Root="HKLM" Key="Software\rpyenv" Name="LiveRehash" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+      <Component Id="ActiveSetup" Condition="ALLUSERS=1">
+        <RegistryKey Root="HKLM" Key="SOFTWARE\Microsoft\Active Setup\Installed Components\{73C5FAF3-A93A-472F-BD99-814909823229}">
+          <RegistryValue Type="string" Value="rpyenv" KeyPath="yes" />
+          <RegistryValue Name="StubPath" Type="string" Value="&quot;[BinFolder]pyenv.exe&quot; setup" />
+          <RegistryValue Name="Version" Type="string" Value="$(VersionComma)" />
+          <RegistryValue Name="IsInstalled" Type="integer" Value="1" />
+        </RegistryKey>
+      </Component>
+    </ComponentGroup>
+
+    <!-- Design §4.4: pyenv.exe, hidden, as the installing user; failures only reach the log. -->
+    <SetProperty Id="RpyenvMigrate" Value="&quot;[BinFolder]pyenv.exe&quot; migrate" Before="RpyenvMigrate" Sequence="execute" />
+    <CustomAction Id="RpyenvMigrate" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixQuietExec" Execute="deferred" Impersonate="yes" Return="ignore" />
+    <SetProperty Id="RpyenvSetup" Value="&quot;[BinFolder]pyenv.exe&quot; setup" Before="RpyenvSetup" Sequence="execute" />
+    <CustomAction Id="RpyenvSetup" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixQuietExec" Execute="deferred" Impersonate="yes" Return="ignore" />
+    <SetProperty Id="RpyenvRestore" Value="&quot;[BinFolder]pyenv.exe&quot; migrate --restore" Before="RpyenvRestore" Sequence="execute" />
+    <CustomAction Id="RpyenvRestore" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixQuietExec" Execute="deferred" Impersonate="yes" Return="ignore" />
+    <SetProperty Id="RpyenvUndo" Value="&quot;[BinFolder]pyenv.exe&quot; setup --undo" Before="RpyenvUndo" Sequence="execute" />
+    <CustomAction Id="RpyenvUndo" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixQuietExec" Execute="deferred" Impersonate="yes" Return="ignore" />
+
+    <InstallExecuteSequence>
+      <Custom Action="RefuseMachineOverUser" After="AppSearch" Condition="NOT Installed AND ALLUSERS=1 AND RPYENV_USER_INSTALLED" />
+      <Custom Action="RefuseUserOverMachine" After="RefuseMachineOverUser" Condition="NOT Installed AND ALLUSERS&lt;&gt;1 AND RPYENV_MACHINE_INSTALLED" />
+      <Custom Action="RpyenvMigrate" After="WriteEnvironmentStrings" Condition="NOT Installed AND ALLUSERS&lt;&gt;1 AND MIGRATEPYENVWIN=1" />
+      <Custom Action="RpyenvSetup" After="RpyenvMigrate" Condition="NOT Installed AND ALLUSERS&lt;&gt;1" />
+      <Custom Action="RpyenvRestore" Before="RemoveEnvironmentStrings" Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+      <Custom Action="RpyenvUndo" After="RpyenvRestore" Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+    </InstallExecuteSequence>
+
+    <!-- Plan P1: Welcome, Options (scope and checkboxes), Ready. -->
+    <UI Id="RpyenvUI">
+      <TextStyle Id="WixUI_Font_Normal" FaceName="Tahoma" Size="8" />
+      <TextStyle Id="WixUI_Font_Bigger" FaceName="Tahoma" Size="12" />
+      <TextStyle Id="WixUI_Font_Title" FaceName="Tahoma" Size="9" Bold="yes" />
+      <Property Id="DefaultUIFont" Value="WixUI_Font_Normal" />
+
+      <DialogRef Id="ErrorDlg" />
+      <DialogRef Id="FatalError" />
+      <DialogRef Id="FilesInUse" />
+      <DialogRef Id="MsiRMFilesInUse" />
+      <DialogRef Id="PrepareDlg" />
+      <DialogRef Id="ProgressDlg" />
+      <DialogRef Id="ResumeDlg" />
+      <DialogRef Id="UserExit" />
+      <DialogRef Id="WelcomeDlg" />
+      <DialogRef Id="MaintenanceWelcomeDlg" />
+
+      <Dialog Id="OptionsDlg" Width="370" Height="270" Title="[ProductName] Setup">
+        <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="WixUI_Bmp_Banner" />
+        <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
+        <Control Id="Title" Type="Text" X="15" Y="6" Width="200" Height="15" Transparent="yes" NoPrefix="yes" Text="{\WixUI_Font_Title}Options" />
+        <Control Id="Description" Type="Text" X="25" Y="23" Width="280" Height="15" Transparent="yes" NoPrefix="yes" Text="Choose who rpyenv is for and what it sets up." />
+        <Control Id="Scope" Type="RadioButtonGroup" X="20" Y="55" Width="330" Height="44" Property="RPYENV_SCOPE">
+          <RadioButtonGroup Property="RPYENV_SCOPE">
+            <RadioButton Value="user" X="0" Y="0" Width="330" Height="16" Text="Just for &amp;me (no administrator rights needed)" />
+            <RadioButton Value="machine" X="0" Y="22" Width="330" Height="16" Text="For &amp;all users of this computer (Windows asks for administrator rights)" />
+          </RadioButtonGroup>
+        </Control>
+        <Control Id="LiveRehash" Type="CheckBox" X="20" Y="110" Width="330" Height="18" Property="LIVEREHASH" CheckBoxValue="1" Text="Enable &amp;live rehash: new scripts get shims while a program runs" />
+        <Control Id="Migrate" Type="CheckBox" X="20" Y="134" Width="330" Height="18" Property="MIGRATEPYENVWIN" CheckBoxValue="1" Text="Move &amp;pyenv-win aside so rpyenv takes over (pyenv migrate)" Hidden="yes" ShowCondition="PYENVWIN_FOUND AND RPYENV_SCOPE=&quot;user&quot;" HideCondition="NOT PYENVWIN_FOUND OR RPYENV_SCOPE&lt;&gt;&quot;user&quot;" />
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+        <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="!(loc.WixUIBack)" />
+        <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="!(loc.WixUINext)" />
+        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="!(loc.WixUICancel)">
+          <Publish Event="SpawnDialog" Value="CancelDlg" />
+        </Control>
+      </Dialog>
+
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="OptionsDlg" Condition="NOT Installed" />
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg" Condition="Installed AND PATCH" />
+      <Publish Dialog="OptionsDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" />
+      <Publish Dialog="OptionsDlg" Control="Next" Property="MSIINSTALLPERUSER" Value="1" Order="1" Condition="RPYENV_SCOPE=&quot;user&quot;" />
+      <Publish Dialog="OptionsDlg" Control="Next" Property="MSIINSTALLPERUSER" Value="{}" Order="2" Condition="RPYENV_SCOPE=&quot;machine&quot;" />
+      <Publish Dialog="OptionsDlg" Control="Next" Property="MIGRATEPYENVWIN" Value="{}" Order="3" Condition="RPYENV_SCOPE=&quot;machine&quot;" />
+      <Publish Dialog="OptionsDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg" Order="4" />
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="OptionsDlg" Order="1" Condition="NOT Installed" />
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="MaintenanceTypeDlg" Order="2" Condition="Installed AND NOT PATCH" />
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" Order="3" Condition="Installed AND PATCH" />
+      <Publish Dialog="MaintenanceWelcomeDlg" Control="Next" Event="NewDialog" Value="MaintenanceTypeDlg" />
+      <Publish Dialog="MaintenanceTypeDlg" Control="RepairButton" Event="NewDialog" Value="VerifyReadyDlg" />
+      <Publish Dialog="MaintenanceTypeDlg" Control="RemoveButton" Event="NewDialog" Value="VerifyReadyDlg" />
+      <Publish Dialog="MaintenanceTypeDlg" Control="Back" Event="NewDialog" Value="MaintenanceWelcomeDlg" />
+      <Publish Dialog="ExitDialog" Control="Finish" Event="EndDialog" Value="Return" Order="999" />
+    </UI>
+    <UIRef Id="WixUI_Common" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALTEXT" Value="Open a new terminal to use pyenv. If its shims aren't on your PATH there, run: pyenv setup" />
+  </Package>
+</Wix>

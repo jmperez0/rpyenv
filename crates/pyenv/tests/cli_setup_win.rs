@@ -298,3 +298,66 @@ fn a_failed_first_run_is_not_repeated_on_every_command() {
     let second = run();
     assert!(second.is_empty(), "{second}");
 }
+
+/// M6b design §5: `setup --undo` takes back what setup added for this user, keeps the
+/// rest of the Path and PYENV_ROOT's data, and is safe to run twice.
+#[test]
+fn setup_undo_takes_back_the_path_entry_the_profile_line_and_the_marker() {
+    let f = Fixture::new();
+    reg_set(&f, "user", "Path", "REG_EXPAND_SZ", r"C:\Tools");
+    assert_eq!(f.pyenv(&["setup"]).code, 0);
+    let r = f.pyenv(&["setup", "--undo"]);
+    assert_eq!(r.code, 0, "{}{}", r.stdout, r.stderr);
+    assert_eq!(reg_get(&f, "user", "Path"), r"REG_EXPAND_SZ C:\Tools");
+    for sub in ["WindowsPowerShell", "PowerShell"] {
+        let p = f
+            .base
+            .join("Documents")
+            .join(sub)
+            .join("Microsoft.PowerShell_profile.ps1");
+        assert!(
+            !std::fs::read_to_string(&p)
+                .unwrap_or_default()
+                .contains("pyenv init"),
+            "{}",
+            p.display()
+        );
+    }
+    assert!(!f.root.join(".rpyenv-setup").exists());
+    assert!(f.root.join("versions").is_dir(), "PYENV_ROOT's data stays");
+    let again = f.pyenv(&["setup", "--undo"]);
+    assert_eq!(again.code, 0, "{}{}", again.stdout, again.stderr);
+}
+
+/// Any spelling of the shims entry goes; other entries keep their order and the value
+/// keeps its type.
+#[test]
+fn setup_undo_keeps_other_path_entries_in_order() {
+    let f = Fixture::new();
+    let spelled = format!("{}\\", f.root.join("shims").display()).to_uppercase();
+    reg_set(
+        &f,
+        "user",
+        "Path",
+        "REG_SZ",
+        &format!(r"C:\A;{spelled};C:\B"),
+    );
+    let r = f.pyenv(&["setup", "--undo"]);
+    assert_eq!(r.code, 0, "{}{}", r.stdout, r.stderr);
+    assert_eq!(reg_get(&f, "user", "Path"), r"REG_SZ C:\A;C:\B");
+}
+
+/// M6a I5 applies to undo too: a Path it can't read is left as it is, and undo fails.
+#[test]
+fn setup_undo_leaves_an_unreadable_path_alone_and_fails() {
+    let f = Fixture::new();
+    reg_set(&f, "user", "Path", "REG_DWORD", "1");
+    let r = f.pyenv(&["setup", "--undo"]);
+    assert_eq!(r.code, 1, "{}{}", r.stdout, r.stderr);
+    assert!(
+        r.stderr.contains("cannot read your user PATH"),
+        "{}",
+        r.stderr
+    );
+    assert!(reg_type(&f, "user", "Path").contains("REG_DWORD"));
+}
