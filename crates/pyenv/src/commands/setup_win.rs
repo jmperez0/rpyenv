@@ -12,15 +12,20 @@ const FAILED_MARKER: &str = ".rpyenv-setup-failed";
 const RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
 
 pub const HELP: &str = "Usage: pyenv setup
+       pyenv setup --undo
 
 Prepares your Windows user for rpyenv: creates PYENV_ROOT, puts its shims folder first
 on your user PATH, rehashes, and adds the PowerShell line to your profiles. It's safe to
 run again.
+
+--undo takes back what setup added for this user: the shims entry on your user PATH and
+the PowerShell line. Your Python versions stay.
 ";
 
 pub fn setup(ctx: &Ctx, args: &[&str]) -> Output {
     match args {
         [] => run(ctx),
+        ["--undo"] => undo(ctx),
         ["--help"] => {
             let mut o = Output::new();
             o.stdout.push_str(HELP);
@@ -122,6 +127,75 @@ pub fn run(ctx: &Ctx) -> Output {
     }
     let _ = std::fs::write(ctx.root.join(MARKER), env!("CARGO_PKG_VERSION"));
     o.out("pyenv: open a new terminal for the changes to take effect");
+    o
+}
+
+/// M6b design §5: takes back what `run` added for this user (the MSI's uninstall runs
+/// it). Never touches PYENV_ROOT's versions or the shims folder's files.
+pub fn undo(ctx: &Ctx) -> Output {
+    let mut o = Output::new();
+    let mut failed = false;
+    let shims = ctx.shims_dir().display().to_string();
+    match winenv::get(winenv::Scope::User, "Path") {
+        // M6a I5: never write over a Path that couldn't be read.
+        Err(e) => {
+            o.err(format!(
+                "pyenv: cannot read your user PATH ({e}); left it as it is"
+            ));
+            failed = true;
+        }
+        Ok(None) => {}
+        Ok(Some(v)) => {
+            let (text, gone) =
+                pathlist::without(&v.text, &|e| pathlist::same(&winenv::expand(e), &shims));
+            if !gone.is_empty() {
+                match winenv::set_user(
+                    "Path",
+                    &winenv::Value {
+                        text,
+                        expand: v.expand,
+                    },
+                ) {
+                    Ok(()) => {
+                        o.out(format!("pyenv: took {shims} off your user PATH"));
+                        winenv::broadcast();
+                    }
+                    Err(e) => {
+                        o.err(format!("pyenv: cannot change your user PATH: {e}"));
+                        failed = true;
+                    }
+                }
+            }
+        }
+    }
+    if let Some(docs) = winenv::documents() {
+        for p in crate::commands::pwsh_profile::paths(&docs) {
+            match crate::commands::pwsh_profile::remove(&p) {
+                Ok(true) => o.out(format!(
+                    "pyenv: took the PowerShell line out of {}",
+                    p.display()
+                )),
+                Ok(false) => {}
+                Err(e) => {
+                    o.err(format!("pyenv: {}: {e}", p.display()));
+                    failed = true;
+                }
+            }
+        }
+    }
+    for marker in [MARKER, FAILED_MARKER] {
+        match std::fs::remove_file(ctx.root.join(marker)) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                o.err(format!("pyenv: cannot remove {marker}: {e}"));
+                failed = true;
+            }
+        }
+    }
+    if failed {
+        o.code = 1;
+    }
     o
 }
 
