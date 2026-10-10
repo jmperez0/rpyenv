@@ -11,3 +11,4 @@ __pycache__/
 /.wix/
 /dist/
 /dist-next/
+/msi-logs/

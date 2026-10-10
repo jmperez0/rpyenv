@@ -54,6 +54,12 @@ jobs:
         run: ./installer/test_msi_tables.ps1 (Get-ChildItem dist/*.msi).FullName
       - name: Install, upgrade and uninstall
         run: python installer/test_msi.py dist dist-next
+      - name: Keep the msiexec logs of a failed run
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: msi-logs-${{ matrix.arch }}
+          path: msi-logs/
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: msi-${{ matrix.arch }}
