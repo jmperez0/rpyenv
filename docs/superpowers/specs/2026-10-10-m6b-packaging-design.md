@@ -181,8 +181,11 @@ Steps:
 
 ### 7.2 `release.yml`
 
-Trigger: a `v*` tag; also `workflow_dispatch` as a dry run that builds and verifies but
-publishes nothing.
+Trigger: a `v*` tag; also `workflow_dispatch` as a dry run that runs every step, publish
+included, into a pre-release draft named `v<version>-dryrun.<run>`. A draft creates no tag
+until it is published, so the dry run leaves nothing behind but the draft (delete it) and
+its attestations. A green dry run has then exercised the checksums, the attestation and
+`gh release create` before the real tag does.
 
 1. **Version check:** the tag equals `v<workspace version>`, or the run stops.
 2. **Windows** (x64 runner and Windows 11 ARM64 runner): build; sign the `.exe` files
