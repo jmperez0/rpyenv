@@ -28,6 +28,8 @@ foreach ($r in (Rows 'SELECT `Property`, `Value` FROM `Property`')) { $props[$r[
 Expect ($props['ALLUSERS'] -eq '2') 'ALLUSERS=2 (one package, both scopes)'
 Expect ($props['MSIINSTALLPERUSER'] -eq '1') 'MSIINSTALLPERUSER=1 (just for me by default)'
 Expect ($props['ARPNOMODIFY'] -eq '1') 'ARPNOMODIFY=1'
+# Windows Installer reserves MIGRATE (MigrateFeatureStates): MIGRATE=1 fails with error 2601.
+Expect (-not (("$($props['SecureCustomProperties'])" -split ';') -contains 'MIGRATE')) 'no MIGRATE option (reserved)'
 
 $files = (Rows 'SELECT `FileName` FROM `File`') | ForEach-Object { ($_[0] -split '\|')[-1] }
 foreach ($f in 'pyenv.exe', 'pyenv-shim.exe', 'pyenv-shimw.exe', 'pyenv.pwsh', 'pyenv.bash', 'pyenv.zsh', 'pyenv.fish') {
