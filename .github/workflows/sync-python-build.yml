@@ -2,7 +2,9 @@ name: sync-python-build
 # Brings crates/pyenv/python-build in step with pyenv's latest release (plan M2a, Decision 1),
 # weekly and on demand. When the vendored copy differs, it does the mechanical part of the sync
 # and opens (or updates) a pull request that reports what it found:
-#   - updates the vendored copy (ci/sync_python_build.py) and PYENV_SHA in parity.yml;
+#   - updates the vendored copy (ci/sync_python_build.py), including python-build/UPSTREAM,
+#     which pins the pyenv commit parity.yml compares against. The pin is not in a workflow
+#     file because GITHUB_TOKEN may not push workflow changes (the 2026-10-12 run failed so);
 #   - regenerates the Linux parity goldens against the new pyenv;
 #   - runs cargo test, the differential cases and the upstream bats suite, and puts each
 #     result, pass or fail, in the pull request;
@@ -38,7 +40,7 @@ jobs:
           tag=$(gh api repos/pyenv/pyenv/releases/latest --jq .tag_name)
           sha=$(gh api "repos/pyenv/pyenv/commits/$tag" --jq .sha)
           curl -fsSL "https://github.com/pyenv/pyenv/archive/$sha.tar.gz" | tar -xz -C "$RUNNER_TEMP"
-          old=$(sed -n 's/^  PYENV_SHA: //p' .github/workflows/parity.yml)
+          old=$(cut -d ' ' -f 2 crates/pyenv/python-build/UPSTREAM)
           echo "TAG=$tag" >> "$GITHUB_ENV"
           echo "SHA=$sha" >> "$GITHUB_ENV"
           echo "OLD_SHA=$old" >> "$GITHUB_ENV"
@@ -52,7 +54,6 @@ jobs:
             exit 0
           fi
           echo "changed=true" >> "$GITHUB_OUTPUT"
-          sed -i "s/^  PYENV_SHA: .*/  PYENV_SHA: $SHA/" .github/workflows/parity.yml
       - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, 2026-10-02
         if: steps.update.outputs.changed == 'true'
         with:
@@ -101,13 +102,13 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -b "$branch"
-          git add crates/pyenv/python-build .github/workflows/parity.yml parity/golden
+          git add crates/pyenv/python-build parity/golden
           git commit -m "Sync python-build definitions with pyenv $TAG"
           git push -f origin "$branch"
           body="$RUNNER_TEMP/pr-body.md"
           {
             echo "Automated: crates/pyenv/python-build updated from pyenv $TAG ($SHA) by ci/sync_python_build.py,"
-            echo "\`PYENV_SHA\` bumped, and the Linux parity goldens regenerated. Review the golden diff."
+            echo "the parity pin in \`UPSTREAM\` bumped with it, and the Linux parity goldens regenerated. Review the golden diff."
             echo
             echo "Checks run by the workflow:"
             echo
