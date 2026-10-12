@@ -204,7 +204,7 @@ def run(tool, rpyenv, upstream, places, case):
         if v is None:
             env.pop(k, None)
         else:
-            env[k] = expand(v)
+            env[k] = expand(v).replace("{root}", root)
     # On Windows each run gets a hidden console of its own, in the OEM code page. pyenv.bat
     # runs `chcp 65001` and never restores it, so in a shared console every later run, rpyenv's
     # included, would write for code page 65001 instead (D-48, D-53).

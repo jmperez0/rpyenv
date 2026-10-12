@@ -35,6 +35,9 @@ pub enum Fetch {
     Git {
         url: String,
         reference: String,
+        /// From a `<ref>:<sha1>` reference (pyenv 2.8.9): the checkout must be this commit,
+        /// or this annotated tag when the ref names one.
+        sha1: Option<String>,
     },
 }
 
@@ -448,7 +451,11 @@ fn run(
             continue;
         }
         match first.as_str() {
-            "prefer_openssl3" | "prefer_openssl11" | "prefer_openssl3_to_4" => {}
+            // Homebrew/MacPorts formula choices: macOS only.
+            "prefer_openssl3"
+            | "prefer_openssl11"
+            | "prefer_openssl3_to_4"
+            | "require_openssl3" => {}
             "require_gcc" => def.require_gcc = true,
             "install_package" | "install_git" => {
                 let git = first == "install_git";
@@ -471,9 +478,15 @@ fn run(
                     rest
                 };
                 let fetch = if git {
+                    // `:` cannot occur in a ref name, so the first one splits (fetch_git).
+                    let (reference, sha1) = match w[3].split_once(':') {
+                        Some((r, s)) => (r, Some(s).filter(|s| !s.is_empty())),
+                        None => (w[3].as_str(), None),
+                    };
                     Fetch::Git {
                         url: w[2].clone(),
-                        reference: w[3].clone(),
+                        reference: reference.to_string(),
+                        sha1: sha1.map(str::to_string),
                     }
                 } else {
                     let (u, f) = super::checksum::split_url(&w[2]);

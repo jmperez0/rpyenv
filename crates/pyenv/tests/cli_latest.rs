@@ -77,20 +77,31 @@ fn known_mode_reads_the_vendored_definitions() {
 #[test]
 fn a_failed_match_reports_or_falls_back() {
     let f = Fixture::new();
-    let r = f.pyenv(&["latest", "-k", "3.15"]);
+    // A prefix with only a pre-release known, from a definition directory of the test's own:
+    // the vendored pre-releases come and go (pyenv 2.8.9 replaced 3.15.0rc3 by 3.15.0).
+    let defs = f.base.join("defs");
+    f.file(&defs.join("3.99.0rc1"), "");
+    let defs = defs.display().to_string();
+    let env = [("PYTHON_BUILD_DEFINITIONS", defs.as_str())];
+    let r = f.pyenv_env(&["latest", "-k", "3.99"], &env);
     assert_eq!(
         (r.stdout.as_str(), r.stderr.as_str(), r.code),
-        ("", "pyenv: no known versions match the prefix `3.15'\n", 1)
+        ("", "pyenv: no known versions match the prefix `3.99'\n", 1)
     );
-    let r = f.pyenv(&["latest", "3.15"]);
+    let r = f.pyenv_env(&["install", "--list", "--bare"], &env);
+    assert!(
+        r.stdout.lines().any(|l| l == "3.99.0rc1"),
+        "the fixture definition is seen"
+    );
+    let r = f.pyenv(&["latest", "3.99"]);
     assert_eq!(
         r.stderr,
-        "pyenv: no installed versions match the prefix `3.15'\n"
+        "pyenv: no installed versions match the prefix `3.99'\n"
     );
-    let r = f.pyenv(&["latest", "-b", "3.15"]);
-    assert_eq!((r.stdout.as_str(), r.code), ("3.15\n", 1));
-    let r = f.pyenv(&["latest", "-f", "3.15"]);
-    assert_eq!((r.stdout.as_str(), r.code), ("3.15\n", 0));
+    let r = f.pyenv(&["latest", "-b", "3.99"]);
+    assert_eq!((r.stdout.as_str(), r.code), ("3.99\n", 1));
+    let r = f.pyenv(&["latest", "-f", "3.99"]);
+    assert_eq!((r.stdout.as_str(), r.code), ("3.99\n", 0));
     let r = f.pyenv(&["latest", "-k", "-q", "3.12"]);
     assert_eq!(
         r.stderr, "pyenv: no known versions match the prefix `-q'\n",
