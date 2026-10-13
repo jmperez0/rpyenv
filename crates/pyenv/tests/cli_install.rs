@@ -27,6 +27,62 @@ fn plugin_def(f: &Fixture) -> Server {
     s
 }
 
+/// A plugin definition `3.12.99` cloning a local repository (`git_repo`) at `<reference>`,
+/// written `v1:<sha1>` to have the checkout verified (pyenv 2.8.9). Returns the repository's
+/// commit and tag SHA-1s; the repository lives in `f.base`.
+fn git_def(f: &Fixture, sha: impl Fn(&str, &str) -> String) -> (String, String) {
+    let repo = f.base.join("cpython.git");
+    std::fs::create_dir_all(&repo).unwrap();
+    let (commit, tag) = common::fakebuild::git_repo(&repo);
+    f.file(
+        &f.root.join("plugins/fake/share/python-build/3.12.99"),
+        &format!(
+            "install_git \"Python-3.12.99\" \"file://{}\" \"v1:{}\" standard verify_py312\n",
+            repo.display(),
+            sha(&commit, &tag)
+        ),
+    );
+    (commit, tag)
+}
+
+#[test]
+fn a_git_ref_checked_against_its_commit_sha1_installs() {
+    let f = Fixture::new();
+    git_def(&f, |commit, _| commit.to_string());
+    let r = run(&f, &["install", "3.12.99"], &[]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert!(f.root.join("versions/3.12.99/bin/python3.12").is_file());
+}
+
+#[test]
+fn a_git_ref_checked_against_its_annotated_tags_sha1_installs() {
+    let f = Fixture::new();
+    let (commit, tag) = git_def(&f, |_, tag| tag.to_string());
+    assert_ne!(commit, tag);
+    let r = run(&f, &["install", "3.12.99"], &[]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert!(f.root.join("versions/3.12.99/bin/python3.12").is_file());
+}
+
+#[test]
+fn a_git_ref_with_another_sha1_fails_before_building() {
+    let f = Fixture::new();
+    let wrong = "0".repeat(40);
+    let (commit, tag) = git_def(&f, |_, _| "0".repeat(40));
+    let r = run(&f, &["install", "3.12.99"], &[]);
+    assert_ne!(r.code, 0);
+    let want = format!(
+        "error: ref `v1' SHA-1 mismatch: expected {wrong}, got {commit}(commit) and {tag}(tag)\n"
+    );
+    assert!(r.stderr.contains(&want), "{}", r.stderr);
+    assert!(
+        !r.stderr.contains("Installing Python-3.12.99"),
+        "{}",
+        r.stderr
+    );
+    assert!(!f.root.join("versions/3.12.99").exists());
+}
+
 fn env<'a>(f: &'a Fixture, extra: &[(&'a str, &'a str)]) -> Vec<(&'a str, String)> {
     let mut v: Vec<(&str, String)> = vec![
         (
@@ -178,32 +234,17 @@ fn an_unknown_version_prints_upstreams_hint_and_exits_2() {
         (r.stderr.as_str(), r.code),
         ("python-build: definition not found: 9.9.9\n\nSee all available versions with `pyenv install --list'.\n\nIf the version you need is missing, try upgrading pyenv.\n", 2)
     );
-    // A release whose pre-releases are defined but which is not (`3.15.0` beside
-    // `3.15.0rc2`), derived from the definitions so a python-build sync keeps it valid.
-    let bare = run(&f, &["install", "--list", "--bare"], &[]).stdout;
-    let names: Vec<&str> = bare.lines().collect();
-    let query = names
-        .iter()
-        .rev()
-        .find_map(|n| {
-            let base = &n[..n.find(|c: char| c.is_ascii_alphabetic())?];
-            let parts: Vec<&str> = base.split('.').collect();
-            let numeric = parts.len() == 3
-                && parts
-                    .iter()
-                    .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()));
-            (numeric && !names.contains(&base)).then_some(base)
-        })
-        .expect("a pre-release whose release is not defined");
-    let containing: String = names
-        .iter()
-        .filter(|n| n.contains(query))
-        .map(|n| format!("  {n}\n"))
-        .collect();
-    let r = run(&f, &["install", query], &[]);
+    // A release whose pre-release is defined but which is not. A plugin definition, not a
+    // vendored one: the vendored pre-releases come and go with pyenv's releases (3.15.0rc3
+    // was replaced by 3.15.0 in 2.8.9).
+    f.file(
+        &f.root.join("plugins/fake/share/python-build/3.99.0rc1"),
+        "install_package \"Python-3.99.0rc1\" \"https://example.invalid/Python-3.99.0rc1.tar.xz\" standard\n",
+    );
+    let r = run(&f, &["install", "3.99.0"], &[]);
     assert_eq!(
-        (r.stderr, r.code),
-        (format!("python-build: definition not found: {query}\n\nThe following versions contain `{query}' in the name:\n{containing}\nSee all available versions with `pyenv install --list'.\n\nIf the version you need is missing, try upgrading pyenv.\n"), 2)
+        (r.stderr.as_str(), r.code),
+        ("python-build: definition not found: 3.99.0\n\nThe following versions contain `3.99.0' in the name:\n  3.99.0rc1\n\nSee all available versions with `pyenv install --list'.\n\nIf the version you need is missing, try upgrading pyenv.\n", 2)
     );
 }
 

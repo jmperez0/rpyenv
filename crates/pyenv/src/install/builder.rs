@@ -708,7 +708,11 @@ fn fetch_package(
             }
             Ok(dir)
         }
-        Fetch::Git { url, reference } => {
+        Fetch::Git {
+            url,
+            reference,
+            sha1,
+        } => {
             let dir = build_path.join(&pkg.name);
             let git = command("git", &plan.env)
                 .arg("--version")
@@ -752,9 +756,49 @@ fn fetch_package(
                     ]),
                 )?;
             }
+            if let Some(want) = sha1 {
+                verify_checkout(&dir, reference, want, &plan.env, say)?;
+            }
             Ok(dir)
         }
     }
+}
+
+/// pyenv 2.8.9's `fetch_git` check of a `<ref>:<sha1>` reference: the checkout's commit must
+/// be `want`, or, when HEAD is exactly the annotated tag `reference`, the tag object may be.
+fn verify_checkout(
+    dir: &Path,
+    reference: &str,
+    want: &str,
+    env: &[(OsString, OsString)],
+    say: &mut dyn FnMut(&str),
+) -> R<()> {
+    if interrupted() {
+        return Err(InstallError::Interrupted);
+    }
+    let git = |args: &[&str]| {
+        command("git", env)
+            .current_dir(dir)
+            .args(args)
+            .stderr(Stdio::null())
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim_end().to_string())
+    };
+    let tag = git(&["describe", "--exact-match"])
+        .filter(|d| d.lines().any(|l| l == reference))
+        .and_then(|_| git(&["rev-parse", reference]));
+    let commit = git(&["rev-parse", "HEAD"]).unwrap_or_default();
+    if commit == want || tag.as_deref() == Some(want) {
+        return Ok(());
+    }
+    let mut msg = format!("error: ref `{reference}' SHA-1 mismatch: expected {want}, got {commit}");
+    if let Some(t) = tag {
+        msg.push_str(&format!("(commit) and {t}(tag)"));
+    }
+    say(&msg);
+    Err(InstallError::Failed)
 }
 
 #[allow(clippy::too_many_arguments)]

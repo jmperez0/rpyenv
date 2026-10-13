@@ -37,6 +37,13 @@ esac
 exit 0
 "#;
 
+const FILES: [(&str, &str, u32); 4] = [
+    ("configure", CONFIGURE, 0o755),
+    ("python3.12", PYTHON, 0o755),
+    ("README", "original\n", 0o644),
+    ("Tools/gdb/libpython.py", "# gdb\n", 0o644),
+];
+
 /// `Python-<version>.tar.gz` bytes: `configure`, `python3.12`, `README`, `Tools/gdb/libpython.py`.
 pub fn tarball(version: &str) -> Vec<u8> {
     let top = format!("Python-{version}");
@@ -44,12 +51,7 @@ pub fn tarball(version: &str) -> Vec<u8> {
         Vec::new(),
         flate2::Compression::fast(),
     ));
-    for (name, body, mode) in [
-        ("configure", CONFIGURE, 0o755),
-        ("python3.12", PYTHON, 0o755),
-        ("README", "original\n", 0o644),
-        ("Tools/gdb/libpython.py", "# gdb\n", 0o644),
-    ] {
+    for (name, body, mode) in FILES {
         let mut h = tar::Header::new_gnu();
         h.set_size(body.len() as u64);
         h.set_mode(mode);
@@ -60,6 +62,41 @@ pub fn tarball(version: &str) -> Vec<u8> {
     let mut out = gz.finish().unwrap();
     out.flush().unwrap();
     out
+}
+
+/// A git repository at `dir` holding the tarball's files in one commit, tagged `v1`
+/// (annotated). Returns the commit's SHA-1 and the tag object's.
+#[cfg(unix)]
+pub fn git_repo(dir: &std::path::Path) -> (String, String) {
+    use std::os::unix::fs::PermissionsExt;
+    for (name, body, mode) in FILES {
+        let p = dir.join(name);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, body).unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .args(["-c", "user.name=t", "-c", "user.email=t@example.invalid"])
+            .args([
+                "-c",
+                "init.defaultBranch=main",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(["-c", "tag.gpgsign=false"])
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+        String::from_utf8(out.stdout).unwrap().trim().to_string()
+    };
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "fake CPython"]);
+    git(&["tag", "-a", "v1", "-m", "v1"]);
+    (git(&["rev-parse", "HEAD"]), git(&["rev-parse", "v1"]))
 }
 
 /// A patch that changes README's one line, in python-build's built-in patch layout.
