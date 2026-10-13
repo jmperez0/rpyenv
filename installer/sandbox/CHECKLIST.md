@@ -60,8 +60,13 @@ Things that are the Sandbox, not the MSI:
    active-setup` (install as SYSTEM, then the first sign-in) shows the sign-in copying the
    version to HKCU while launching no StubPath at all (process-creation audit: no process
    from Explorer for it, nor for any other component). What does work there: the first
-   `pyenv` command a user runs sets them up (rpyenv's first-run fallback). The by-hand
-   commands, for a real machine or VM: after step 4, run:
+   `pyenv` command a user runs sets them up (rpyenv's first-run fallback). On a real
+   Windows 11 VM (Enterprise evaluation, build 26300, 2026-10-13) it passes: after a silent
+   all-users install, the first sign-ins of an administrator and of a new standard user each
+   ran `"C:\Program Files\rpyenv\bin\pyenv.exe" setup` from Explorer (process-creation
+   audit), wrote `.rpyenv-setup` and put the user's shims first on their PATH, keeping
+   `%USERPROFILE%\...\WindowsApps` unexpanded. The by-hand commands, for a real machine or
+   VM: after step 4, run:
    `reg delete "HKCU\Software\Microsoft\Active Setup\Installed Components\{73C5FAF3-A93A-472F-BD99-814909823229}" /f`
    (it may already be absent), then `runonce.exe /AlternateShellStartup`.
    - Record: does a console window flash? Does the user PATH now start with the shims,
