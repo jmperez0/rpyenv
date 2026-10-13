@@ -260,8 +260,9 @@ fits if the maintainer has a qualifying business. Either plugs into the same ste
 2. The Windows 11 ARM64 runner: label, availability for this public repository, MSI
    build and install on it.
 3. A static musl build of `ring` on arm64.
-4. Static CRT: nothing in CI may expect the dynamic one (for example
-   `ci/shim_deps.py`, which checks the shims' DLL imports).
+4. Static CRT: nothing in CI may expect the dynamic one. As settled (plan P4):
+   `ci/shim_deps.py` checks the shims' crates, not their DLL imports; the static CRT
+   is checked by `ci/pe_imports.py`, which fails on any Visual C++ runtime import.
 5. Silent all-users install from a non-elevated prompt; the Active Setup console flash
    (both in Windows Sandbox).
 
