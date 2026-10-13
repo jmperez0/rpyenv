@@ -211,7 +211,10 @@ there.
 
 Uninstall from Settings, Apps. It runs `pyenv migrate --restore` (if pyenv-win was moved
 aside) and `pyenv setup --undo` for you. Your Python versions stay. Other users of an
-all-users install can run `pyenv setup --undo` themselves first.
+all-users install can run `pyenv setup --undo` themselves first; if they don't, their
+PowerShell profiles keep the pyenv line, which then fails in every new PowerShell window
+("pyenv is not recognized"): delete the line with `pyenv init` from the files `$PROFILE`
+names in Windows PowerShell and in PowerShell 7.
 
 If the checkbox set your execution policy, uninstalling puts it back (to `Undefined`, if
 it's still `RemoteSigned`), and Windows PowerShell blocks local scripts again. The policy
@@ -230,14 +233,16 @@ download against `SHA256SUMS`, and offers to add pyenv to your shell's startup f
 Options go after `sh -s --`: `--version vX.Y.Z`, `--init` or `--no-init`, `--uninstall`.
 
 If an upstream pyenv is installed in `~/.pyenv`, the script offers to move it aside to
-`~/.pyenv/.upstream-pyenv` (your Python versions, `version` file and plugins stay), or
+`~/.pyenv/.upstream-pyenv` (your Python versions, `version` file, `default-packages` and
+plugins stay), or
 does it with `--take-over`. `--restore-upstream` puts it back.
 
 ### Verifying a download
 
 ```sh
 sha256sum -c SHA256SUMS --ignore-missing
-gh attestation verify rpyenv-<version>-linux-x64.tar.gz --repo jmperez0/rpyenv
+gh attestation verify rpyenv-<version>-linux-x64.tar.gz --repo jmperez0/rpyenv \
+  --source-ref refs/tags/v<version>
 ```
 
 ### Migrating from pyenv-win

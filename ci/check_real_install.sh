@@ -15,11 +15,12 @@ until curl -fs "http://127.0.0.1:$port/SHA256SUMS" >/dev/null; do
   sleep 0.1
 done
 home=$(mktemp -d)
-HOME=$home RPYENV_INSTALL_BASE_URL=http://127.0.0.1:$port RPYENV_INSTALL_TTY=/nonexistent \
+# PYENV_ROOT too: an inherited one would install over a real rpyenv (final review M7).
+HOME=$home PYENV_ROOT=$home/.pyenv RPYENV_INSTALL_BASE_URL=http://127.0.0.1:$port RPYENV_INSTALL_TTY=/nonexistent \
   sh install.sh --no-init </dev/null
 "$home/.pyenv/bin/pyenv" --version
 "$home/.pyenv/bin/pyenv" --version | grep -qi rpyenv
 test -x "$home/.pyenv/bin/pyenv-shim"
-HOME=$home sh install.sh --uninstall
+HOME=$home PYENV_ROOT=$home/.pyenv sh install.sh --uninstall
 test ! -e "$home/.pyenv/bin/pyenv"
 echo "real install: ok"

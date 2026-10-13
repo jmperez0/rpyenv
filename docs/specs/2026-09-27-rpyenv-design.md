@@ -659,8 +659,10 @@ cleared with `MSIINSTALLPERUSER=1`): Windows settles `ALLUSERS=2` once on each s
 the install, so a property the dialog only deletes never reaches the server (Sandbox
 S5). Silent options are `LIVEREHASH=1`, `MIGRATEPYENVWIN=1` (not `MIGRATE`, which
 Windows Installer reserves) and `ALLOWSCRIPTS=1`; a silent install changes no execution
-policy without it. One install per machine: installing for the other scope while one
-exists is refused with a message. Uninstall runs `pyenv migrate --restore` and `pyenv
+policy without it, and an upgrade keeps live rehash. One install per machine, as the
+installing user sees it: installing for the other scope while their per-user install or
+the all-users one exists is refused with a message (another user's per-user install isn't
+visible to the check). Uninstall runs `pyenv migrate --restore` and `pyenv
 setup --undo` (M6b design §5), which takes back the user `PATH` entry, the profile
 lines, the marker and an execution policy `--allow-scripts` set; both are skipped
 during an upgrade. Active Setup's GUID is `{73C5FAF3-A93A-472F-BD99-814909823229}`,
@@ -705,7 +707,8 @@ curl -fsSL https://github.com/jmperez0/rpyenv/releases/latest/download/install.s
 - `PYENV_ROOT` defaults to `~/.pyenv`. Over an upstream checkout (`libexec/pyenv` or
   `.git` there) it asks to take over, or stops when it can't ask, unless given
   `--take-over`. Taking over moves every top-level entry into `.upstream-pyenv/` except
-  the user's data, `versions/`, `version`, `shims/`, `cache/` and `plugins/` (whose
+  the user's data, `versions/`, `version`, `shims/`, `cache/`, `default-packages`,
+  `sources/` and `plugins/` (whose
   `python-build` alone moves, since rpyenv embeds its own), and lists what it moved in
   `.upstream-pyenv/moved.txt`; `--restore-upstream` removes rpyenv's files and moves
   back exactly that list.
@@ -717,7 +720,8 @@ curl -fsSL https://github.com/jmperez0/rpyenv/releases/latest/download/install.s
   lines. `--uninstall` removes only its own files; Python versions stay.
 
 Releases carry `SHA256SUMS` and GitHub build-provenance attestations
-(`gh attestation verify <file> --repo jmperez0/rpyenv`).
+(`gh attestation verify <file> --repo jmperez0/rpyenv --source-ref refs/tags/v<version>`;
+without `--source-ref`, a dry run's attestation from any branch would pass too).
 
 ## 10. Virtualenvs
 
