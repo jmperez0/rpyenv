@@ -160,36 +160,96 @@ whether a program started without a console (from Explorer, say) gets a window
 only once it prints, and how long that window stays after a failure. The full
 list is in the design spec (§13).
 
-## Installing (planned)
+## Installing
 
-- **Windows:** an MSI that installs either **just for you** (no admin
-  rights) or **for all users**. For all users, Windows asks for elevation
-  when installation starts. Your Python versions stay in your own profile
-  either way.
-- **Linux:** a tarball and an install script.
+Releases: https://github.com/jmperez0/rpyenv/releases. v0.1.0 is **unsigned**: Windows
+SmartScreen warns before running the MSI ("More info", then "Run anyway"), and on a PC
+with Smart App Control turned on, Windows blocks unsigned programs, rpyenv's shims
+included.
+
+### Windows
+
+Run `rpyenv-<version>-x64.msi` (or `-arm64.msi`). The Options page asks:
+
+- **Just for me** (no administrator rights) or **For all users** (Windows asks for
+  administrator rights). Just for me installs to `%LOCALAPPDATA%\Programs\rpyenv`; for
+  all users, to `%ProgramFiles%\rpyenv`. Each user's Python versions stay in their own
+  `PYENV_ROOT` either way.
+- **Enable live rehash** (off by default): new scripts get shims while a program runs.
+- **Move pyenv-win aside** (just for me, shown when pyenv-win is installed): runs
+  `pyenv migrate`.
+- **Let Windows PowerShell run local scripts for me if it blocks them** (just for me,
+  checked): runs `pyenv setup --allow-scripts`, below.
+
+Just for me also runs `pyenv setup`, which puts the shims first on your PATH and adds
+the PowerShell line to your profiles. For all users, Windows sets each user up at their
+next sign-in (Active Setup), or rpyenv does on their first `pyenv` command.
+
+`python`, `pip` and the other shims work in every shell, cmd included, whatever
+PowerShell's execution policy. Only `pyenv shell`, `pyenv activate` and `pyenv
+deactivate` need the profile line, and Windows PowerShell 5.1 runs a profile only where
+its execution policy allows local scripts: client Windows' default, `Restricted`,
+doesn't. So setup leaves Windows PowerShell's profile alone there and says how to allow
+scripts; with the checkbox (or `pyenv setup --allow-scripts`), it sets your own
+(CurrentUser) policy to `RemoteSigned` first, unless Group Policy or you already chose
+one. `pyenv setup --undo`, which uninstalling runs, puts it back. By hand:
+`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`, then `pyenv init --install pwsh`.
+PowerShell 7 runs profiles by default.
+
+Silent installs:
+
+```powershell
+msiexec /i rpyenv-<version>-x64.msi /qn                                       # just for me
+sudo msiexec /i rpyenv-<version>-x64.msi /qn ALLUSERS=1 MSIINSTALLPERUSER=""  # all users, elevated
+# options: LIVEREHASH=1, MIGRATEPYENVWIN=1 and ALLOWSCRIPTS=1 (just for me)
+```
+
+A silent install changes no execution policy unless given `ALLOWSCRIPTS=1`. On Windows
+Server, Windows Installer may be turned off for non-administrators (the `DisableMSI`
+policy; GitHub's windows-2025 image has it on, error 1625): install as an administrator
+there.
+
+Uninstall from Settings, Apps. It runs `pyenv migrate --restore` (if pyenv-win was moved
+aside) and `pyenv setup --undo` for you. Your Python versions stay. Other users of an
+all-users install can run `pyenv setup --undo` themselves first.
+
+### Linux
+
+```sh
+curl -fsSL https://github.com/jmperez0/rpyenv/releases/latest/download/install.sh | sh
+```
+
+It installs `pyenv` into `$PYENV_ROOT/bin` (default `~/.pyenv/bin`), checks the
+download against `SHA256SUMS`, and offers to add pyenv to your shell's startup file.
+Options go after `sh -s --`: `--version vX.Y.Z`, `--init` or `--no-init`, `--uninstall`.
+
+If an upstream pyenv is installed in `~/.pyenv`, the script offers to move it aside to
+`~/.pyenv/.upstream-pyenv` (your Python versions, `version` file and plugins stay), or
+does it with `--take-over`. `--restore-upstream` puts it back.
+
+### Verifying a download
+
+```sh
+sha256sum -c SHA256SUMS --ignore-missing
+gh attestation verify rpyenv-<version>-linux-x64.tar.gz --repo jmperez0/rpyenv
+```
 
 ### Migrating from pyenv-win
 
-1. Install rpyenv with the MSI.
-2. Run `pyenv migrate`, or let the MSI run it. It:
-   - takes pyenv-win's `bin` off your `PATH`,
-   - moves pyenv-win's `pyenv.bat`, `pyenv.ps1`, and `pyenv` into a backup
-     folder,
-   - rebuilds the shims as `.exe` files,
-   - adds the PowerShell profile line,
-   - links your pyenv-win-venv envs in as virtualenvs, leaving their files
-     where they are.
+The MSI offers it, or run `pyenv migrate` later. It:
 
-   This matters because a `pyenv.ps1` would win over `pyenv.exe` in
-   PowerShell.
+- takes pyenv-win's `bin` off your `PATH`,
+- moves pyenv-win's `pyenv.bat`, `pyenv.ps1`, and `pyenv` into a backup folder (a
+  `pyenv.ps1` would win over `pyenv.exe` in PowerShell),
+- rebuilds the shims as `.exe` files,
+- adds the PowerShell profile line (Windows PowerShell's only where it can run scripts),
+- links your pyenv-win-venv envs in as virtualenvs, leaving their files where they are.
 
-Installed versions, the global `version` file, and `.python-version` files
-stay as they are. `pyenv migrate --restore` undoes exactly what the
-migration did.
+Installed versions, the global `version` file, and `.python-version` files stay as they
+are. `pyenv migrate --restore` undoes exactly what the migration did.
 
-Without pyenv-win, `pyenv setup` prepares your user: it puts the shims first
-on your user `PATH` and adds the PowerShell profile line, and running it again
-changes nothing. `pyenv init --install pwsh` adds just the profile line.
+Without pyenv-win, `pyenv setup` prepares your user, and running it again changes
+nothing. `pyenv init --install pwsh` adds just the profile line.
 
 ## Roadmap
 

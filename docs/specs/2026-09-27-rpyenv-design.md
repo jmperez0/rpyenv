@@ -558,8 +558,9 @@ offers:
 
 - `msiexec /i rpyenv.msi /qn` installs per-user.
 - For all users, add `ALLUSERS=1 MSIINSTALLPERUSER=""` and start it from an
-  elevated prompt (for example `sudo msiexec …`). A fully silent install is
-  expected to have no way to show a UAC prompt; verify this in M6.
+  elevated prompt (for example `sudo msiexec …`). A fully silent install has no
+  way to show a UAC prompt: run by a standard user it shows none and fails with
+  exit 1603 (Error 1925), installing nothing (M6b, Windows Sandbox, 2026-10-13).
 
 **Where things go:**
 
@@ -648,6 +649,75 @@ exists, uninstall offers `migrate --restore`.
 Any `python.exe` in the machine `PATH` (for example from an all-users
 python.org install) therefore wins over the per-user shims. `pyenv setup`
 warns when it finds one. pyenv-win has the same limitation.
+
+**As built (M6b):** WiX 5.0.2 (`installer/rpyenv.wxs`, built by
+`installer/build.ps1`). After the Welcome page, a custom Options page (M6b plan P1)
+offers the scope, live rehash, and, just for me, "Move pyenv-win aside" (shown when
+pyenv-win is found, checked) and "Let Windows PowerShell run local scripts for me if it
+blocks them" (checked). The page publishes the scope as `ALLUSERS` itself (`1`, or
+cleared with `MSIINSTALLPERUSER=1`): Windows settles `ALLUSERS=2` once on each side of
+the install, so a property the dialog only deletes never reaches the server (Sandbox
+S5). Silent options are `LIVEREHASH=1`, `MIGRATEPYENVWIN=1` (not `MIGRATE`, which
+Windows Installer reserves) and `ALLOWSCRIPTS=1`; a silent install changes no execution
+policy without it. One install per machine: installing for the other scope while one
+exists is refused with a message. Uninstall runs `pyenv migrate --restore` and `pyenv
+setup --undo` (M6b design §5), which takes back the user `PATH` entry, the profile
+lines, the marker and an execution policy `--allow-scripts` set; both are skipped
+during an upgrade. Active Setup's GUID is `{73C5FAF3-A93A-472F-BD99-814909823229}`,
+its StubPath `"<bin>\pyenv.exe" setup`.
+
+Windows PowerShell 5.1 runs a profile only where its execution policy allows local
+scripts, and client Windows' default, `Restricted`, doesn't, so the profile line would
+fail on every start (Sandbox S1). `pyenv setup` and `pyenv migrate` therefore leave its
+profile alone where the effective policy (Group Policy, then CurrentUser, then
+LocalMachine, then the system default) is `Restricted` or `AllSigned`, and say how to
+allow scripts; `pyenv setup --allow-scripts` (the checkbox) first sets the CurrentUser
+policy to `RemoteSigned`, unless Group Policy or the user set one, and records it in
+`PYENV_ROOT\.rpyenv-allowed-scripts` for `--undo`, which removes it only if it's still
+`RemoteSigned`. `pyenv shell`, `activate` and `deactivate` without integration name a
+blocking policy and the two commands that allow scripts.
+
+Active Setup (M6b, 2026-10-13): on a Windows 11 VM (Enterprise evaluation, build
+26300), the first sign-ins of an administrator and of a new standard user after a
+silent all-users install each ran `pyenv.exe setup` from Explorer (process-creation
+audit) and set the user up. Windows Sandbox can't show this: its sign-in records
+Active Setup versions but launches no stubs, and `runonce.exe /AlternateShellStartup`
+doesn't run them while Explorer is the shell. Whether a console window flashes during
+that sign-in wasn't observed: the sign-ins were automatic and unwatched, and `pyenv.exe`
+is a console program, so one may.
+
+### 9.5 Installing rpyenv itself on Linux
+
+A tarball per architecture, `rpyenv-<version>-linux-x64.tar.gz` and `-linux-arm64`
+(static musl builds), holds `bin/pyenv`, `bin/pyenv-shim`,
+`completions/pyenv.{bash,zsh,fish}`, `LICENSE` and `README.md`, laid out like
+`$PYENV_ROOT` so `pyenv init` finds the completions. `install.sh` (POSIX `sh`):
+
+```sh
+curl -fsSL https://github.com/jmperez0/rpyenv/releases/latest/download/install.sh | sh
+# options: sh -s -- [--version vX.Y.Z] [--init|--no-init] [--take-over]
+#                   [--restore-upstream] [--uninstall]
+```
+
+- It runs on Linux x86_64 or aarch64 only, downloads the tarball and `SHA256SUMS`
+  (curl or wget) and checks it with `sha256sum` or `shasum -a 256`; a mismatch or a
+  missing tool stops it before anything is written.
+- `PYENV_ROOT` defaults to `~/.pyenv`. Over an upstream checkout (`libexec/pyenv` or
+  `.git` there) it asks to take over, or stops when it can't ask, unless given
+  `--take-over`. Taking over moves every top-level entry into `.upstream-pyenv/` except
+  the user's data, `versions/`, `version`, `shims/`, `cache/` and `plugins/` (whose
+  `python-build` alone moves, since rpyenv embeds its own), and lists what it moved in
+  `.upstream-pyenv/moved.txt`; `--restore-upstream` removes rpyenv's files and moves
+  back exactly that list.
+- It unpacks into a temporary folder and then moves `bin/` and `completions/` into
+  place, so a failed run leaves the previous install working; running it again
+  upgrades.
+- Asked through `/dev/tty` (which works under `curl | sh`), it adds pyenv to the
+  shell's startup file with `pyenv init --install <shell>`; otherwise it prints the
+  lines. `--uninstall` removes only its own files; Python versions stay.
+
+Releases carry `SHA256SUMS` and GitHub build-provenance attestations
+(`gh attestation verify <file> --repo jmperez0/rpyenv`).
 
 ## 10. Virtualenvs
 
@@ -1072,8 +1142,10 @@ that an administrator later runs.
    (§9.1). Answered 2026-10-03: the index's zips for 3.11+, python.org's
    component MSIs for everything else, no NuGet (§9.1 table).
 2. **Code signing** for the shim executables and the MSI, which affects
-   SmartScreen warnings and machines that only allow signed code. Options and
-   cost to be evaluated before M6.
+   SmartScreen warnings and machines that only allow signed code. Answered
+   2026-10-10 (M6b design §9): v0.1.0 ships unsigned; the release workflow's
+   `installer/sign.ps1` hook takes SignPath Foundation or Azure Artifact Signing
+   later.
 3. **Default for `RPYENV_CONSOLE`.** Resolved in M5a: `lazy`, with the measured
    cost in the lazy-console doc (its open question 3).
 4. **The lazy-console doc's other open questions.** The initial pseudo-console
