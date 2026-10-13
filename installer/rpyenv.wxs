@@ -19,6 +19,16 @@
 
     <!-- Options (design §4.3), public so a silent install can set them. -->
     <Property Id="LIVEREHASH" Secure="yes" />
+    <!-- Final review I3: an upgrade keeps live rehash. RemoveExistingProducts takes the old
+         install's component away, so the choice is read back from its key path value: into
+         the Options page's checkbox, or, when no Options page was shown, silently. -->
+    <Property Id="RPYENV_LIVEREHASH_PREV">
+      <RegistrySearch Root="HKCU" Key="Software\rpyenv" Name="LiveRehash" Type="raw" />
+      <RegistrySearch Root="HKLM" Key="Software\rpyenv" Name="LiveRehash" Type="raw" Bitness="always64" />
+    </Property>
+    <Property Id="RPYENV_OPTIONS_SEEN" Secure="yes" />
+    <SetProperty Id="LIVEREHASH" Action="SetLiveRehashUi" Value="1" After="AppSearch" Sequence="ui" Condition="RPYENV_LIVEREHASH_PREV AND NOT LIVEREHASH" />
+    <SetProperty Id="LIVEREHASH" Action="SetLiveRehashSilent" Value="1" After="AppSearch" Sequence="execute" Condition="RPYENV_LIVEREHASH_PREV AND NOT LIVEREHASH AND NOT RPYENV_OPTIONS_SEEN" />
     <!-- Not MIGRATE: Windows Installer reserves it (MigrateFeatureStates, error 2601). -->
     <Property Id="MIGRATEPYENVWIN" Secure="yes" />
     <Property Id="RPYENV_SCOPE" Value="user" />
@@ -42,6 +52,8 @@
     <Property Id="RPYENV_MACHINE_INSTALLED">
       <RegistrySearch Root="HKLM" Key="Software\rpyenv" Name="Installed" Type="raw" Bitness="always64" />
     </Property>
+    <!-- Final review M4: upgrading an all-users install from the dialog starts on its scope. -->
+    <SetProperty Id="RPYENV_SCOPE" Value="machine" After="AppSearch" Sequence="ui" Condition="RPYENV_MACHINE_INSTALLED" />
     <CustomAction Id="RefuseMachineOverUser" Error="rpyenv is already installed just for you. Uninstall it first (Settings, Apps), then install it for all users." />
     <CustomAction Id="RefuseUserOverMachine" Error="rpyenv is already installed for all users of this computer. Uninstall that first, or keep using it." />
 
@@ -171,7 +183,8 @@
       <Publish Dialog="OptionsDlg" Control="Next" Property="ALLUSERS" Value="1" Order="4" Condition="RPYENV_SCOPE=&quot;machine&quot;" />
       <Publish Dialog="OptionsDlg" Control="Next" Property="MIGRATEPYENVWIN" Value="{}" Order="5" Condition="RPYENV_SCOPE=&quot;machine&quot;" />
       <Publish Dialog="OptionsDlg" Control="Next" Property="ALLOWSCRIPTS" Value="{}" Order="6" Condition="RPYENV_SCOPE=&quot;machine&quot;" />
-      <Publish Dialog="OptionsDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg" Order="7" />
+      <Publish Dialog="OptionsDlg" Control="Next" Property="RPYENV_OPTIONS_SEEN" Value="1" Order="7" />
+      <Publish Dialog="OptionsDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg" Order="8" />
       <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="OptionsDlg" Order="1" Condition="NOT Installed" />
       <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="MaintenanceTypeDlg" Order="2" Condition="Installed AND NOT PATCH" />
       <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" Order="3" Condition="Installed AND PATCH" />

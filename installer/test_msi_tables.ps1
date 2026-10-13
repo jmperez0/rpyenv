@@ -64,6 +64,12 @@ foreach ($c in '" migrate', '" setup [RpyenvSetupArgs]', '" migrate --restore', 
 Expect (@($targets | Where-Object { $_ -eq '--allow-scripts' }).Count -eq 1) 'setup --allow-scripts when ALLOWSCRIPTS=1'
 Expect ((("$($props['SecureCustomProperties'])" -split ';') -contains 'ALLOWSCRIPTS')) 'ALLOWSCRIPTS reaches the server'
 
+# M6b final review I3: an upgrade reads live rehash back (both scopes) and keeps it.
+$searches = (Rows 'SELECT `Signature_`, `Root`, `Key`, `Name` FROM `RegLocator`') | Where-Object { $_[2] -eq 'Software\rpyenv' -and $_[3] -eq 'LiveRehash' }
+Expect (@($searches).Count -eq 2) 'live rehash read back from HKCU and HKLM'
+$setters = @((Rows 'SELECT `Action`, `Source`, `Target` FROM `CustomAction`') | Where-Object { $_[1] -eq 'LIVEREHASH' -and $_[2] -eq '1' })
+Expect ($setters.Count -eq 2) 'live rehash set again in the dialog and silently'
+
 $dialogs = (Rows 'SELECT `Dialog` FROM `Dialog`') | ForEach-Object { $_[0] }
 Expect ($dialogs -contains 'OptionsDlg') 'the Options page'
 $controls = Rows 'SELECT `Dialog_`, `Control`, `Property` FROM `Control`'
