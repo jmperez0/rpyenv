@@ -30,24 +30,29 @@ Things that are the Sandbox, not the MSI:
 
 1. **Just for me.** Double-click the x64 MSI.
    - Expect: the Welcome page, then Options with "Just for me" selected, "Enable live
-     rehash" unchecked and no pyenv-win checkbox. The last page says to open a new
-     terminal.
+     rehash" unchecked, "Let Windows PowerShell run local scripts" checked and no
+     pyenv-win checkbox. The last page says to open a new terminal.
    - In a new Windows PowerShell: no error at startup, and no "No version installed"
      line; `pyenv --version` works; the user PATH starts with `…\.pyenv\pyenv-win\shims`
-     and contains `…\AppData\Local\Programs\rpyenv\bin\`; `Test-Path $PROFILE` is False
-     (setup leaves the profile alone while scripts can't run).
+     and contains `…\AppData\Local\Programs\rpyenv\bin\`; `Get-ExecutionPolicy -Scope
+     CurrentUser` is RemoteSigned and `$PROFILE` has the `pyenv init - pwsh` line (the
+     checkbox: `pyenv setup --allow-scripts`).
 2. **Uninstall from Settings, Apps.**
    - Expect: it completes. `…\Programs\rpyenv` is gone, both user PATH entries are gone,
-     and `…\.pyenv\pyenv-win\versions` stays. A new Windows PowerShell starts without an
+     the CurrentUser execution policy is Undefined again, the profile line is gone, and
+     `…\.pyenv\pyenv-win\versions` stays. A new Windows PowerShell starts without an
      error.
 3. **Migrate.** Run `powershell -NoProfile -ExecutionPolicy Bypass -File
    C:\rpyenv-sandbox\fake-pyenv-win.ps1`, then install again, just for me.
-   - Expect: the Options page shows "Move pyenv-win aside", checked. After install,
+   - Expect: the Options page shows "Move pyenv-win aside", checked. Uncheck "Let Windows
+     PowerShell run local scripts" (the runner does): the execution policy then stays
+     Undefined and Windows PowerShell's profile gets no line. After install,
      `…\pyenv-win\bin\pyenv.ps1` is gone and in `…\pyenv-win\.rpyenv-migrate\bin\`.
      Uninstall puts it back and removes `.rpyenv-migrate`.
 4. **For all users.** Install with a log, choosing "For all users":
    `Start-Process msiexec -ArgumentList '/i C:\rpyenv-dist\rpyenv-<version>-x64.msi /l*v C:\s4.log' -Wait`.
-   - Record: what the Options page shows (no pyenv-win checkbox is expected), and
+   - Record: what the Options page shows (no pyenv-win or allow-scripts checkbox is
+     expected), and
      `Select-String 'MSI \(s\).*Command Line:' C:\s4.log`: the server's command line must
      carry `ALLUSERS=1` (the dialog path is the one CI can't run; Sandbox S5).
    - Expect: files in `C:\Program Files\rpyenv\bin`; that folder on the **machine** PATH
