@@ -155,6 +155,114 @@ fn a_group_policy_that_blocks_scripts_wins_and_is_named() {
     );
 }
 
+/// Sandbox S1, the MSI's "allow scripts" checkbox: `--allow-scripts` sets the CurrentUser
+/// policy to RemoteSigned where Windows PowerShell blocks local scripts and neither Group
+/// Policy nor the user chose that, so its profile gets the line; `--undo` puts it back.
+#[test]
+fn allow_scripts_sets_current_user_remotesigned_where_scripts_are_blocked() {
+    // Client Windows' default, and a LocalMachine policy (CurrentUser takes precedence).
+    for seed in [None, Some(("ps-machine", "AllSigned"))] {
+        let f = Fixture::new();
+        if let Some((label, value)) = seed {
+            reg_set(&f, label, "ExecutionPolicy", "REG_SZ", value);
+        }
+        let r = f.pyenv(&["setup", "--allow-scripts"]);
+        assert_eq!(r.code, 0, "{seed:?}: {}{}", r.stdout, r.stderr);
+        assert_eq!(
+            reg_get(&f, "ps-user", "ExecutionPolicy"),
+            "REG_SZ RemoteSigned",
+            "{seed:?}"
+        );
+        assert!(
+            std::fs::read_to_string(profile(&f, "WindowsPowerShell"))
+                .is_ok_and(|t| t.contains("pyenv init - pwsh")),
+            "{seed:?}: {}",
+            r.stderr
+        );
+        assert!(
+            r.stdout.contains("RemoteSigned") && r.stdout.contains("pyenv setup --undo"),
+            "{}",
+            r.stdout
+        );
+        assert!(!r.stderr.contains("can't run scripts"), "{}", r.stderr);
+
+        let u = f.pyenv(&["setup", "--undo"]);
+        assert_eq!(u.code, 0, "{}{}", u.stdout, u.stderr);
+        assert_eq!(reg_get(&f, "ps-user", "ExecutionPolicy"), "", "{seed:?}");
+        assert!(!profile(&f, "WindowsPowerShell").exists());
+        assert!(!f.root.join(".rpyenv-allowed-scripts").exists());
+    }
+    assert!(Fixture::new()
+        .pyenv(&["setup", "--help"])
+        .stdout
+        .contains("--allow-scripts"));
+}
+
+/// The user's own CurrentUser policy and Group Policy are left alone, and where scripts
+/// already run nothing is written.
+#[test]
+fn allow_scripts_leaves_chosen_policies_alone() {
+    let f = Fixture::new();
+    reg_set(&f, "ps-user", "ExecutionPolicy", "REG_SZ", "AllSigned");
+    let r = f.pyenv(&["setup", "--allow-scripts"]);
+    assert_eq!(r.code, 0, "{}{}", r.stdout, r.stderr);
+    assert_eq!(
+        reg_get(&f, "ps-user", "ExecutionPolicy"),
+        "REG_SZ AllSigned"
+    );
+    assert!(!profile(&f, "WindowsPowerShell").exists());
+    assert!(
+        r.stderr.contains("your own execution policy") && r.stderr.contains("AllSigned"),
+        "{}",
+        r.stderr
+    );
+
+    let f = Fixture::new();
+    reg_set(&f, "gpo-machine", "EnableScripts", "REG_DWORD", "0");
+    let r = f.pyenv(&["setup", "--allow-scripts"]);
+    assert_eq!(r.code, 0, "{}{}", r.stdout, r.stderr);
+    assert_eq!(reg_get(&f, "ps-user", "ExecutionPolicy"), "");
+    assert!(r.stderr.contains("set by Group Policy"), "{}", r.stderr);
+
+    let f = Fixture::new();
+    reg_set(
+        &f,
+        "ps-machine",
+        "ExecutionPolicy",
+        "REG_SZ",
+        "RemoteSigned",
+    );
+    let r = f.pyenv(&["setup", "--allow-scripts"]);
+    assert_eq!(r.code, 0, "{}{}", r.stdout, r.stderr);
+    assert_eq!(reg_get(&f, "ps-user", "ExecutionPolicy"), "");
+    assert!(!f.root.join(".rpyenv-allowed-scripts").exists());
+}
+
+/// Undo restores only what setup changed: a policy the user set since, or one setup never
+/// set, stays.
+#[test]
+fn undo_keeps_an_execution_policy_setup_did_not_set() {
+    let f = Fixture::new();
+    assert_eq!(f.pyenv(&["setup", "--allow-scripts"]).code, 0);
+    reg_set(&f, "ps-user", "ExecutionPolicy", "REG_SZ", "Unrestricted");
+    let r = f.pyenv(&["setup", "--undo"]);
+    assert_eq!(r.code, 0, "{}{}", r.stdout, r.stderr);
+    assert_eq!(
+        reg_get(&f, "ps-user", "ExecutionPolicy"),
+        "REG_SZ Unrestricted"
+    );
+    assert!(!f.root.join(".rpyenv-allowed-scripts").exists());
+
+    let f = Fixture::new();
+    assert_eq!(f.pyenv(&["setup"]).code, 0);
+    reg_set(&f, "ps-user", "ExecutionPolicy", "REG_SZ", "RemoteSigned");
+    assert_eq!(f.pyenv(&["setup", "--undo"]).code, 0);
+    assert_eq!(
+        reg_get(&f, "ps-user", "ExecutionPolicy"),
+        "REG_SZ RemoteSigned"
+    );
+}
+
 /// Review focus 1 and 2: a REG_EXPAND_SZ value keeps its type, the entry isn't duplicated,
 /// and a second run changes nothing.
 #[test]

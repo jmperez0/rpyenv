@@ -112,7 +112,12 @@ pub fn get(scope: Scope, name: &str) -> io::Result<Option<Value>> {
 /// Sets a user variable, creating the key if needed (it only lacks it under the test key).
 pub fn set_user(name: &str, value: &Value) -> io::Result<()> {
     let (root, sub) = location(Scope::User);
-    let (sub, name, data) = (wide(&sub), wide(name), wide(&value.text));
+    set_value(root, &sub, name, value)
+}
+
+/// Writes one string value, creating the key if needed.
+fn set_value(root: HKEY, sub: &str, name: &str, value: &Value) -> io::Result<()> {
+    let (sub, name, data) = (wide(sub), wide(name), wide(&value.text));
     // SAFETY: creates or opens a key, writes a NUL-terminated UTF-16 string of the size
     // given, and closes the key.
     unsafe {
@@ -343,11 +348,59 @@ fn read_raw(root: HKEY, sub: &str, name: &str) -> Option<Raw> {
     Some(Raw::Text(String::from_utf16_lossy(&buf[..len])))
 }
 
+/// Where Windows PowerShell keeps its CurrentUser and LocalMachine policies.
+const PS: &str = r"SOFTWARE\Microsoft\PowerShell\1\ShellIds\Microsoft.PowerShell";
+
+/// The CurrentUser policy's key: `HKCU\<key>\ps-user` under the test override.
+fn current_user_policy_key() -> String {
+    match test_key() {
+        Some(k) => format!("{k}\\ps-user"),
+        None => PS.into(),
+    }
+}
+
+/// Windows PowerShell's CurrentUser policy as stored (what `Set-ExecutionPolicy -Scope
+/// CurrentUser` writes), if any.
+pub fn current_user_policy() -> Option<String> {
+    match read_raw(
+        HKEY_CURRENT_USER,
+        &current_user_policy_key(),
+        "ExecutionPolicy",
+    ) {
+        Some(Raw::Text(t)) => Some(t),
+        _ => None,
+    }
+}
+
+/// Sets Windows PowerShell's CurrentUser policy, or with `None` removes it (back to
+/// `Undefined`), as `Set-ExecutionPolicy -Scope CurrentUser` does.
+pub fn set_current_user_policy(policy: Option<&str>) -> io::Result<()> {
+    let sub = current_user_policy_key();
+    let Some(policy) = policy else {
+        use windows_sys::Win32::System::Registry::RegDeleteKeyValueW;
+        let (sub, name) = (wide(&sub), wide("ExecutionPolicy"));
+        // SAFETY: deletes one value; both strings are NUL-terminated locals.
+        let rc = unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, sub.as_ptr(), name.as_ptr()) };
+        return match rc {
+            ERROR_SUCCESS | ERROR_FILE_NOT_FOUND => Ok(()),
+            rc => Err(io::Error::from_raw_os_error(rc as i32)),
+        };
+    };
+    set_value(
+        HKEY_CURRENT_USER,
+        &sub,
+        "ExecutionPolicy",
+        &Value {
+            text: policy.into(),
+            expand: false,
+        },
+    )
+}
+
 /// Windows PowerShell 5.1's effective policy for this user, read from the registry. Under
 /// the test override, each key is `HKCU\<key>\<label>` (`gpo-machine`, `gpo-user`,
 /// `ps-user`, `ps-machine`, `product`), holding the same value names.
 pub fn windows_powershell_policy() -> ScriptPolicy {
-    const PS: &str = r"SOFTWARE\Microsoft\PowerShell\1\ShellIds\Microsoft.PowerShell";
     const GPO: &str = r"SOFTWARE\Policies\Microsoft\Windows\PowerShell";
     const PRODUCT: &str = r"SYSTEM\CurrentControlSet\Control\ProductOptions";
     let read = |label: &str, root: HKEY, sub: &str, name: &str| match test_key() {

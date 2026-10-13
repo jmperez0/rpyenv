@@ -7,24 +7,32 @@ use std::path::PathBuf;
 
 pub const MARKER: &str = ".rpyenv-setup";
 
+/// Written when `--allow-scripts` set the user's execution policy, so `--undo` puts it back.
+const ALLOWED_MARKER: &str = ".rpyenv-allowed-scripts";
+
 /// Written when an all-users first run fails: the next one waits `RETRY_AFTER`.
 const FAILED_MARKER: &str = ".rpyenv-setup-failed";
 const RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
 
-pub const HELP: &str = "Usage: pyenv setup
+pub const HELP: &str = "Usage: pyenv setup [--allow-scripts]
        pyenv setup --undo
 
 Prepares your Windows user for rpyenv: creates PYENV_ROOT, puts its shims folder first
 on your user PATH, rehashes, and adds the PowerShell line to your profiles (Windows
 PowerShell's only where its execution policy lets scripts run). It's safe to run again.
 
---undo takes back what setup added for this user: the shims entry on your user PATH and
-the PowerShell line. Your Python versions stay.
+--allow-scripts first lets Windows PowerShell run local scripts for you, where it doesn't:
+it sets your own execution policy (CurrentUser) to RemoteSigned, unless Group Policy or
+you already chose one.
+
+--undo takes back what setup added for this user: the shims entry on your user PATH, the
+PowerShell line and an execution policy --allow-scripts set. Your Python versions stay.
 ";
 
 pub fn setup(ctx: &Ctx, args: &[&str]) -> Output {
     match args {
         [] => run(ctx),
+        ["--allow-scripts"] => run_with(ctx, true),
         ["--undo"] => undo(ctx),
         ["--help"] => {
             let mut o = Output::new();
@@ -46,6 +54,10 @@ pub fn pyenv_win_bin(ctx: &Ctx) -> Option<PathBuf> {
 
 /// The setup itself (also the all-users first run).
 pub fn run(ctx: &Ctx) -> Output {
+    run_with(ctx, false)
+}
+
+fn run_with(ctx: &Ctx, allow_scripts: bool) -> Output {
     let mut o = Output::new();
     for d in [ctx.versions_dir(), ctx.shims_dir()] {
         if let Err(e) = std::fs::create_dir_all(&d) {
@@ -99,6 +111,9 @@ pub fn run(ctx: &Ctx) -> Output {
     let r = crate::commands::rehash::rehash(ctx, &[]);
     o.stderr.push_str(&r.stderr);
     failed |= r.code != 0;
+    if allow_scripts {
+        failed |= !allow_local_scripts(ctx, &mut o);
+    }
     let p = profiles(&mut o);
     o.stdout.push_str(&p.stdout);
     o.stderr.push_str(&p.stderr);
@@ -128,6 +143,72 @@ pub fn run(ctx: &Ctx) -> Output {
     let _ = std::fs::write(ctx.root.join(MARKER), env!("CARGO_PKG_VERSION"));
     o.out("pyenv: open a new terminal for the changes to take effect");
     o
+}
+
+/// `--allow-scripts` (the MSI's checkbox): where Windows PowerShell blocks local scripts and
+/// neither Group Policy nor the user chose that policy, sets the user's own (CurrentUser)
+/// policy to RemoteSigned, recording it for `--undo`. False when that failed.
+fn allow_local_scripts(ctx: &Ctx, o: &mut Output) -> bool {
+    let policy = winenv::windows_powershell_policy();
+    // Group Policy's hint comes from `profiles`.
+    if !policy.blocks_local_scripts() || policy.by_group_policy {
+        return true;
+    }
+    let own = winenv::current_user_policy()
+        .filter(|p| !p.trim().is_empty() && !p.trim().eq_ignore_ascii_case("Undefined"));
+    if let Some(own) = own {
+        o.err(format!(
+            "pyenv: your own execution policy for Windows PowerShell is {own}; left it as it is"
+        ));
+        return true;
+    }
+    // The record first: a policy set without it would never be taken back.
+    let record = ctx.root.join(ALLOWED_MARKER);
+    if let Err(e) = std::fs::write(&record, "RemoteSigned") {
+        o.err(format!("pyenv: cannot write {}: {e}", record.display()));
+        return false;
+    }
+    match winenv::set_current_user_policy(Some("RemoteSigned")) {
+        Ok(()) => {
+            o.out("pyenv: Windows PowerShell may now run local scripts for you (execution policy RemoteSigned, your user only; `pyenv setup --undo` puts it back)");
+            true
+        }
+        Err(e) => {
+            let _ = std::fs::remove_file(&record);
+            o.err(format!(
+                "pyenv: cannot set your execution policy for Windows PowerShell: {e}"
+            ));
+            false
+        }
+    }
+}
+
+/// `--undo` for `--allow-scripts`: removes the CurrentUser policy if it's still the
+/// RemoteSigned setup set; one the user changed since stays. False when that failed.
+fn undo_allow_scripts(ctx: &Ctx, o: &mut Output) -> bool {
+    let record = ctx.root.join(ALLOWED_MARKER);
+    if !record.exists() {
+        return true;
+    }
+    let ours = winenv::current_user_policy()
+        .is_some_and(|p| p.trim().eq_ignore_ascii_case("RemoteSigned"));
+    if ours {
+        if let Err(e) = winenv::set_current_user_policy(None) {
+            o.err(format!(
+                "pyenv: cannot take back your execution policy for Windows PowerShell: {e}"
+            ));
+            return false;
+        }
+        o.out("pyenv: took back the execution policy setup set for Windows PowerShell");
+    }
+    match std::fs::remove_file(&record) {
+        Ok(()) => true,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
+        Err(e) => {
+            o.err(format!("pyenv: cannot remove {ALLOWED_MARKER}: {e}"));
+            false
+        }
+    }
 }
 
 /// The PowerShell line in both profiles, except Windows PowerShell 5.1's where its execution
@@ -210,6 +291,7 @@ pub fn undo(ctx: &Ctx) -> Output {
             }
         }
     }
+    failed |= !undo_allow_scripts(ctx, &mut o);
     for marker in [MARKER, FAILED_MARKER] {
         match std::fs::remove_file(ctx.root.join(marker)) {
             Ok(()) => {}
