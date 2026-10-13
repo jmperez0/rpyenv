@@ -145,6 +145,52 @@ def migrate(msi: Path) -> None:
             (bin_dir / name).unlink(missing_ok=True)
 
 
+PS_POLICY = r"SOFTWARE\Microsoft\PowerShell\1\ShellIds\Microsoft.PowerShell"
+PS_GPO = r"SOFTWARE\Policies\Microsoft\Windows\PowerShell"
+
+
+def set_policy(root, value):
+    """Sets (or with None, deletes) Windows PowerShell's ExecutionPolicy under `root`."""
+    with winreg.CreateKeyEx(root, PS_POLICY, 0, winreg.KEY_SET_VALUE | winreg.KEY_WOW64_64KEY) as k:
+        if value is None:
+            try:
+                winreg.DeleteValue(k, "ExecutionPolicy")
+            except FileNotFoundError:
+                pass
+        else:
+            winreg.SetValueEx(k, "ExecutionPolicy", 0, winreg.REG_SZ, value)
+
+
+def allow_scripts(msi: Path) -> None:
+    """Sandbox S1's checkbox, silently: ALLOWSCRIPTS=1 lets Windows PowerShell run the
+    profile where it blocks scripts (here a LocalMachine AllSigned, set for the scenario),
+    and uninstall takes it back; without it, nothing changes."""
+    for root in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+        check(reg(root, PS_GPO, "EnableScripts") is None, "no Group Policy for PowerShell scripts on this runner")
+    old_machine = reg(winreg.HKEY_LOCAL_MACHINE, PS_POLICY, "ExecutionPolicy")
+    old_user = reg(winreg.HKEY_CURRENT_USER, PS_POLICY, "ExecutionPolicy")
+    set_policy(winreg.HKEY_LOCAL_MACHINE, "AllSigned")
+    set_policy(winreg.HKEY_CURRENT_USER, None)
+    user_policy = lambda: reg(winreg.HKEY_CURRENT_USER, PS_POLICY, "ExecutionPolicy")
+    try:
+        msiexec(f'/i "{msi}" ALLOWSCRIPTS=1')
+        check(user_policy() == "RemoteSigned", f"CurrentUser policy RemoteSigned: {user_policy()}")
+        check(LINE in PROFILES[0].read_text(encoding="utf-8", errors="replace"), "Windows PowerShell's profile line")
+        check((ROOT / ".rpyenv-allowed-scripts").is_file(), "setup recorded the policy it set")
+        msiexec(f'/x "{msi}"')
+        check(user_policy() is None, f"CurrentUser policy taken back: {user_policy()}")
+        check(not (ROOT / ".rpyenv-allowed-scripts").exists(), "the record removed")
+
+        msiexec(f'/i "{msi}"')
+        check(user_policy() is None, f"a silent install without ALLOWSCRIPTS leaves the policy: {user_policy()}")
+        check(not PROFILES[0].exists() or LINE not in PROFILES[0].read_text(encoding="utf-8", errors="replace"),
+              "no Windows PowerShell profile line while scripts are blocked")
+        msiexec(f'/x "{msi}"')
+    finally:
+        set_policy(winreg.HKEY_LOCAL_MACHINE, old_machine)
+        set_policy(winreg.HKEY_CURRENT_USER, old_user)
+
+
 def upgrade(msi: Path, next_msi: Path) -> None:
     msiexec(f'/i "{msi}"')
     msiexec(f'/i "{next_msi}"')
@@ -329,6 +375,7 @@ def main(argv) -> int:
         ("per_user", lambda: per_user(msi)),
         ("live_rehash", lambda: live_rehash(msi)),
         ("migrate", lambda: migrate(msi)),
+        ("allow_scripts", lambda: allow_scripts(msi)),
         ("upgrade", lambda: upgrade(msi, next_msi)),
         ("scope_refusal", lambda: scope_refusal(msi, next_msi)),
         ("all_users", lambda: all_users(msi, next_msi)),

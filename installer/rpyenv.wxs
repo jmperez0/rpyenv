@@ -22,6 +22,10 @@
     <!-- Not MIGRATE: Windows Installer reserves it (MigrateFeatureStates, error 2601). -->
     <Property Id="MIGRATEPYENVWIN" Secure="yes" />
     <Property Id="RPYENV_SCOPE" Value="user" />
+    <!-- Sandbox S1: let Windows PowerShell run scripts (setup's allow-scripts option). Checked on the
+         Options page; off for a silent install unless ALLOWSCRIPTS=1. -->
+    <Property Id="ALLOWSCRIPTS" Secure="yes" />
+    <SetProperty Id="ALLOWSCRIPTS" Value="1" After="AppSearch" Sequence="ui" Condition="NOT ALLOWSCRIPTS" />
 
     <!-- pyenv-win in this user's profile: the migrate checkbox shows, checked. -->
     <Property Id="PYENVWIN_FOUND">
@@ -97,7 +101,8 @@
     <!-- Design §4.4: pyenv.exe, hidden, as the installing user; failures only reach the log. -->
     <SetProperty Id="RpyenvMigrate" Value="&quot;[BinFolder]pyenv.exe&quot; migrate" Before="RpyenvMigrate" Sequence="execute" />
     <CustomAction Id="RpyenvMigrate" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixQuietExec" Execute="deferred" Impersonate="yes" Return="ignore" />
-    <SetProperty Id="RpyenvSetup" Value="&quot;[BinFolder]pyenv.exe&quot; setup" Before="RpyenvSetup" Sequence="execute" />
+    <SetProperty Id="RpyenvSetupArgs" Value="--allow-scripts" Before="SetRpyenvSetup" Sequence="execute" Condition="ALLOWSCRIPTS=1" />
+    <SetProperty Id="RpyenvSetup" Value="&quot;[BinFolder]pyenv.exe&quot; setup [RpyenvSetupArgs]" Before="RpyenvSetup" Sequence="execute" />
     <CustomAction Id="RpyenvSetup" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixQuietExec" Execute="deferred" Impersonate="yes" Return="ignore" />
     <SetProperty Id="RpyenvRestore" Value="&quot;[BinFolder]pyenv.exe&quot; migrate --restore" Before="RpyenvRestore" Sequence="execute" />
     <CustomAction Id="RpyenvRestore" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixQuietExec" Execute="deferred" Impersonate="yes" Return="ignore" />
@@ -144,6 +149,7 @@
         </Control>
         <Control Id="LiveRehash" Type="CheckBox" X="20" Y="110" Width="330" Height="18" Property="LIVEREHASH" CheckBoxValue="1" Text="Enable &amp;live rehash: new scripts get shims while a program runs" />
         <Control Id="Migrate" Type="CheckBox" X="20" Y="134" Width="330" Height="18" Property="MIGRATEPYENVWIN" CheckBoxValue="1" Text="Move &amp;pyenv-win aside so rpyenv takes over (pyenv migrate)" Hidden="yes" ShowCondition="PYENVWIN_FOUND AND RPYENV_SCOPE=&quot;user&quot;" HideCondition="NOT PYENVWIN_FOUND OR RPYENV_SCOPE&lt;&gt;&quot;user&quot;" />
+        <Control Id="AllowScripts" Type="CheckBox" X="20" Y="158" Width="330" Height="26" Property="ALLOWSCRIPTS" CheckBoxValue="1" Text="Let Windows PowerShell run local &amp;scripts for me if it blocks them (execution policy RemoteSigned, for my user only)" ShowCondition="RPYENV_SCOPE=&quot;user&quot;" HideCondition="RPYENV_SCOPE&lt;&gt;&quot;user&quot;" />
         <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
         <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="!(loc.WixUIBack)" />
         <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="!(loc.WixUINext)" />
@@ -164,7 +170,8 @@
       <Publish Dialog="OptionsDlg" Control="Next" Property="MSIINSTALLPERUSER" Value="{}" Order="3" Condition="RPYENV_SCOPE=&quot;machine&quot;" />
       <Publish Dialog="OptionsDlg" Control="Next" Property="ALLUSERS" Value="1" Order="4" Condition="RPYENV_SCOPE=&quot;machine&quot;" />
       <Publish Dialog="OptionsDlg" Control="Next" Property="MIGRATEPYENVWIN" Value="{}" Order="5" Condition="RPYENV_SCOPE=&quot;machine&quot;" />
-      <Publish Dialog="OptionsDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg" Order="6" />
+      <Publish Dialog="OptionsDlg" Control="Next" Property="ALLOWSCRIPTS" Value="{}" Order="6" Condition="RPYENV_SCOPE=&quot;machine&quot;" />
+      <Publish Dialog="OptionsDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg" Order="7" />
       <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="OptionsDlg" Order="1" Condition="NOT Installed" />
       <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="MaintenanceTypeDlg" Order="2" Condition="Installed AND NOT PATCH" />
       <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" Order="3" Condition="Installed AND PATCH" />

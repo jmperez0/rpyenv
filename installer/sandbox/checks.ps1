@@ -57,6 +57,9 @@ function UserPath { [Environment]::GetEnvironmentVariable('Path', 'User') }
 function MachinePath { [Environment]::GetEnvironmentVariable('Path', 'Machine') }
 function Entries([string] $p) { if ($p) { @($p -split ';' | Where-Object { $_ }) } else { @() } }
 function WinPsProfile { Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'WindowsPowerShell\Microsoft.PowerShell_profile.ps1' }
+$PsPolicyKey = 'HKCU:\SOFTWARE\Microsoft\PowerShell\1\ShellIds\Microsoft.PowerShell'
+function UserPolicy { "" + (Get-ItemProperty $PsPolicyKey -ErrorAction SilentlyContinue).ExecutionPolicy }
+function ProfileHasLine { [bool] ((Test-Path (WinPsProfile)) -and ((Get-Content (WinPsProfile) -Raw) -match 'pyenv init - pwsh')) }
 
 # A new Windows PowerShell, as a new terminal would start it: the profile loads, PATH from
 # the registry (this process's own PATH predates the install).
@@ -88,6 +91,8 @@ function Clean {
     $kept = Entries (UserPath) | Where-Object { $_ -notmatch '\\\.pyenv\\|\\rpyenv\\' }
     [Environment]::SetEnvironmentVariable('Path', ($kept -join ';'), 'User')
     foreach ($k in "HKCU:\Software\rpyenv", "HKCU:\$AsKey") { if (Test-Path $k) { Remove-Item -Recurse -Force $k } }
+    # The Sandbox's own default: no CurrentUser execution policy (Restricted applies).
+    Remove-ItemProperty $PsPolicyKey -Name ExecutionPolicy -ErrorAction SilentlyContinue
     $docs = [Environment]::GetFolderPath('MyDocuments')
     foreach ($f in 'WindowsPowerShell\Microsoft.PowerShell_profile.ps1', 'PowerShell\Microsoft.PowerShell_profile.ps1') {
         $p = Join-Path $docs $f
@@ -258,6 +263,8 @@ function CommonUninstalled {
     Check 'Active Setup key gone' False (Test-Path "HKLM:\$AsKey")
     $o = NewWindowsPowerShell "'started'"
     Check 'new Windows PowerShell starts cleanly' 'started' ($o -join ' | ')
+    Check 'no CurrentUser execution policy left' '' (UserPolicy)
+    Check 'no profile line left' False (ProfileHasLine)
 }
 
 # --- steps -------------------------------------------------------------------------------
@@ -268,6 +275,8 @@ function JustForMe {
         Check 'Options: Just for me selected' True (Selected $w '^Just for me')
         Check 'Options: live rehash unchecked' Off (Toggled $w '^Enable live rehash')
         Check 'Options: no pyenv-win checkbox' False (Visible $w '^Move pyenv-win aside')
+        Check 'Options: allow-scripts checkbox shown' True (Visible $w '^Let Windows PowerShell run')
+        Check 'Options: allow-scripts checkbox checked' On (Toggled $w '^Let Windows PowerShell run')
     }
     $cl = ServerCommandLine "$dir\install.log"
     Note "server command line: $cl"
@@ -285,9 +294,11 @@ function JustForMe {
     Check 'HKLM marker' False (Test-Path HKLM:\Software\rpyenv)
     Check 'Active Setup key' False (Test-Path "HKLM:\$AsKey")
     Check 'setup marker' True (Test-Path "$Root\.rpyenv-setup")
-    Check 'Windows PowerShell profile left alone (Restricted)' False (Test-Path (WinPsProfile))
+    Check 'CurrentUser execution policy (allow-scripts)' RemoteSigned (UserPolicy)
+    Check 'Windows PowerShell profile has the line' True (ProfileHasLine)
+    # The profile loads now: it must start without errors or a "No version installed" line.
     $o = NewWindowsPowerShell 'pyenv --version'
-    Like 'new Windows PowerShell: only pyenv --version' '^pyenv \S+ \(rpyenv \S+\)$' ($o -join ' | ')
+    Like 'new Windows PowerShell loads the profile: only pyenv --version' '^pyenv \S+ \(rpyenv \S+\)$' ($o -join ' | ')
 
     # CHECKLIST 2.
     New-Item -ItemType Directory -Force "$Root\versions\3.0.0-kept" | Out-Null
@@ -308,7 +319,13 @@ function Migrate {
         param($w)
         Check 'Options: pyenv-win checkbox shown' True (Visible $w '^Move pyenv-win aside')
         Check 'Options: pyenv-win checkbox checked' On (Toggled $w '^Move pyenv-win aside')
+        # Unchecked here, so the unchecked path is covered too.
+        Press (Find $w '^Let Windows PowerShell run')
+        Start-Sleep -Milliseconds 500
+        Check 'Options: allow-scripts checkbox unchecked' Off (Toggled $w '^Let Windows PowerShell run')
     }
+    Check 'unchecked: no CurrentUser execution policy' '' (UserPolicy)
+    Check 'unchecked: Windows PowerShell profile left alone (Restricted)' False (ProfileHasLine)
     Check 'pyenv-win launcher moved out of bin' False (Test-Path "$Root\bin\pyenv.ps1")
     Check 'pyenv-win launcher in .rpyenv-migrate' True (Test-Path "$Root\.rpyenv-migrate\bin\pyenv.ps1")
     Uninstall "$dir\uninstall.log"
@@ -329,6 +346,7 @@ function AllUsers {
         Dump $w 'options after For all users'
         Check 'Options: For all users selected' True (Selected $w '^For all users')
         Check 'Options: pyenv-win checkbox hidden for all users' False (Visible $w '^Move pyenv-win aside')
+        Check 'Options: allow-scripts checkbox hidden for all users' False (Visible $w '^Let Windows PowerShell run')
     }
     $cl = ServerCommandLine "$dir\install.log"
     Note "server command line: $cl"

@@ -55,12 +55,19 @@ foreach ($a in 'RpyenvMigrate', 'RpyenvSetup', 'RpyenvRestore', 'RpyenvUndo', 'R
 Expect ("$($sequence['RpyenvUndo'])" -like '*NOT UPGRADINGPRODUCTCODE*') 'undo skipped during upgrades'
 
 $targets = (Rows 'SELECT `Action`, `Target` FROM `CustomAction`') | ForEach-Object { "$($_[1])" }
-foreach ($c in '" migrate', '" setup', '" migrate --restore', '" setup --undo') {
-    Expect (@($targets | Where-Object { $_ -like "*pyenv.exe$c" }).Count -ge 1) "command pyenv.exe$c"
+foreach ($c in '" migrate', '" setup [RpyenvSetupArgs]', '" migrate --restore', '" setup --undo') {
+    # Escaped: -like reads [RpyenvSetupArgs] as a character class.
+    $pattern = '*pyenv.exe' + [WildcardPattern]::Escape($c)
+    Expect (@($targets | Where-Object { $_ -like $pattern }).Count -ge 1) "command pyenv.exe$c"
 }
+# Sandbox S1's checkbox: ALLOWSCRIPTS=1 adds --allow-scripts to setup's command line.
+Expect (@($targets | Where-Object { $_ -eq '--allow-scripts' }).Count -eq 1) 'setup --allow-scripts when ALLOWSCRIPTS=1'
+Expect ((("$($props['SecureCustomProperties'])" -split ';') -contains 'ALLOWSCRIPTS')) 'ALLOWSCRIPTS reaches the server'
 
 $dialogs = (Rows 'SELECT `Dialog` FROM `Dialog`') | ForEach-Object { $_[0] }
 Expect ($dialogs -contains 'OptionsDlg') 'the Options page'
+$controls = Rows 'SELECT `Dialog_`, `Control`, `Property` FROM `Control`'
+Expect (@($controls | Where-Object { $_[0] -eq 'OptionsDlg' -and $_[1] -eq 'AllowScripts' -and $_[2] -eq 'ALLOWSCRIPTS' }).Count -eq 1) 'the allow-scripts checkbox'
 
 if ($failures.Count) {
     $failures | ForEach-Object { Write-Host "missing: $_" }
