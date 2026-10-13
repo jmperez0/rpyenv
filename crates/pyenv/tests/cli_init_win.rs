@@ -49,8 +49,34 @@ fn print_mode_for_powershell() {
         (want.replace('\n', "\r\n"), String::new(), 0)
     );
     assert!(f.root.join("shims").is_dir() && f.root.join("versions").is_dir());
+    f.version("3.12.1");
     let push = run(&f, &["init", "-", "powershell", "--no-push-path"]).0;
     assert!(push.starts_with(&format!("if (-not (($Env:PATH -split ';') -contains {q})) {{ $Env:PATH = {qsemi} + $Env:PATH }}\r\n$Env:PYENV_SHELL = 'powershell'\r\n& (Get-Command -CommandType Application pyenv -TotalCount 1) rehash\r\n")));
+}
+
+/// Sandbox S2: with no version installed, Windows rehash only prints pyenv-win's "No version
+/// installed" message, which every new shell would show. The line comes back once a version
+/// is installed.
+#[test]
+fn no_rehash_line_while_no_version_is_installed() {
+    let f = Fixture::new();
+    for (shell, line) in [
+        ("pwsh", "& (Get-Command -CommandType Application pyenv -TotalCount 1) rehash"),
+        ("bash", "command pyenv rehash"),
+    ] {
+        for args in [["init", "-", shell], ["init", "--path", shell]] {
+            assert!(!raw(&f, &args).contains(line), "{args:?}");
+        }
+    }
+    f.version("3.12.1");
+    for (shell, line) in [
+        ("pwsh", "& (Get-Command -CommandType Application pyenv -TotalCount 1) rehash"),
+        ("bash", "command pyenv rehash"),
+    ] {
+        for args in [["init", "-", shell], ["init", "--path", shell]] {
+            assert!(raw(&f, &args).contains(line), "{args:?}");
+        }
+    }
 }
 
 #[test]
