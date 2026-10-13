@@ -129,7 +129,8 @@ def migrate(msi: Path) -> None:
     for name in ("pyenv.ps1", "pyenv.bat", "pyenv"):
         (bin_dir / name).write_text(f"{name} from pyenv-win\n", encoding="utf-8")
     before = reg(winreg.HKEY_CURRENT_USER, "Environment", "Path") or ""
-    set_user_path(f"{bin_dir};{before}")
+    # pyenv-win's installer puts both bin and shims on the user Path.
+    set_user_path(f"{bin_dir};{SHIMS};{before}")
     try:
         msiexec(f'/i "{msi}" MIGRATEPYENVWIN=1')
         check((ROOT / ".rpyenv-migrate" / "bin" / "pyenv.ps1").is_file(), "pyenv-win's launchers backed up")
@@ -138,6 +139,8 @@ def migrate(msi: Path) -> None:
         msiexec(f'/x "{msi}"')
         check((bin_dir / "pyenv.ps1").is_file(), "pyenv-win's launchers restored")
         check(low(bin_dir) in user_path(), "pyenv-win's bin back on the user PATH")
+        # M6b final review I1: setup didn't add the shims entry, so undo keeps it.
+        check(low(SHIMS) in user_path(), f"pyenv-win's shims entry kept: {user_path()}")
         check(not (ROOT / ".rpyenv-migrate").exists(), "the migrate backup is gone")
     finally:
         set_user_path(before)

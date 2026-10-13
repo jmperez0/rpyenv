@@ -7,6 +7,11 @@ use std::path::PathBuf;
 
 pub const MARKER: &str = ".rpyenv-setup";
 
+/// Written when setup added the shims entry to the user Path, so `--undo` takes back only
+/// that: an entry that was there before (pyenv-win's installer adds it) stays (M6b final
+/// review I1).
+const PATH_MARKER: &str = ".rpyenv-added-path";
+
 /// Written when `--allow-scripts` set the user's execution policy, so `--undo` puts it back.
 const ALLOWED_MARKER: &str = ".rpyenv-allowed-scripts";
 
@@ -88,8 +93,18 @@ fn run_with(ctx: &Ctx, allow_scripts: bool) -> Output {
                 text: String::new(),
                 expand: true,
             });
+            let was_there = pathlist::split(&current.text)
+                .iter()
+                .any(|e| pathlist::same(&winenv::expand(e), &shims));
+            // The record first: an entry added without it would never be taken back.
+            let record = ctx.root.join(PATH_MARKER);
+            let recorded = was_there || std::fs::write(&record, "").is_ok();
             match pathlist::put_first(&current.text, &shims, &winenv::expand) {
                 None => o.out(format!("pyenv: {shims} is already first on your user PATH")),
+                Some(_) if !recorded => {
+                    o.err(format!("pyenv: cannot write {}", record.display()));
+                    failed = true;
+                }
                 Some(text) => match winenv::set_user(
                     "Path",
                     &winenv::Value {
@@ -262,6 +277,8 @@ pub fn undo(ctx: &Ctx) -> Output {
             failed = true;
         }
         Ok(None) => {}
+        // Only an entry setup added (I1).
+        Ok(Some(_)) if !ctx.root.join(PATH_MARKER).exists() => {}
         Ok(Some(v)) => {
             let (text, gone) =
                 pathlist::without(&v.text, &|e| pathlist::same(&winenv::expand(e), &shims));
@@ -301,7 +318,12 @@ pub fn undo(ctx: &Ctx) -> Output {
         }
     }
     failed |= !undo_allow_scripts(ctx, &mut o);
-    for marker in [MARKER, FAILED_MARKER] {
+    let markers: &[&str] = if failed {
+        &[MARKER, FAILED_MARKER]
+    } else {
+        &[MARKER, FAILED_MARKER, PATH_MARKER]
+    };
+    for marker in markers {
         match std::fs::remove_file(ctx.root.join(marker)) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -330,10 +352,13 @@ fn under(path: &std::path::Path, dir: &std::path::Path) -> bool {
 
 /// Spec §9.4: an all-users install (this pyenv.exe under Program Files) sets the user up
 /// on their first command (plan M6a, R6). `None` when nothing was needed.
-pub fn first_run(ctx: &Ctx, cmd: &str) -> Option<Output> {
+pub fn first_run(ctx: &Ctx, cmd: &str, rest: &[&str]) -> Option<Output> {
     // Once per process: `completions` runs pyenv again in-process (re-review 6).
     static TRIED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    if cmd == "setup" || ctx.root.join(MARKER).exists() {
+    // Not the uninstall's `migrate --restore` either: it would set up the uninstalling
+    // user, half of which `setup --undo` then takes back (M6b final review I2).
+    let restore = cmd == "migrate" && rest.contains(&"--restore");
+    if cmd == "setup" || restore || ctx.root.join(MARKER).exists() {
         return None;
     }
     // A first run that failed is retried a day later, not on every command (and every new
