@@ -151,6 +151,13 @@ pub fn remove(file: &Path) -> io::Result<bool> {
     if removed {
         // Nothing left but a BOM: deleted, as an empty profile still loads (Sandbox S4).
         if out.is_empty() || BOMS.contains(&&out[..]) {
+            // Windows deletes a read-only file; read-only means "don't change it".
+            if std::fs::metadata(file)?.permissions().readonly() {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "it's read-only",
+                ));
+            }
             std::fs::remove_file(file)?;
         } else {
             std::fs::write(file, to_bytes(encoding, &out))?;
@@ -159,16 +166,22 @@ pub fn remove(file: &Path) -> io::Result<bool> {
     Ok(removed)
 }
 
-/// Adds the line to both profiles and reports each (`init --install pwsh`, `setup`).
+pub const NO_DOCUMENTS: &str =
+    "pyenv: cannot find your Documents folder for the PowerShell profiles";
+
+/// Adds the line to both profiles and reports each (`init --install pwsh`).
 pub fn install_all() -> Output {
+    match rpyenv_core::winenv::documents() {
+        Some(docs) => install(&paths(&docs)),
+        None => Output::error(NO_DOCUMENTS),
+    }
+}
+
+/// Adds the line to each of `profiles` and reports each.
+pub fn install(profiles: &[PathBuf]) -> Output {
     let mut o = Output::new();
-    let Some(docs) = rpyenv_core::winenv::documents() else {
-        return Output::error(
-            "pyenv: cannot find your Documents folder for the PowerShell profiles",
-        );
-    };
-    for p in paths(&docs) {
-        match add(&p) {
+    for p in profiles {
+        match add(p) {
             Ok(Added::Added) => o.out(format!(
                 "pyenv: added the PowerShell line to {}",
                 p.display()
@@ -341,5 +354,15 @@ mod tests {
             assert!(remove(&f).unwrap());
             assert!(!f.exists(), "{before:?}");
         }
+        // Read-only means "don't change it": not deleted either, though Windows would.
+        std::fs::write(&f, format!("{LINE}\r\n")).unwrap();
+        let mut perms = std::fs::metadata(&f).unwrap().permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&f, perms.clone()).unwrap();
+        assert!(remove(&f).is_err());
+        assert!(f.exists());
+        #[allow(clippy::permissions_set_readonly_false)]
+        perms.set_readonly(false);
+        std::fs::set_permissions(&f, perms).unwrap();
     }
 }

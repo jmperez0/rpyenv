@@ -15,8 +15,8 @@ pub const HELP: &str = "Usage: pyenv setup
        pyenv setup --undo
 
 Prepares your Windows user for rpyenv: creates PYENV_ROOT, puts its shims folder first
-on your user PATH, rehashes, and adds the PowerShell line to your profiles. It's safe to
-run again.
+on your user PATH, rehashes, and adds the PowerShell line to your profiles (Windows
+PowerShell's only where its execution policy lets scripts run). It's safe to run again.
 
 --undo takes back what setup added for this user: the shims entry on your user PATH and
 the PowerShell line. Your Python versions stay.
@@ -99,7 +99,7 @@ pub fn run(ctx: &Ctx) -> Output {
     let r = crate::commands::rehash::rehash(ctx, &[]);
     o.stderr.push_str(&r.stderr);
     failed |= r.code != 0;
-    let p = crate::commands::pwsh_profile::install_all();
+    let p = profiles(&mut o);
     o.stdout.push_str(&p.stdout);
     o.stderr.push_str(&p.stderr);
     failed |= p.code != 0;
@@ -128,6 +128,33 @@ pub fn run(ctx: &Ctx) -> Output {
     let _ = std::fs::write(ctx.root.join(MARKER), env!("CARGO_PKG_VERSION"));
     o.out("pyenv: open a new terminal for the changes to take effect");
     o
+}
+
+/// The PowerShell line in both profiles, except Windows PowerShell 5.1's where its execution
+/// policy blocks local scripts: that profile would fail on every start (Sandbox S1). The
+/// hint goes to `o`; `pyenv init --install pwsh` adds the line whatever the policy.
+fn profiles(o: &mut Output) -> Output {
+    use crate::commands::pwsh_profile;
+    let Some(docs) = winenv::documents() else {
+        return Output::error(pwsh_profile::NO_DOCUMENTS);
+    };
+    let [p5, p7] = pwsh_profile::paths(&docs);
+    let policy = winenv::windows_powershell_policy();
+    if !policy.blocks_local_scripts() {
+        return pwsh_profile::install(&[p5, p7]);
+    }
+    if policy.by_group_policy {
+        o.err(format!(
+            "pyenv: Windows PowerShell can't run scripts here (execution policy {}, set by Group Policy), so its profile was left alone",
+            policy.name
+        ));
+    } else {
+        o.err(format!(
+            "pyenv: Windows PowerShell can't run scripts here (execution policy {}), so its profile was left alone; to use pyenv in it, run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`, then `pyenv init --install pwsh`",
+            policy.name
+        ));
+    }
+    pwsh_profile::install(&[p7])
 }
 
 /// M6b design §5: takes back what `run` added for this user (the MSI's uninstall runs
