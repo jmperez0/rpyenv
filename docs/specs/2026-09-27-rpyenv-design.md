@@ -674,7 +674,7 @@ fail on every start (Sandbox S1). `pyenv setup` and `pyenv migrate` therefore le
 profile alone where the effective policy (Group Policy, then CurrentUser, then
 LocalMachine, then the system default) is `Restricted` or `AllSigned`, and say how to
 allow scripts; `pyenv setup --allow-scripts` (the checkbox) first sets the CurrentUser
-policy to `RemoteSigned`, unless Group Policy or the user set one, and records it in
+policy to `RemoteSigned`, unless Group Policy, an administrator (LocalMachine) or the user set one, and records it in
 `PYENV_ROOT\.rpyenv-allowed-scripts` for `--undo`, which removes it only if it's still
 `RemoteSigned`. `pyenv shell`, `activate` and `deactivate` without integration name a
 blocking policy and the two commands that allow scripts.

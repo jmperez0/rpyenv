@@ -160,8 +160,9 @@ fn a_group_policy_that_blocks_scripts_wins_and_is_named() {
 /// Policy nor the user chose that, so its profile gets the line; `--undo` puts it back.
 #[test]
 fn allow_scripts_sets_current_user_remotesigned_where_scripts_are_blocked() {
-    // Client Windows' default, and a LocalMachine policy (CurrentUser takes precedence).
-    for seed in [None, Some(("ps-machine", "AllSigned"))] {
+    // Client Windows' default (an explicit LocalMachine policy is an administrator's
+    // choice, left alone below).
+    for seed in [None::<(&str, &str)>, Some(("ps-machine", "Undefined"))] {
         let f = Fixture::new();
         if let Some((label, value)) = seed {
             reg_set(&f, label, "ExecutionPolicy", "REG_SZ", value);
@@ -216,6 +217,20 @@ fn allow_scripts_leaves_chosen_policies_alone() {
         "{}",
         r.stderr
     );
+
+    // An administrator's LocalMachine policy (final review design note, user's ruling).
+    let f = Fixture::new();
+    reg_set(&f, "ps-machine", "ExecutionPolicy", "REG_SZ", "AllSigned");
+    let r = f.pyenv(&["setup", "--allow-scripts"]);
+    assert_eq!(r.code, 0, "{}{}", r.stdout, r.stderr);
+    assert_eq!(reg_get(&f, "ps-user", "ExecutionPolicy"), "");
+    assert!(!profile(&f, "WindowsPowerShell").exists());
+    assert!(
+        r.stderr.contains("this computer's execution policy") && r.stderr.contains("AllSigned"),
+        "{}",
+        r.stderr
+    );
+    assert!(!f.root.join(".rpyenv-allowed-scripts").exists());
 
     let f = Fixture::new();
     reg_set(&f, "gpo-machine", "EnableScripts", "REG_DWORD", "0");
