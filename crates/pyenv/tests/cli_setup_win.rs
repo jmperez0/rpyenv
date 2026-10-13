@@ -479,6 +479,44 @@ fn a_failed_first_run_is_not_repeated_on_every_command() {
     assert!(second.is_empty(), "{second}");
 }
 
+/// M6b final review I1: a shims entry that was on the Path before setup (pyenv-win's
+/// installer puts it there) stays after undo, so pyenv-win keeps working once rpyenv is
+/// uninstalled.
+#[test]
+fn setup_undo_keeps_a_shims_entry_that_was_there_before() {
+    let f = Fixture::new();
+    let before = format!(
+        r"{};{};C:\Tools",
+        f.root.join("bin").display(),
+        f.root.join("shims").display()
+    );
+    reg_set(&f, "user", "Path", "REG_EXPAND_SZ", &before);
+    assert_eq!(f.pyenv(&["setup"]).code, 0);
+    let r = f.pyenv(&["setup", "--undo"]);
+    assert_eq!(r.code, 0, "{}{}", r.stdout, r.stderr);
+    let after = reg_get(&f, "user", "Path");
+    assert!(
+        after.contains(&f.root.join("shims").display().to_string()),
+        "{after}"
+    );
+}
+
+/// M6b final review I2: the uninstall's `migrate --restore` from Program Files doesn't set
+/// up the uninstalling user (the first run), which would then be half undone.
+#[test]
+fn migrate_restore_from_program_files_is_not_a_first_run() {
+    let f = Fixture::new();
+    let pf_bin = all_users_bin(&f);
+    let out = f
+        .command(&pf_bin.join("pyenv.exe"), &f.work, &[])
+        .args(["migrate", "--restore"])
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!err.contains("set up for this user"), "{err}");
+    assert!(!f.root.join(".rpyenv-setup").exists());
+}
+
 /// M6b design §5: `setup --undo` takes back what setup added for this user, keeps the
 /// rest of the Path and PYENV_ROOT's data, and is safe to run twice.
 #[test]
@@ -509,11 +547,14 @@ fn setup_undo_takes_back_the_path_entry_the_profile_line_and_the_marker() {
     assert_eq!(again.code, 0, "{}{}", again.stdout, again.stderr);
 }
 
-/// Any spelling of the shims entry goes; other entries keep their order and the value
-/// keeps its type.
+/// Any spelling of the shims entry setup added goes; other entries keep their order and
+/// the value keeps its type.
 #[test]
 fn setup_undo_keeps_other_path_entries_in_order() {
     let f = Fixture::new();
+    reg_set(&f, "user", "Path", "REG_SZ", r"C:\A;C:\B");
+    assert_eq!(f.pyenv(&["setup"]).code, 0);
+    // Moved and respelled since, by hand.
     let spelled = format!("{}\\", f.root.join("shims").display()).to_uppercase();
     reg_set(
         &f,
