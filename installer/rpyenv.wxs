@@ -31,6 +31,12 @@
     </Property>
     <SetProperty Id="MIGRATEPYENVWIN" Value="1" After="AppSearch" Sequence="ui" Condition="PYENVWIN_FOUND AND NOT MIGRATEPYENVWIN" />
 
+    <!-- Sandbox S5: the scope as Windows decides it. Scope="perUserOrMachine" starts ALLUSERS
+         at 2, and "For all users" (or a silent MSIINSTALLPERUSER="") only clears
+         MSIINSTALLPERUSER: Windows then installs per-machine with ALLUSERS still 2, so the
+         conditions below test this instead. Private: each sequence computes its own. -->
+    <SetProperty Id="RpyenvMachine" Value="1" Before="AppSearch" Sequence="both" Condition="ALLUSERS=1 OR (ALLUSERS=2 AND MSIINSTALLPERUSER&lt;&gt;1)" />
+
     <!-- One install per machine (design §4.5, plan P6). -->
     <Property Id="RPYENV_USER_INSTALLED">
       <RegistrySearch Root="HKCU" Key="Software\rpyenv" Name="Installed" Type="raw" />
@@ -67,24 +73,24 @@
 
     <ComponentGroup Id="Environment" Directory="INSTALLFOLDER">
       <!-- Just for me: bin on the user PATH; the HKCU marker is the key path. -->
-      <Component Id="UserEnvironment" Condition="ALLUSERS&lt;&gt;1">
+      <Component Id="UserEnvironment" Condition="NOT RpyenvMachine">
         <Environment Id="UserPath" Name="PATH" Value="[BinFolder]" Part="last" Action="set" System="no" />
         <RegistryValue Root="HKCU" Key="Software\rpyenv" Name="Installed" Type="integer" Value="1" KeyPath="yes" />
       </Component>
-      <Component Id="UserLiveRehash" Condition="ALLUSERS&lt;&gt;1 AND LIVEREHASH=1">
+      <Component Id="UserLiveRehash" Condition="NOT RpyenvMachine AND LIVEREHASH=1">
         <Environment Id="UserLiveRehash" Name="RPYENV_LIVE_REHASH" Value="1" Action="set" System="no" />
         <RegistryValue Root="HKCU" Key="Software\rpyenv" Name="LiveRehash" Type="integer" Value="1" KeyPath="yes" />
       </Component>
       <!-- For all users: bin on the machine PATH, the HKLM marker, Active Setup. -->
-      <Component Id="MachineEnvironment" Condition="ALLUSERS=1">
+      <Component Id="MachineEnvironment" Condition="RpyenvMachine">
         <Environment Id="MachinePath" Name="PATH" Value="[BinFolder]" Part="last" Action="set" System="yes" />
         <RegistryValue Root="HKLM" Key="Software\rpyenv" Name="Installed" Type="integer" Value="1" KeyPath="yes" />
       </Component>
-      <Component Id="MachineLiveRehash" Condition="ALLUSERS=1 AND LIVEREHASH=1">
+      <Component Id="MachineLiveRehash" Condition="RpyenvMachine AND LIVEREHASH=1">
         <Environment Id="MachineLiveRehash" Name="RPYENV_LIVE_REHASH" Value="1" Action="set" System="yes" />
         <RegistryValue Root="HKLM" Key="Software\rpyenv" Name="LiveRehash" Type="integer" Value="1" KeyPath="yes" />
       </Component>
-      <Component Id="ActiveSetup" Condition="ALLUSERS=1">
+      <Component Id="ActiveSetup" Condition="RpyenvMachine">
         <RegistryKey Root="HKLM" Key="SOFTWARE\Microsoft\Active Setup\Installed Components\{73C5FAF3-A93A-472F-BD99-814909823229}">
           <RegistryValue Type="string" Value="rpyenv" KeyPath="yes" />
           <RegistryValue Name="StubPath" Type="string" Value="&quot;[BinFolder]pyenv.exe&quot; setup" />
@@ -105,10 +111,10 @@
     <CustomAction Id="RpyenvUndo" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixQuietExec" Execute="deferred" Impersonate="yes" Return="ignore" />
 
     <InstallExecuteSequence>
-      <Custom Action="RefuseMachineOverUser" After="AppSearch" Condition="NOT Installed AND ALLUSERS=1 AND RPYENV_USER_INSTALLED" />
-      <Custom Action="RefuseUserOverMachine" After="RefuseMachineOverUser" Condition="NOT Installed AND ALLUSERS&lt;&gt;1 AND RPYENV_MACHINE_INSTALLED" />
-      <Custom Action="RpyenvMigrate" After="WriteEnvironmentStrings" Condition="NOT Installed AND ALLUSERS&lt;&gt;1 AND MIGRATEPYENVWIN=1" />
-      <Custom Action="RpyenvSetup" After="RpyenvMigrate" Condition="NOT Installed AND ALLUSERS&lt;&gt;1" />
+      <Custom Action="RefuseMachineOverUser" After="AppSearch" Condition="NOT Installed AND RpyenvMachine AND RPYENV_USER_INSTALLED" />
+      <Custom Action="RefuseUserOverMachine" After="RefuseMachineOverUser" Condition="NOT Installed AND NOT RpyenvMachine AND RPYENV_MACHINE_INSTALLED" />
+      <Custom Action="RpyenvMigrate" After="WriteEnvironmentStrings" Condition="NOT Installed AND NOT RpyenvMachine AND MIGRATEPYENVWIN=1" />
+      <Custom Action="RpyenvSetup" After="RpyenvMigrate" Condition="NOT Installed AND NOT RpyenvMachine" />
       <Custom Action="RpyenvRestore" Before="RemoveEnvironmentStrings" Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
       <Custom Action="RpyenvUndo" After="RpyenvRestore" Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
     </InstallExecuteSequence>
