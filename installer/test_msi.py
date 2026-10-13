@@ -195,8 +195,10 @@ def allow_scripts(msi: Path) -> None:
 
 
 def upgrade(msi: Path, next_msi: Path) -> None:
-    msiexec(f'/i "{msi}"')
+    msiexec(f'/i "{msi}" LIVEREHASH=1')
     msiexec(f'/i "{next_msi}"')
+    # M6b final review I3: a silent upgrade keeps the options the install chose.
+    check(reg(winreg.HKEY_CURRENT_USER, "Environment", "RPYENV_LIVE_REHASH") == "1", "live rehash kept by the upgrade")
     check(user_path().count(low(SHIMS)) == 1 and user_path()[:1] == [low(SHIMS)], f"shims still first, once: {user_path()}")
     check(user_path().count(low(USER_DIR / "bin")) == 1, f"bin once on the user PATH: {user_path()}")
     check((ROOT / ".rpyenv-setup").is_file(), "the upgrade didn't undo setup (marker)")
