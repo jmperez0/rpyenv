@@ -201,29 +201,55 @@ def set_policy(root, value):
             winreg.SetValueEx(k, "ExecutionPolicy", 0, winreg.REG_SZ, value)
 
 
+def client_windows() -> bool:
+    """Client Windows (ProductType WinNT), whose default execution policy is Restricted."""
+    return reg(winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\ProductOptions", "ProductType") == "WinNT"
+
+
 def allow_scripts(msi: Path) -> None:
-    """Sandbox S1's checkbox, silently, where an administrator's LocalMachine AllSigned (set
-    for the scenario) blocks scripts: ALLOWSCRIPTS=1 leaves that choice alone (final review,
-    user's ruling), as does a plain install. The policy it does set, where only client
-    Windows' default blocks scripts, needs client Windows: the Rust tests and the Sandbox
-    runner cover it (a Windows Server runner's default already allows scripts)."""
+    """Sandbox S1's checkbox, silently. Everywhere: where an administrator's LocalMachine
+    AllSigned (set for the scenario) blocks scripts, ALLOWSCRIPTS=1 leaves that choice alone
+    (final review, user's ruling), as does a plain install. On client Windows also: where
+    only the default (Restricted) blocks them, ALLOWSCRIPTS=1 sets CurrentUser RemoteSigned
+    and the profile line, and uninstall takes both back; a Server runner's default already
+    allows scripts, so it can't show this. Prints which runs ran."""
     for root in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
         check(reg(root, PS_GPO, "EnableScripts") is None, "no Group Policy for PowerShell scripts on this runner")
     old_machine = reg(winreg.HKEY_LOCAL_MACHINE, PS_POLICY, "ExecutionPolicy")
     old_user = reg(winreg.HKEY_CURRENT_USER, PS_POLICY, "ExecutionPolicy")
-    set_policy(winreg.HKEY_LOCAL_MACHINE, "AllSigned")
-    set_policy(winreg.HKEY_CURRENT_USER, None)
     user_policy = lambda: reg(winreg.HKEY_CURRENT_USER, PS_POLICY, "ExecutionPolicy")
     no_line = lambda: not PROFILES[0].exists() or LINE not in PROFILES[0].read_text(encoding="utf-8", errors="replace")
+    record = ROOT / ".rpyenv-allowed-scripts"
     try:
+        set_policy(winreg.HKEY_CURRENT_USER, None)
+        set_policy(winreg.HKEY_LOCAL_MACHINE, "AllSigned")
         for args in ("ALLOWSCRIPTS=1", ""):
             msiexec(f'/i "{msi}" {args}'.rstrip())
             check(user_policy() is None, f"{args or 'plain'}: the administrator's policy left alone: {user_policy()}")
-            check(not (ROOT / ".rpyenv-allowed-scripts").exists(), f"{args or 'plain'}: nothing recorded")
+            check(not record.exists(), f"{args or 'plain'}: nothing recorded")
             check(no_line(), f"{args or 'plain'}: no Windows PowerShell profile line while scripts are blocked")
             check((ROOT / ".rpyenv-setup").is_file(), f"{args or 'plain'}: setup still finished")
             msiexec(f'/x "{msi}"')
             check(user_policy() is None, f"{args or 'plain'}: still no CurrentUser policy: {user_policy()}")
+        print("allow_scripts: an administrator's AllSigned left alone (with and without ALLOWSCRIPTS=1)")
+
+        if not client_windows():
+            print("allow_scripts: Windows Server runner, whose default allows scripts: the box's own change not run here")
+            return
+        set_policy(winreg.HKEY_LOCAL_MACHINE, None)  # client Windows' default, Restricted
+        msiexec(f'/i "{msi}" ALLOWSCRIPTS=1')
+        check(user_policy() == "RemoteSigned", f"CurrentUser policy RemoteSigned: {user_policy()}")
+        check(not no_line(), "Windows PowerShell's profile line")
+        check(record.is_file(), "setup recorded the policy it set")
+        msiexec(f'/x "{msi}"')
+        check(user_policy() is None, f"CurrentUser policy taken back: {user_policy()}")
+        check(not record.exists(), "the record removed")
+        check(no_line(), "the profile line removed")
+        msiexec(f'/i "{msi}"')
+        check(user_policy() is None, f"a plain silent install leaves the default: {user_policy()}")
+        check(no_line(), "no profile line while the default blocks scripts")
+        msiexec(f'/x "{msi}"')
+        print("allow_scripts: client Windows: ALLOWSCRIPTS=1 set RemoteSigned and uninstall took it back")
     finally:
         set_policy(winreg.HKEY_LOCAL_MACHINE, old_machine)
         set_policy(winreg.HKEY_CURRENT_USER, old_user)
