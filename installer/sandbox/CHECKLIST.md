@@ -13,6 +13,10 @@ a pyenv-win present, so the checkbox's hiding is checked too; uninstalls run `ms
 /passive`, which is what Settings, Apps runs. Look at the screenshots for anything the
 checks don't name.
 
+Run it before tagging a release whenever setup, migrate or the installer changed since
+the last run: the dialogs, and the allow-scripts box against client Windows' default,
+are checked nowhere else on x64 (CI's x64 runners are Windows Server).
+
 By hand: `pwsh -NoProfile -File installer/sandbox/new-wsb.ps1`, then open the printed
 `dist\sandbox.wsb`. Inside the Sandbox, the MSI is in `C:\rpyenv-dist`. Record each
 result (as seen, plus anything unexpected).
