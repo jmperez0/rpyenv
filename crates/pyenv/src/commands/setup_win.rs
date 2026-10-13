@@ -27,8 +27,8 @@ on your user PATH, rehashes, and adds the PowerShell line to your profiles (Wind
 PowerShell's only where its execution policy lets scripts run). It's safe to run again.
 
 --allow-scripts first lets Windows PowerShell run local scripts for you, where it doesn't:
-it sets your own execution policy (CurrentUser) to RemoteSigned, unless Group Policy or
-you already chose one.
+it sets your own execution policy (CurrentUser) to RemoteSigned, unless Group Policy, an
+administrator (LocalMachine) or you already chose one.
 
 --undo takes back what setup added for this user: the shims entry on your user PATH, the
 PowerShell line and an execution policy --allow-scripts set, if it's still RemoteSigned.
@@ -172,11 +172,17 @@ fn allow_local_scripts(ctx: &Ctx, o: &mut Output) -> bool {
     if !policy.blocks_local_scripts() || policy.by_group_policy {
         return true;
     }
-    let own = winenv::current_user_policy()
-        .filter(|p| !p.trim().is_empty() && !p.trim().eq_ignore_ascii_case("Undefined"));
-    if let Some(own) = own {
+    let chosen = |p: &String| !p.trim().is_empty() && !p.trim().eq_ignore_ascii_case("Undefined");
+    if let Some(own) = winenv::current_user_policy().filter(chosen) {
         o.err(format!(
             "pyenv: your own execution policy for Windows PowerShell is {own}; left it as it is"
+        ));
+        return true;
+    }
+    // An administrator's choice too, like Group Policy (final review, user's ruling).
+    if let Some(machine) = winenv::local_machine_policy().filter(chosen) {
+        o.err(format!(
+            "pyenv: this computer's execution policy for Windows PowerShell is {machine} (set by an administrator); left it as it is"
         ));
         return true;
     }

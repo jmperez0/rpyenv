@@ -191,8 +191,9 @@ deactivate` need the profile line, and Windows PowerShell 5.1 runs a profile onl
 its execution policy allows local scripts: client Windows' default, `Restricted`,
 doesn't. So setup leaves Windows PowerShell's profile alone there and says how to allow
 scripts; with the checkbox (or `pyenv setup --allow-scripts`), it sets your own
-(CurrentUser) policy to `RemoteSigned` first, unless Group Policy or you already chose
-one. `pyenv setup --undo`, which uninstalling runs, puts it back. By hand:
+(CurrentUser) policy to `RemoteSigned` first, unless Group Policy, an administrator
+(LocalMachine) or you already chose one. `pyenv setup --undo`, which uninstalling runs,
+puts it back. By hand:
 `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`, then `pyenv init --install pwsh`.
 PowerShell 7 runs profiles by default.
 

@@ -372,6 +372,24 @@ pub fn current_user_policy() -> Option<String> {
     }
 }
 
+/// Windows PowerShell's LocalMachine policy as stored (`Set-ExecutionPolicy -Scope
+/// LocalMachine`, an administrator's), if any: `HKCU\<key>\ps-machine` under the test
+/// override.
+pub fn local_machine_policy() -> Option<String> {
+    let raw = match test_key() {
+        Some(k) => read_raw(
+            HKEY_CURRENT_USER,
+            &format!("{k}\\ps-machine"),
+            "ExecutionPolicy",
+        ),
+        None => read_raw(HKEY_LOCAL_MACHINE, PS, "ExecutionPolicy"),
+    };
+    match raw {
+        Some(Raw::Text(t)) => Some(t),
+        _ => None,
+    }
+}
+
 /// Sets Windows PowerShell's CurrentUser policy, or with `None` removes it (back to
 /// `Undefined`), as `Set-ExecutionPolicy -Scope CurrentUser` does.
 pub fn set_current_user_policy(policy: Option<&str>) -> io::Result<()> {

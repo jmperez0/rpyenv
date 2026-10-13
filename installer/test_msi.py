@@ -175,9 +175,11 @@ def set_policy(root, value):
 
 
 def allow_scripts(msi: Path) -> None:
-    """Sandbox S1's checkbox, silently: ALLOWSCRIPTS=1 lets Windows PowerShell run the
-    profile where it blocks scripts (here a LocalMachine AllSigned, set for the scenario),
-    and uninstall takes it back; without it, nothing changes."""
+    """Sandbox S1's checkbox, silently, where an administrator's LocalMachine AllSigned (set
+    for the scenario) blocks scripts: ALLOWSCRIPTS=1 leaves that choice alone (final review,
+    user's ruling), as does a plain install. The policy it does set, where only client
+    Windows' default blocks scripts, needs client Windows: the Rust tests and the Sandbox
+    runner cover it (a Windows Server runner's default already allows scripts)."""
     for root in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
         check(reg(root, PS_GPO, "EnableScripts") is None, "no Group Policy for PowerShell scripts on this runner")
     old_machine = reg(winreg.HKEY_LOCAL_MACHINE, PS_POLICY, "ExecutionPolicy")
@@ -185,20 +187,16 @@ def allow_scripts(msi: Path) -> None:
     set_policy(winreg.HKEY_LOCAL_MACHINE, "AllSigned")
     set_policy(winreg.HKEY_CURRENT_USER, None)
     user_policy = lambda: reg(winreg.HKEY_CURRENT_USER, PS_POLICY, "ExecutionPolicy")
+    no_line = lambda: not PROFILES[0].exists() or LINE not in PROFILES[0].read_text(encoding="utf-8", errors="replace")
     try:
-        msiexec(f'/i "{msi}" ALLOWSCRIPTS=1')
-        check(user_policy() == "RemoteSigned", f"CurrentUser policy RemoteSigned: {user_policy()}")
-        check(LINE in PROFILES[0].read_text(encoding="utf-8", errors="replace"), "Windows PowerShell's profile line")
-        check((ROOT / ".rpyenv-allowed-scripts").is_file(), "setup recorded the policy it set")
-        msiexec(f'/x "{msi}"')
-        check(user_policy() is None, f"CurrentUser policy taken back: {user_policy()}")
-        check(not (ROOT / ".rpyenv-allowed-scripts").exists(), "the record removed")
-
-        msiexec(f'/i "{msi}"')
-        check(user_policy() is None, f"a silent install without ALLOWSCRIPTS leaves the policy: {user_policy()}")
-        check(not PROFILES[0].exists() or LINE not in PROFILES[0].read_text(encoding="utf-8", errors="replace"),
-              "no Windows PowerShell profile line while scripts are blocked")
-        msiexec(f'/x "{msi}"')
+        for args in ("ALLOWSCRIPTS=1", ""):
+            msiexec(f'/i "{msi}" {args}'.rstrip())
+            check(user_policy() is None, f"{args or 'plain'}: the administrator's policy left alone: {user_policy()}")
+            check(not (ROOT / ".rpyenv-allowed-scripts").exists(), f"{args or 'plain'}: nothing recorded")
+            check(no_line(), f"{args or 'plain'}: no Windows PowerShell profile line while scripts are blocked")
+            check((ROOT / ".rpyenv-setup").is_file(), f"{args or 'plain'}: setup still finished")
+            msiexec(f'/x "{msi}"')
+            check(user_policy() is None, f"{args or 'plain'}: still no CurrentUser policy: {user_policy()}")
     finally:
         set_policy(winreg.HKEY_LOCAL_MACHINE, old_machine)
         set_policy(winreg.HKEY_CURRENT_USER, old_user)
