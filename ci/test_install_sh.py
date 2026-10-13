@@ -198,6 +198,31 @@ class InstallShTest(unittest.TestCase):
         self.assertFalse(saved.exists())
         self.assertTrue((self.root / "versions" / "3.12.1").is_dir())
 
+    def test_take_over_keeps_default_packages_and_sources(self):
+        # M6b final review I4: rpyenv's `pyenv install` reads default-packages too.
+        self.upstream_checkout()
+        (self.root / "default-packages").write_text("black\n", encoding="utf-8")
+        (self.root / "sources" / "3.12.1").mkdir(parents=True)
+        r = self.run_install("--take-over")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual((self.root / "default-packages").read_text(encoding="utf-8"), "black\n")
+        self.assertTrue((self.root / "sources" / "3.12.1").is_dir())
+
+    def test_a_restore_that_cant_finish_changes_nothing(self):
+        # M6b final review M1: the conflict check comes before rpyenv's files go.
+        self.upstream_checkout()
+        self.assertEqual(self.run_install("--take-over").returncode, 0)
+        (self.root / "bin" / "my-tool").write_text("mine\n", encoding="utf-8")
+        r = self.run_install("--restore-upstream")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("bin", r.stderr)
+        self.assertTrue((self.root / "bin" / "pyenv").is_file(), "rpyenv still works")
+        self.assertTrue((self.root / ".upstream-pyenv" / "libexec" / "pyenv").is_file())
+        (self.root / "bin" / "my-tool").unlink()
+        r = self.run_install("--restore-upstream")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue((self.root / "bin" / "pyenv").is_symlink())
+
     def test_a_second_take_over_is_refused(self):
         self.upstream_checkout()
         (self.root / ".upstream-pyenv").mkdir()
