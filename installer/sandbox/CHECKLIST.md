@@ -4,7 +4,16 @@ CI already installs, upgrades and uninstalls the MSI silently, both ways, and as
 non-administrator (`installer/test_msi.py`). These checks cover what CI can't see: the
 dialogs, the UAC prompt, Active Setup and a silent install from a non-elevated prompt.
 
-Start: `pwsh -NoProfile -File installer/sandbox/new-wsb.ps1`, then open the printed
+Automated (steps 1-4 and 6): `pwsh -NoProfile -File installer/sandbox/run-checks.ps1`
+(Windows 11 24H2+, for its `wsb` CLI). It starts a Sandbox, clicks through the installer's
+pages with UI Automation as the steps below say, and prints PASS/FAIL per expectation; each
+step's `report.txt`, page screenshots and verbose MSI logs land in
+`dist\sandbox-results\<time>\<step>`. Step 1 takes the default choices; step 4 starts with
+a pyenv-win present, so the checkbox's hiding is checked too; uninstalls run `msiexec /x
+/passive`, which is what Settings, Apps runs. Look at the screenshots for anything the
+checks don't name.
+
+By hand: `pwsh -NoProfile -File installer/sandbox/new-wsb.ps1`, then open the printed
 `dist\sandbox.wsb`. Inside the Sandbox, the MSI is in `C:\rpyenv-dist`. Record each
 result (as seen, plus anything unexpected).
 
@@ -39,14 +48,20 @@ Things that are the Sandbox, not the MSI:
 4. **For all users.** Install with a log, choosing "For all users":
    `Start-Process msiexec -ArgumentList '/i C:\rpyenv-dist\rpyenv-<version>-x64.msi /l*v C:\s4.log' -Wait`.
    - Record: what the Options page shows (no pyenv-win checkbox is expected), and
-     `Select-String 'Property\(S\): (ALLUSERS|MSIINSTALLPERUSER|RpyenvMachine) ' C:\s4.log`
-     (`RpyenvMachine = 1` is expected; the dialog path is the one CI can't run).
+     `Select-String 'MSI \(s\).*Command Line:' C:\s4.log`: the server's command line must
+     carry `ALLUSERS=1` (the dialog path is the one CI can't run; Sandbox S5).
    - Expect: files in `C:\Program Files\rpyenv\bin`; that folder on the **machine** PATH
      (`[Environment]::GetEnvironmentVariable('Path','Machine')`) and not on the user
      PATH; `HKLM:\Software\rpyenv` and the Active Setup key
      `HKLM:\SOFTWARE\Microsoft\Active Setup\Installed Components\{73C5FAF3-A93A-472F-BD99-814909823229}`
      exist; `HKCU:\Software\rpyenv` and `…\pyenv-win\.rpyenv-setup` don't (yet).
-5. **Active Setup.** After step 4, run:
+5. **Active Setup.** Not checkable in Windows Sandbox (2026-10-13): `runonce.exe
+   /AlternateShellStartup` exits 0 without running the StubPath, and `run-checks.ps1 -Steps
+   active-setup` (install as SYSTEM, then the first sign-in) shows the sign-in copying the
+   version to HKCU while launching no StubPath at all (process-creation audit: no process
+   from Explorer for it, nor for any other component). What does work there: the first
+   `pyenv` command a user runs sets them up (rpyenv's first-run fallback). The by-hand
+   commands, for a real machine or VM: after step 4, run:
    `reg delete "HKCU\Software\Microsoft\Active Setup\Installed Components\{73C5FAF3-A93A-472F-BD99-814909823229}" /f`
    (it may already be absent), then `runonce.exe /AlternateShellStartup`.
    - Record: does a console window flash? Does the user PATH now start with the shims,
