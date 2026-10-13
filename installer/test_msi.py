@@ -186,6 +186,24 @@ def all_users(msi: Path, next_msi: Path) -> None:
     check(reg(winreg.HKEY_LOCAL_MACHINE, ACTIVE_SETUP, "StubPath") is None, "Active Setup key removed")
 
 
+def all_users_as_the_dialog_does(msi: Path) -> None:
+    # Sandbox S5: the Options page's "For all users" clears MSIINSTALLPERUSER and leaves
+    # ALLUSERS at the package's 2. Windows installs per-machine; everything else must too.
+    msiexec(f'/i "{msi}" MSIINSTALLPERUSER=""')
+    try:
+        check((MACHINE_DIR / "bin" / "pyenv.exe").is_file(), "pyenv.exe in Program Files")
+        check(low(MACHINE_DIR / "bin") in machine_path(), f"bin on the machine PATH: {machine_path()}")
+        check(low(MACHINE_DIR / "bin") not in user_path(), f"bin not on the user PATH: {user_path()}")
+        stub = reg(winreg.HKEY_LOCAL_MACHINE, ACTIVE_SETUP, "StubPath") or ""
+        check(stub.lower().endswith('pyenv.exe" setup'), f"Active Setup StubPath: {stub!r}")
+        check(reg(winreg.HKEY_LOCAL_MACHINE, r"Software\rpyenv", "Installed") == 1, "HKLM marker")
+        check(reg(winreg.HKEY_CURRENT_USER, r"Software\rpyenv", "Installed") is None, "no HKCU marker")
+        check(not (ROOT / ".rpyenv-setup").exists(), "setup left to Active Setup (no marker)")
+    finally:
+        msiexec(f'/x "{msi}" ALLUSERS=1')
+    check(not (MACHINE_DIR / "bin" / "pyenv.exe").exists(), "files removed")
+
+
 PUBLIC = Path(os.environ.get("PUBLIC", r"C:\Users\Public"))
 
 
@@ -312,6 +330,7 @@ def main(argv) -> int:
         ("upgrade", lambda: upgrade(msi, next_msi)),
         ("scope_refusal", lambda: scope_refusal(msi, next_msi)),
         ("all_users", lambda: all_users(msi, next_msi)),
+        ("all_users_as_the_dialog_does", lambda: all_users_as_the_dialog_does(msi)),
         ("standard_user", lambda: standard_user(msi)),
         ("missing_exe", lambda: missing_exe(msi)),  # last: it leaves setup's changes behind
     ]:
