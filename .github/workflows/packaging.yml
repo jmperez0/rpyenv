@@ -10,6 +10,13 @@ on:
       - "ci/check_real_install.sh"
       - "ci/test_install_sh.py"
       - "ci/pe_imports.py"
+      # What the MSI's custom actions run (M6b final review M9).
+      - "crates/pyenv/src/commands/setup_win.rs"
+      - "crates/pyenv/src/commands/migrate_win.rs"
+      - "crates/pyenv/src/commands/pwsh_profile.rs"
+      - "crates/pyenv/src/lib.rs"
+      - "crates/rpyenv-core/src/winenv.rs"
+      - "crates/rpyenv-core/src/pathlist.rs"
       - ".cargo/**"
       - ".config/dotnet-tools.json"
       - "Cargo.toml"

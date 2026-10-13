@@ -71,14 +71,19 @@ environment entry is a pair of components conditioned on `ALLUSERS`.
 
 - WiX's standard scope choice (`WixUI_Advanced`): **Just for me** / **For all users**
   (the all-users button carries the UAC shield; Windows Installer raises the UAC
-  prompt when installation starts).
+  prompt when installation starts). As built (plan P1): radio buttons on the custom
+  Options page instead, which publish the scope as `ALLUSERS` itself (Sandbox S5).
 - One **Options** page:
   - **Enable live rehash** — unchecked by default (parent spec D8: opt-in). Property
     `LIVEREHASH`.
   - **Move pyenv-win aside (`pyenv migrate`)** — shown only when pyenv-win is found for
     this user (`%USERPROFILE%\.pyenv\pyenv-win\bin\pyenv.ps1` exists); checked by
-    default when shown. Property `MIGRATE`. Per-user installs only (an all-users
-    install relies on `pyenv setup`'s hint, parent spec §9.4).
+    default when shown. Property `MIGRATE` (as built `MIGRATEPYENVWIN`: Windows Installer
+    reserves `MIGRATE`, error 2601). Per-user installs only (an all-users install relies
+    on `pyenv setup`'s hint, parent spec §9.4).
+  - As built (Sandbox S1): **Let Windows PowerShell run local scripts for me if it blocks
+    them** — per-user installs only, checked in the dialog; runs `pyenv setup
+    --allow-scripts`. Property `ALLOWSCRIPTS`; a silent install needs `ALLOWSCRIPTS=1`.
 
 ### 4.4 Custom actions
 
@@ -90,7 +95,7 @@ exit codes and output go to the MSI log.
 |---|---|---|
 | Per-user install | `pyenv migrate` if `MIGRATE=1`, then `pyenv setup` | If setup fails, the final page tells the user to run `pyenv setup`. |
 | All-users install | — | The Active Setup key runs `"<bin>\pyenv.exe" setup` once per user at logon; the M6a first-run rule covers a user who runs `pyenv` sooner. |
-| Uninstall, not during an upgrade | `pyenv migrate --restore` if `PYENV_ROOT\.rpyenv-migrate\manifest.txt` exists, then `pyenv setup --undo` | Runs before the files are removed. |
+| Uninstall, not during an upgrade | `pyenv migrate --restore` if `PYENV_ROOT\.rpyenv-migrate\manifest.txt` exists, then `pyenv setup --undo` | Runs before the files are removed. As built, the restore runs unconditionally: with no manifest it changes nothing and exits 1, which the action ignores (and it isn't a first run, final review I2). |
 
 ### 4.5 One install per machine
 
@@ -98,16 +103,18 @@ A per-user and an all-users install of the same `UpgradeCode` don't see each oth
 both `bin` folders would end up on `PATH`. Each install writes a scope marker
 (`HKCU\Software\rpyenv\Installed` or `HKLM\Software\rpyenv\Installed`); a launch
 condition refuses to install in one scope while the other's marker exists, and names
-the install to remove first.
+the install to remove first. As built, this holds for the installing user: the HKCU marker
+is theirs, so another user's per-user install isn't seen (final review M3).
 
 ### 4.6 Silent installs
 
 - Per-user: `msiexec /i rpyenv-<version>-x64.msi /qn`.
 - All users: `msiexec /i rpyenv-<version>-x64.msi /qn ALLUSERS=1 MSIINSTALLPERUSER=""`
   from an elevated prompt (for example `sudo msiexec …`). From a non-elevated prompt it
-  is expected to fail without a UAC prompt; M6b verifies this and documents the result.
-- Optional properties: `LIVEREHASH=1`, `MIGRATE=1`. A silent install never migrates
-  unless `MIGRATE=1` is passed.
+  fails without a UAC prompt: exit 1603, Error 1925 (Windows Sandbox, 2026-10-13).
+- Optional properties: `LIVEREHASH=1`, `MIGRATEPYENVWIN=1` (planned as `MIGRATE`),
+  `ALLOWSCRIPTS=1`. A silent install never migrates or changes the execution policy
+  unless asked. An upgrade keeps live rehash (final review I3).
 
 ## 5. `pyenv setup --undo`
 
@@ -154,7 +161,8 @@ Steps:
    it asks to take over (non-interactively it stops unless `--take-over` is given).
    Taking over moves every top-level entry of `$PYENV_ROOT` into
    `$PYENV_ROOT/.upstream-pyenv/` except a keep-list of the user's data: `versions/`,
-   `version`, `shims/`, `cache/`, `plugins/` (whose `python-build` alone is moved,
+   `version`, `shims/`, `cache/`, `default-packages`, `sources/` (both added by the final
+   review, I4), `plugins/` (whose `python-build` alone is moved,
    since rpyenv embeds its own), and `.upstream-pyenv/` itself. It records what it
    moved in `.upstream-pyenv/moved.txt`. `--restore-upstream` removes rpyenv's `bin`
    and `completions`, then moves back exactly what `moved.txt` lists.
@@ -218,6 +226,9 @@ the workflows or the release profile, so packaging breaks are found before a tag
   prompt, `MIGRATE` with a pyenv-win fixture, the Active Setup run at logon (and
   whether a console window flashes), a silent all-users install from a non-elevated
   prompt. The development host's own rpyenv, pyenv-win and `PATH` are never touched.
+  As built: `installer/sandbox/run-checks.ps1` drives these through the `wsb` CLI;
+  Windows Sandbox runs no Active Setup stubs, so that check ran on a Hyper-V Windows 11
+  VM instead (parent spec §9.4).
 - **`install.sh` (CI, both Linux architectures, throwaway `HOME`, a locally served
   release):** fresh install; upgrade; a tampered tarball (refused); an upstream
   checkout non-interactively (refused), with `--take-over`, then

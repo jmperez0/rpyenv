@@ -40,18 +40,28 @@ PROFILES = [documents() / sub / "Microsoft.PowerShell_profile.ps1" for sub in ("
 
 LOGS = Path("msi-logs")
 _log_count = 0
+_last_log = None
+
+
+def log_text(log: Path) -> str:
+    raw = log.read_bytes() if log.exists() else b""
+    return raw.decode("utf-16", "replace") if raw[:2] == b"\xff\xfe" else raw.decode("utf-8", "replace")
+
+
+def last_log() -> str:
+    """The verbose log of the latest msiexec run."""
+    return log_text(_last_log) if _last_log else ""
 
 
 def msiexec(args: str, expect=(0, 3010)) -> int:
-    global _log_count
+    global _log_count, _last_log
     _log_count += 1
     LOGS.mkdir(exist_ok=True)
     log = (LOGS / f"{_log_count:02d}-msiexec.log").resolve()
+    _last_log = log
     code = subprocess.run(f'msiexec {args} /qn /l*v "{log}"', timeout=900).returncode
     if code not in expect:
-        raw = log.read_bytes() if log.exists() else b""
-        text = raw.decode("utf-16", "replace") if raw[:2] == b"\xff\xfe" else raw.decode("utf-8", "replace")
-        lines = text.splitlines()
+        lines = log_text(log).splitlines()
         # The failing action is the first "Return value 3"; show what led to it.
         failed = next((i for i, line in enumerate(lines) if "Return value 3" in line), None)
         shown = lines[max(0, failed - 40):failed + 5] if failed is not None else lines[-80:]
@@ -217,6 +227,8 @@ def scope_refusal(msi: Path, next_msi: Path) -> None:
     # A newer package can't see the per-user install from the machine context; the
     # scope marker refuses it (design §4.5).
     msiexec(f'/i "{next_msi}" ALLUSERS=1 MSIINSTALLPERUSER=""', expect=(1603,))
+    # The refusal itself, not just any failure (M6b final review M8).
+    check("already installed just for you" in last_log(), "refused with the per-user message")
     check(not (MACHINE_DIR / "bin").exists(), "no all-users install over a per-user one")
     msiexec(f'/x "{msi}"')
 
@@ -230,6 +242,7 @@ def all_users(msi: Path, next_msi: Path) -> None:
     check(reg(winreg.HKEY_LOCAL_MACHINE, r"Software\rpyenv", "Installed") == 1, "HKLM marker")
     # The other direction (design §4.5): a newer just-for-me install over this one.
     msiexec(f'/i "{next_msi}"', expect=(1603,))
+    check("already installed for all users of this computer" in last_log(), "refused with the all-users message")
     check(not (USER_DIR / "bin" / "pyenv.exe").exists(), "no per-user install over an all-users one")
     msiexec(f'/x "{msi}" ALLUSERS=1')
     check(not (MACHINE_DIR / "bin" / "pyenv.exe").exists(), "files removed")
@@ -369,8 +382,14 @@ def only_msi(folder: str) -> Path:
 
 
 def main(argv) -> int:
-    if os.environ.get("CI") != "true":
-        print("refusing: this changes the current user's PATH, profiles and installed programs; it runs on CI only")
+    # GitHub's own runners only: many local tools set CI too (M6b final review M6).
+    hosted = (os.environ.get("CI") == "true" and os.environ.get("GITHUB_ACTIONS") == "true"
+              and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted")
+    if not hosted:
+        print("refusing: this changes the current user's PATH, profiles and installed programs; it runs on GitHub-hosted runners only")
+        return 2
+    if (ROOT / "bin" / "pyenv.ps1").exists():
+        print(f"refusing: a real pyenv-win is installed in {ROOT}; the migrate scenario would overwrite it")
         return 2
     if len(argv) != 2:
         print(__doc__)
