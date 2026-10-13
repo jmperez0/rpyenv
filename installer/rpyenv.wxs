@@ -175,6 +175,6 @@
       <Publish Dialog="ExitDialog" Control="Finish" Event="EndDialog" Value="Return" Order="999" />
     </UI>
     <UIRef Id="WixUI_Common" />
-    <Property Id="WIXUI_EXITDIALOGOPTIONALTEXT" Value="Open a new terminal to use pyenv. If its shims aren't on your PATH there, run: pyenv setup" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALTEXT" Value="Open a new terminal to use pyenv. If its shims aren't on your PATH there, run: pyenv setup. In Windows PowerShell, pyenv shell and pyenv activate need scripts to be allowed: run Set-ExecutionPolicy -Scope CurrentUser RemoteSigned, then pyenv init --install pwsh." />
   </Package>
 </Wix>
