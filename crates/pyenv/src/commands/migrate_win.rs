@@ -152,7 +152,8 @@ fn forward(ctx: &Ctx) -> Output {
     o.stderr.push_str(&r.stderr);
     failed |= r.code != 0;
     if let Some(docs) = winenv::documents() {
-        for p in pwsh_profile::paths(&docs) {
+        // Not Windows PowerShell's profile where it can't run scripts (Sandbox S1).
+        for p in crate::commands::setup_win::profile_targets(&docs, &mut o) {
             match pwsh_profile::add(&p) {
                 Ok(Added::Added) => {
                     failed |= !record(ctx, &mut o, &format!("profile\t{}", p.display()));

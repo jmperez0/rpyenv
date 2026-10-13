@@ -219,10 +219,16 @@ fn profiles(o: &mut Output) -> Output {
     let Some(docs) = winenv::documents() else {
         return Output::error(pwsh_profile::NO_DOCUMENTS);
     };
-    let [p5, p7] = pwsh_profile::paths(&docs);
+    pwsh_profile::install(&profile_targets(&docs, o))
+}
+
+/// The profiles that get the PowerShell line (setup's and migrate's): both, or only
+/// PowerShell 7's where Windows PowerShell can't run scripts, with the hint in `o`.
+pub(crate) fn profile_targets(docs: &std::path::Path, o: &mut Output) -> Vec<PathBuf> {
+    let [p5, p7] = crate::commands::pwsh_profile::paths(docs);
     let policy = winenv::windows_powershell_policy();
     if !policy.blocks_local_scripts() {
-        return pwsh_profile::install(&[p5, p7]);
+        return vec![p5, p7];
     }
     if policy.by_group_policy {
         o.err(format!(
@@ -235,7 +241,7 @@ fn profiles(o: &mut Output) -> Output {
             policy.name
         ));
     }
-    pwsh_profile::install(&[p7])
+    vec![p7]
 }
 
 /// M6b design §5: takes back what `run` added for this user (the MSI's uninstall runs
