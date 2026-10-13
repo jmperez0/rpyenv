@@ -70,6 +70,15 @@ Expect (@($searches).Count -eq 2) 'live rehash read back from HKCU and HKLM'
 $setters = @((Rows 'SELECT `Action`, `Source`, `Target` FROM `CustomAction`') | Where-Object { $_[1] -eq 'LIVEREHASH' -and $_[2] -eq '1' })
 Expect ($setters.Count -eq 2) 'live rehash set again in the dialog and silently'
 
+# M6b final review M2: a rollback takes back migrate and setup (not during an upgrade).
+$types = @{}
+foreach ($r in (Rows 'SELECT `Action`, `Type` FROM `CustomAction`')) { $types[$r[0]] = [int]$r[1] }
+foreach ($a in 'RpyenvMigrateRollback', 'RpyenvSetupRollback') {
+    Expect ($types.ContainsKey($a) -and ($types[$a] -band 0x100)) "$a is a rollback action"
+    Expect ("$($sequence[$a])" -like '*NOT WIX_UPGRADE_DETECTED*') "$a skipped during upgrades"
+}
+Expect ($sequence.ContainsKey('RpyenvTestFailLate') -and "$($sequence['RpyenvTestFailLate'])" -like '*RPYENV_TEST_FAIL_LATE=1*') 'the late-failure test hook'
+
 $dialogs = (Rows 'SELECT `Dialog` FROM `Dialog`') | ForEach-Object { $_[0] }
 Expect ($dialogs -contains 'OptionsDlg') 'the Options page'
 $controls = Rows 'SELECT `Dialog_`, `Control`, `Property` FROM `Control`'

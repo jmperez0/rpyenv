@@ -120,12 +120,27 @@
     <CustomAction Id="RpyenvRestore" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixQuietExec" Execute="deferred" Impersonate="yes" Return="ignore" />
     <SetProperty Id="RpyenvUndo" Value="&quot;[BinFolder]pyenv.exe&quot; setup --undo" Before="RpyenvUndo" Sequence="execute" />
     <CustomAction Id="RpyenvUndo" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixQuietExec" Execute="deferred" Impersonate="yes" Return="ignore" />
+    <!-- Final review M2: a rollback (Cancel during progress, or a late failure) takes back
+         what migrate and setup changed, before the files go; otherwise nothing installed
+         could undo it. Not for an upgrade, whose rollback puts back an install relying on
+         them. -->
+    <SetProperty Id="RpyenvMigrateRollback" Value="&quot;[BinFolder]pyenv.exe&quot; migrate --restore" Before="RpyenvMigrateRollback" Sequence="execute" />
+    <CustomAction Id="RpyenvMigrateRollback" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixQuietExec" Execute="rollback" Impersonate="yes" Return="ignore" />
+    <SetProperty Id="RpyenvSetupRollback" Value="&quot;[BinFolder]pyenv.exe&quot; setup --undo" Before="RpyenvSetupRollback" Sequence="execute" />
+    <CustomAction Id="RpyenvSetupRollback" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixQuietExec" Execute="rollback" Impersonate="yes" Return="ignore" />
+    <!-- Test hook (installer/test_msi.py, rollback): fails the install after setup ran. -->
+    <Property Id="RPYENV_TEST_FAIL_LATE" Secure="yes" />
+    <SetProperty Id="RpyenvTestFailLate" Value="&quot;[System64Folder]cmd.exe&quot; /c exit 1" Before="RpyenvTestFailLate" Sequence="execute" />
+    <CustomAction Id="RpyenvTestFailLate" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixQuietExec" Execute="deferred" Impersonate="yes" Return="check" />
 
     <InstallExecuteSequence>
       <Custom Action="RefuseMachineOverUser" After="AppSearch" Condition="NOT Installed AND ALLUSERS=1 AND RPYENV_USER_INSTALLED" />
       <Custom Action="RefuseUserOverMachine" After="RefuseMachineOverUser" Condition="NOT Installed AND ALLUSERS&lt;&gt;1 AND RPYENV_MACHINE_INSTALLED" />
-      <Custom Action="RpyenvMigrate" After="WriteEnvironmentStrings" Condition="NOT Installed AND ALLUSERS&lt;&gt;1 AND MIGRATEPYENVWIN=1" />
-      <Custom Action="RpyenvSetup" After="RpyenvMigrate" Condition="NOT Installed AND ALLUSERS&lt;&gt;1" />
+      <Custom Action="RpyenvMigrateRollback" After="WriteEnvironmentStrings" Condition="NOT Installed AND ALLUSERS&lt;&gt;1 AND MIGRATEPYENVWIN=1 AND NOT WIX_UPGRADE_DETECTED" />
+      <Custom Action="RpyenvMigrate" After="RpyenvMigrateRollback" Condition="NOT Installed AND ALLUSERS&lt;&gt;1 AND MIGRATEPYENVWIN=1" />
+      <Custom Action="RpyenvSetupRollback" After="RpyenvMigrate" Condition="NOT Installed AND ALLUSERS&lt;&gt;1 AND NOT WIX_UPGRADE_DETECTED" />
+      <Custom Action="RpyenvSetup" After="RpyenvSetupRollback" Condition="NOT Installed AND ALLUSERS&lt;&gt;1" />
+      <Custom Action="RpyenvTestFailLate" After="RpyenvSetup" Condition="NOT Installed AND RPYENV_TEST_FAIL_LATE=1" />
       <Custom Action="RpyenvRestore" Before="RemoveEnvironmentStrings" Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
       <Custom Action="RpyenvUndo" After="RpyenvRestore" Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
     </InstallExecuteSequence>
