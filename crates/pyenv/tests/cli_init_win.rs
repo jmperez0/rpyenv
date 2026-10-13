@@ -61,7 +61,10 @@ fn print_mode_for_powershell() {
 fn no_rehash_line_while_no_version_is_installed() {
     let f = Fixture::new();
     for (shell, line) in [
-        ("pwsh", "& (Get-Command -CommandType Application pyenv -TotalCount 1) rehash"),
+        (
+            "pwsh",
+            "& (Get-Command -CommandType Application pyenv -TotalCount 1) rehash",
+        ),
         ("bash", "command pyenv rehash"),
     ] {
         for args in [["init", "-", shell], ["init", "--path", shell]] {
@@ -70,7 +73,10 @@ fn no_rehash_line_while_no_version_is_installed() {
     }
     f.version("3.12.1");
     for (shell, line) in [
-        ("pwsh", "& (Get-Command -CommandType Application pyenv -TotalCount 1) rehash"),
+        (
+            "pwsh",
+            "& (Get-Command -CommandType Application pyenv -TotalCount 1) rehash",
+        ),
         ("bash", "command pyenv rehash"),
     ] {
         for args in [["init", "-", shell], ["init", "--path", shell]] {

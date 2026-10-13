@@ -59,8 +59,9 @@ fn reg_get(f: &Fixture, scope: &str, name: &str) -> String {
 }
 
 /// A pyenv-win install in the fixture's root: launchers in `bin`, `bin` and `shims` on the
-/// user PATH, one version.
+/// user PATH, one version, and a policy that runs scripts, as its `pyenv.ps1` needs.
 fn pyenv_win(f: &Fixture) {
+    reg_set(f, "ps-user", "ExecutionPolicy", "REG_SZ", "RemoteSigned");
     let bin = f.root.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
     for n in ["pyenv.ps1", "pyenv.bat", "pyenv"] {
@@ -133,7 +134,7 @@ fn migrate_takes_over_and_restore_gives_back() {
     );
     assert!(reg_get(&f, "user", "Path").contains(&f.root.join("bin").display().to_string()));
     assert!(!std::fs::read_to_string(&p5)
-        .unwrap()
+        .unwrap_or_default()
         .contains("pyenv init - pwsh"));
     assert!(!f.root.join(".rpyenv-migrate").exists());
 }
@@ -280,7 +281,9 @@ fn restore_removes_the_line_setup_added_too() {
     assert_eq!(back.code, 0, "{}{}", back.stdout, back.stderr);
     for p in profiles(&f) {
         assert!(
-            !std::fs::read_to_string(&p).unwrap().contains("pyenv init"),
+            !std::fs::read_to_string(&p)
+                .unwrap_or_default()
+                .contains("pyenv init"),
             "{}",
             p.display()
         );
@@ -315,7 +318,9 @@ fn a_failed_restore_keeps_what_is_left_to_retry() {
     std::fs::set_permissions(&p7, perms).unwrap();
     let again = f.pyenv(&["migrate", "--restore"]);
     assert_eq!(again.code, 0, "{}{}", again.stdout, again.stderr);
-    assert!(!std::fs::read_to_string(&p7).unwrap().contains("pyenv init"));
+    assert!(!std::fs::read_to_string(&p7)
+        .unwrap_or_default()
+        .contains("pyenv init"));
     assert!(!f.root.join(".rpyenv-migrate").exists());
 }
 

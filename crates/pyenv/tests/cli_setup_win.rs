@@ -83,6 +83,78 @@ fn setup_puts_shims_first_adds_the_profile_line_and_marks_the_root() {
     assert!(r.stdout.contains("open a new terminal"), "{}", r.stdout);
 }
 
+fn profile(f: &Fixture, sub: &str) -> std::path::PathBuf {
+    f.base
+        .join("Documents")
+        .join(sub)
+        .join("Microsoft.PowerShell_profile.ps1")
+}
+
+/// Sandbox S1: where Windows PowerShell 5.1 can't run scripts (client Windows' default,
+/// `Restricted`, when nothing sets a policy), setup leaves its profile alone, since the
+/// profile would fail on every start, and says how to turn it on. PowerShell 7 still gets
+/// the line. The fixture's policy keys are `HKCU\<f.test_key>\<label>`.
+#[test]
+fn setup_leaves_windows_powershell_alone_where_it_cant_run_scripts() {
+    let f = Fixture::new();
+    let r = f.pyenv(&["setup"]);
+    assert_eq!(r.code, 0, "{}{}", r.stdout, r.stderr);
+    assert!(!profile(&f, "WindowsPowerShell").exists());
+    assert!(std::fs::read_to_string(profile(&f, "PowerShell"))
+        .unwrap()
+        .contains("pyenv init - pwsh"));
+    assert!(
+        r.stderr.contains("execution policy Restricted")
+            && r.stderr
+                .contains("Set-ExecutionPolicy -Scope CurrentUser RemoteSigned")
+            && r.stderr.contains("pyenv init --install pwsh"),
+        "{}",
+        r.stderr
+    );
+    assert!(f.root.join(".rpyenv-setup").is_file(), "not a failure");
+}
+
+#[test]
+fn setup_writes_the_windows_powershell_profile_where_scripts_run() {
+    for (label, name, kind, value) in [
+        ("ps-user", "ExecutionPolicy", "REG_SZ", "RemoteSigned"),
+        ("ps-machine", "ExecutionPolicy", "REG_SZ", "Unrestricted"),
+        ("product", "ProductType", "REG_SZ", "ServerNT"),
+    ] {
+        let f = Fixture::new();
+        reg_set(&f, label, name, kind, value);
+        let r = f.pyenv(&["setup"]);
+        assert_eq!(r.code, 0, "{}{}", r.stdout, r.stderr);
+        assert!(
+            std::fs::read_to_string(profile(&f, "WindowsPowerShell"))
+                .is_ok_and(|t| t.contains("pyenv init - pwsh")),
+            "{label} {value}: {}",
+            r.stderr
+        );
+        assert!(!r.stderr.contains("execution policy"), "{}", r.stderr);
+    }
+}
+
+/// Group Policy wins over the user's own setting, and the hint doesn't suggest a
+/// `Set-ExecutionPolicy` that Group Policy would override.
+#[test]
+fn a_group_policy_that_blocks_scripts_wins_and_is_named() {
+    let f = Fixture::new();
+    reg_set(&f, "ps-user", "ExecutionPolicy", "REG_SZ", "RemoteSigned");
+    reg_set(&f, "gpo-machine", "EnableScripts", "REG_DWORD", "1");
+    reg_set(&f, "gpo-machine", "ExecutionPolicy", "REG_SZ", "AllSigned");
+    let r = f.pyenv(&["setup"]);
+    assert_eq!(r.code, 0, "{}{}", r.stdout, r.stderr);
+    assert!(!profile(&f, "WindowsPowerShell").exists());
+    assert!(
+        r.stderr
+            .contains("execution policy AllSigned, set by Group Policy")
+            && !r.stderr.contains("Set-ExecutionPolicy"),
+        "{}",
+        r.stderr
+    );
+}
+
 /// Review focus 1 and 2: a REG_EXPAND_SZ value keeps its type, the entry isn't duplicated,
 /// and a second run changes nothing.
 #[test]
