@@ -268,6 +268,40 @@ fn profiles(f: &Fixture) -> [std::path::PathBuf; 2] {
     ]
 }
 
+/// Sandbox S1, migrate too (found by the Sandbox runner, 2026-10-13): where Windows
+/// PowerShell can't run scripts (pyenv-win used only from cmd, say), its profile is left
+/// alone, as setup leaves it; PowerShell 7's still gets the line.
+#[test]
+fn migrate_leaves_windows_powershell_alone_where_it_cant_run_scripts() {
+    let f = Fixture::new();
+    pyenv_win(&f);
+    let out = std::process::Command::new("reg")
+        .args([
+            "delete",
+            &format!("HKCU\\{}\\ps-user", f.test_key),
+            "/v",
+            "ExecutionPolicy",
+            "/f",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let r = f.pyenv(&["migrate"]);
+    assert_eq!(r.code, 0, "{}{}", r.stdout, r.stderr);
+    let [p5, p7] = profiles(&f);
+    assert!(!p5.exists(), "{}", r.stdout);
+    assert!(std::fs::read_to_string(&p7)
+        .unwrap()
+        .contains("pyenv init - pwsh"));
+    assert!(
+        r.stderr.contains("execution policy Restricted"),
+        "{}",
+        r.stderr
+    );
+    let back = f.pyenv(&["migrate", "--restore"]);
+    assert_eq!(back.code, 0, "{}{}", back.stdout, back.stderr);
+}
+
 /// Final review I2: after `pyenv setup` (which hints at migrate, and which an all-users
 /// first run does before anything), `--restore` still takes the line out: under pyenv-win
 /// it would fail in every new PowerShell.
