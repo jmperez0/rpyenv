@@ -124,6 +124,7 @@ confirm_take_over() {
 }
 
 # Moves everything but the user's data into $saved, recording each name (design §6.2).
+# default-packages and sources stay too: rpyenv's own `pyenv install` reads the first.
 take_over() {
   mkdir "$saved"
   : >"$saved/moved.txt"
@@ -131,7 +132,7 @@ take_over() {
     [ -e "$entry" ] || [ -L "$entry" ] || continue
     base=${entry##*/}
     case $base in
-      versions|version|shims|cache|plugins|.upstream-pyenv) continue ;;
+      versions|version|shims|cache|plugins|default-packages|sources|.upstream-pyenv) continue ;;
     esac
     mv "$entry" "$saved/$base"
     printf '%s\n' "$base" >>"$saved/moved.txt"
@@ -152,12 +153,30 @@ remove_rpyenv_files() {
   rmdir "$root/bin" "$root/completions" 2>/dev/null || true
 }
 
+# True when folder $1 holds only files rpyenv installed (they go before the restore).
+only_rpyenv_files() {
+  for f in "$1"/* "$1"/.[!.]* "$1"/..?*; do
+    [ -e "$f" ] || [ -L "$f" ] || continue
+    case " $RPYENV_FILES " in
+      *" ${f#"$root"/} "*) ;;
+      *) return 1 ;;
+    esac
+  done
+}
+
 restore_upstream() {
   [ -f "$saved/moved.txt" ] || die "nothing to restore: $saved/moved.txt not found"
-  remove_rpyenv_files
+  # Checked before anything is removed, so a restore that can't finish leaves rpyenv
+  # working (final review M1).
   while IFS= read -r entry; do
-    [ -z "$entry" ] || [ ! -e "$root/$entry" ] || die "cannot restore $entry: $root/$entry exists; move it away and rerun"
+    [ -n "$entry" ] || continue
+    [ -e "$root/$entry" ] || continue
+    case $entry in
+      bin|completions) ! only_rpyenv_files "$root/$entry" || continue ;;
+    esac
+    die "cannot restore $entry: $root/$entry exists; move it away and rerun (nothing was changed)"
   done <"$saved/moved.txt"
+  remove_rpyenv_files
   while IFS= read -r entry; do
     [ -n "$entry" ] || continue
     mkdir -p "$(dirname "$root/$entry")"
