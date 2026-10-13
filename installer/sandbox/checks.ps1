@@ -184,11 +184,19 @@ function Find($window, [string] $name) {
 
 function Press($el) { [SbxWin]::PostMessage((Hwnd $el), $BM_CLICK, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null }
 
+# Windows Installer keeps Welcome's Next disabled while it computes costs, which took over
+# 30 s in a fresh Sandbox (2026-10-13): waits up to 5 minutes, noting a long wait.
 function Click($window, [string] $button) {
-    $deadline = (Get-Date).AddSeconds(30)
+    $t0 = Get-Date
+    $deadline = $t0.AddSeconds(300)
     while ((Get-Date) -lt $deadline) {
         $b = Find $window "^$button$"
-        if ($b -and [SbxWin]::IsWindowEnabled((Hwnd $b))) { Press $b; return }
+        if ($b -and [SbxWin]::IsWindowEnabled((Hwnd $b))) {
+            $waited = ((Get-Date) - $t0).TotalSeconds
+            if ($waited -gt 5) { Note ("'{0}' became clickable after {1:N0} s" -f $button, $waited) }
+            Press $b
+            return
+        }
         Start-Sleep -Milliseconds 300
     }
     throw "no enabled '$button' button"
@@ -217,7 +225,9 @@ function InstallByDialog([string] $log, [scriptblock] $options) {
     $local = Get-LocalMsi
     $t0 = Get-Date
     $p = Start-Process msiexec -ArgumentList "/i `"$local`" /l*v `"$log`"" -PassThru
-    $w = WaitPage $p.Id '^Welcome to the' 600
+    # Welcome's own text: PrepareDlg, shown just before it, has the same title and disabled
+    # buttons, and the runner once waited on it after it closed (2026-10-13).
+    $w = WaitPage $p.Id '^The Setup Wizard will install' 600
     Note ("welcome page after {0:N0} s" -f ((Get-Date) - $t0).TotalSeconds)
     Snap $w 'welcome'
     Click $w 'Next'
