@@ -155,10 +155,16 @@
       <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="OptionsDlg" Condition="NOT Installed" />
       <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg" Condition="Installed AND PATCH" />
       <Publish Dialog="OptionsDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" />
+      <!-- Sandbox S5: Windows settles ALLUSERS=2 once, when the install starts, from
+           MSIINSTALLPERUSER (then 1: just for me), and again from the package's defaults when
+           the server starts; a property the dialog deletes isn't passed. So the scope is
+           published as ALLUSERS itself, which is always passed (as WixUI_Advanced does). -->
       <Publish Dialog="OptionsDlg" Control="Next" Property="MSIINSTALLPERUSER" Value="1" Order="1" Condition="RPYENV_SCOPE=&quot;user&quot;" />
-      <Publish Dialog="OptionsDlg" Control="Next" Property="MSIINSTALLPERUSER" Value="{}" Order="2" Condition="RPYENV_SCOPE=&quot;machine&quot;" />
-      <Publish Dialog="OptionsDlg" Control="Next" Property="MIGRATEPYENVWIN" Value="{}" Order="3" Condition="RPYENV_SCOPE=&quot;machine&quot;" />
-      <Publish Dialog="OptionsDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg" Order="4" />
+      <Publish Dialog="OptionsDlg" Control="Next" Property="ALLUSERS" Value="{}" Order="2" Condition="RPYENV_SCOPE=&quot;user&quot;" />
+      <Publish Dialog="OptionsDlg" Control="Next" Property="MSIINSTALLPERUSER" Value="{}" Order="3" Condition="RPYENV_SCOPE=&quot;machine&quot;" />
+      <Publish Dialog="OptionsDlg" Control="Next" Property="ALLUSERS" Value="1" Order="4" Condition="RPYENV_SCOPE=&quot;machine&quot;" />
+      <Publish Dialog="OptionsDlg" Control="Next" Property="MIGRATEPYENVWIN" Value="{}" Order="5" Condition="RPYENV_SCOPE=&quot;machine&quot;" />
+      <Publish Dialog="OptionsDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg" Order="6" />
       <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="OptionsDlg" Order="1" Condition="NOT Installed" />
       <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="MaintenanceTypeDlg" Order="2" Condition="Installed AND NOT PATCH" />
       <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" Order="3" Condition="Installed AND PATCH" />
