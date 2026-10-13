@@ -36,8 +36,11 @@ Things that are the Sandbox, not the MSI:
    - Expect: the Options page shows "Move pyenv-win aside", checked. After install,
      `…\pyenv-win\bin\pyenv.ps1` is gone and in `…\pyenv-win\.rpyenv-migrate\bin\`.
      Uninstall puts it back and removes `.rpyenv-migrate`.
-4. **For all users.** Install, choosing "For all users".
-   - Record: what the Options page shows (no pyenv-win checkbox is expected).
+4. **For all users.** Install with a log, choosing "For all users":
+   `Start-Process msiexec -ArgumentList '/i C:\rpyenv-dist\rpyenv-<version>-x64.msi /l*v C:\s4.log' -Wait`.
+   - Record: what the Options page shows (no pyenv-win checkbox is expected), and
+     `Select-String 'Property\(S\): (ALLUSERS|MSIINSTALLPERUSER|RpyenvMachine) ' C:\s4.log`
+     (`RpyenvMachine = 1` is expected; the dialog path is the one CI can't run).
    - Expect: files in `C:\Program Files\rpyenv\bin`; that folder on the **machine** PATH
      (`[Environment]::GetEnvironmentVariable('Path','Machine')`) and not on the user
      PATH; `HKLM:\Software\rpyenv` and the Active Setup key

@@ -186,9 +186,11 @@ def all_users(msi: Path, next_msi: Path) -> None:
     check(reg(winreg.HKEY_LOCAL_MACHINE, ACTIVE_SETUP, "StubPath") is None, "Active Setup key removed")
 
 
-def all_users_as_the_dialog_does(msi: Path) -> None:
-    # Sandbox S5: the Options page's "For all users" clears MSIINSTALLPERUSER and leaves
-    # ALLUSERS at the package's 2. Windows installs per-machine; everything else must too.
+def all_users_by_msiinstallperuser(msi: Path) -> None:
+    # MSIINSTALLPERUSER cleared, ALLUSERS left at the package's 2: Windows installs per-machine,
+    # and everything else must too. From the command line this passed before the Sandbox S5
+    # fix as well (Windows settles ALLUSERS there); the dialog path, which S5 broke, is a
+    # Windows Sandbox check (installer/sandbox/CHECKLIST.md, step 4).
     msiexec(f'/i "{msi}" MSIINSTALLPERUSER=""')
     try:
         check((MACHINE_DIR / "bin" / "pyenv.exe").is_file(), "pyenv.exe in Program Files")
@@ -330,7 +332,7 @@ def main(argv) -> int:
         ("upgrade", lambda: upgrade(msi, next_msi)),
         ("scope_refusal", lambda: scope_refusal(msi, next_msi)),
         ("all_users", lambda: all_users(msi, next_msi)),
-        ("all_users_as_the_dialog_does", lambda: all_users_as_the_dialog_does(msi)),
+        ("all_users_by_msiinstallperuser", lambda: all_users_by_msiinstallperuser(msi)),
         ("standard_user", lambda: standard_user(msi)),
         ("missing_exe", lambda: missing_exe(msi)),  # last: it leaves setup's changes behind
     ]:
