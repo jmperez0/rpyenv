@@ -158,6 +158,33 @@ def migrate(msi: Path) -> None:
             (bin_dir / name).unlink(missing_ok=True)
 
 
+def rollback(msi: Path) -> None:
+    """M6b final review M2: an install that fails after migrate and setup ran (the test hook
+    RPYENV_TEST_FAIL_LATE=1) rolls them back too, so nothing is left that no product can
+    undo: pyenv-win's launchers and bin are back, its shims entry stays, setup's marker and
+    profile line are gone."""
+    bin_dir = ROOT / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    for name in ("pyenv.ps1", "pyenv.bat", "pyenv"):
+        (bin_dir / name).write_text(f"{name} from pyenv-win\n", encoding="utf-8")
+    before = reg(winreg.HKEY_CURRENT_USER, "Environment", "Path") or ""
+    set_user_path(f"{bin_dir};{SHIMS};{before}")
+    try:
+        msiexec(f'/i "{msi}" MIGRATEPYENVWIN=1 RPYENV_TEST_FAIL_LATE=1', expect=(1603,))
+        check(not (USER_DIR / "bin" / "pyenv.exe").exists(), "the failed install left no files")
+        check((bin_dir / "pyenv.ps1").is_file(), "pyenv-win's launchers back (migrate rolled back)")
+        check(not (ROOT / ".rpyenv-migrate").exists(), "no migrate backup left")
+        check(low(bin_dir) in user_path(), f"pyenv-win's bin back on the user PATH: {user_path()}")
+        check(low(SHIMS) in user_path(), f"pyenv-win's shims entry kept: {user_path()}")
+        check(not (ROOT / ".rpyenv-setup").exists(), "setup rolled back (marker)")
+        check(not profile_has_line(), "setup rolled back (profile line)")
+        check(reg(winreg.HKEY_CURRENT_USER, r"Software\rpyenv", "Installed") is None, "no HKCU marker")
+    finally:
+        set_user_path(before)
+        for name in ("pyenv.ps1", "pyenv.bat", "pyenv"):
+            (bin_dir / name).unlink(missing_ok=True)
+
+
 PS_POLICY = r"SOFTWARE\Microsoft\PowerShell\1\ShellIds\Microsoft.PowerShell"
 PS_GPO = r"SOFTWARE\Policies\Microsoft\Windows\PowerShell"
 
@@ -398,6 +425,7 @@ def main(argv) -> int:
         ("live_rehash", lambda: live_rehash(msi)),
         ("migrate", lambda: migrate(msi)),
         ("allow_scripts", lambda: allow_scripts(msi)),
+        ("rollback", lambda: rollback(msi)),
         ("upgrade", lambda: upgrade(msi, next_msi)),
         ("scope_refusal", lambda: scope_refusal(msi, next_msi)),
         ("all_users", lambda: all_users(msi, next_msi)),
