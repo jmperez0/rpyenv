@@ -26,7 +26,10 @@ it sets your own execution policy (CurrentUser) to RemoteSigned, unless Group Po
 you already chose one.
 
 --undo takes back what setup added for this user: the shims entry on your user PATH, the
-PowerShell line and an execution policy --allow-scripts set. Your Python versions stay.
+PowerShell line and an execution policy --allow-scripts set, if it's still RemoteSigned.
+That policy covers every script, not only rpyenv's: if others rely on it, keep it with
+`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` afterwards. Your Python versions
+stay.
 ";
 
 pub fn setup(ctx: &Ctx, args: &[&str]) -> Output {

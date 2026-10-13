@@ -213,6 +213,12 @@ Uninstall from Settings, Apps. It runs `pyenv migrate --restore` (if pyenv-win w
 aside) and `pyenv setup --undo` for you. Your Python versions stay. Other users of an
 all-users install can run `pyenv setup --undo` themselves first.
 
+If the checkbox set your execution policy, uninstalling puts it back (to `Undefined`, if
+it's still `RemoteSigned`), and Windows PowerShell blocks local scripts again. The policy
+covers every script, not only rpyenv's: if another tool's profile or scripts have come
+to rely on it, run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` after
+uninstalling.
+
 ### Linux
 
 ```sh
