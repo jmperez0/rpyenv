@@ -149,7 +149,12 @@ pub fn remove(file: &Path) -> io::Result<bool> {
         }
     }
     if removed {
-        std::fs::write(file, to_bytes(encoding, &out))?;
+        // Nothing left but a BOM: deleted, as an empty profile still loads (Sandbox S4).
+        if out.is_empty() || BOMS.contains(&&out[..]) {
+            std::fs::remove_file(file)?;
+        } else {
+            std::fs::write(file, to_bytes(encoding, &out))?;
+        }
     }
     Ok(removed)
 }
@@ -318,5 +323,23 @@ mod tests {
         );
         assert!(!remove(&f).unwrap());
         assert!(!remove(&tmp.path().join("missing.ps1")).unwrap());
+    }
+
+    /// Sandbox S4: an empty profile still loads, so on a machine that blocks scripts it keeps
+    /// the "running scripts is disabled" error after the line is gone. A file left with
+    /// nothing, or only a BOM, is deleted.
+    #[test]
+    fn a_profile_left_empty_is_deleted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let f = tmp.path().join("p.ps1");
+        for before in [
+            format!("{LINE}\r\n").into_bytes(),
+            format!("\u{feff}{LINE}\r\n").into_bytes(),
+            utf16([0xFF, 0xFE], &format!("{LINE}\r\n")),
+        ] {
+            std::fs::write(&f, &before).unwrap();
+            assert!(remove(&f).unwrap());
+            assert!(!f.exists(), "{before:?}");
+        }
     }
 }
