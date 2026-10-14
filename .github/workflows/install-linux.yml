@@ -115,7 +115,9 @@ jobs:
         with:
           toolchain: "1.96"
       - run: cargo build --release -p pyenv -p pyenv-shim
-      - name: pyenv install the newest pypy3.11
+      # The version `pyenv latest -k pypy3.11` picks, by upstream's sort (7.3.23 on 2026-10-14,
+      # not 8.0.0); rpyenv keeps that sort.
+      - name: pyenv install the version latest -k pypy3.11 picks
         run: |
           v=$(target/release/pyenv latest -k pypy3.11)
           echo "VERSION=$v" >> "$GITHUB_ENV"

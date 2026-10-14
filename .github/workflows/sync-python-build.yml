@@ -65,6 +65,13 @@ jobs:
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
+          # Only the PyPy tables changed (crates/pyenv/python-build is untouched): the pull
+          # request must not claim a pyenv sync or a parity-pin bump.
+          if [ -z "$(git status --porcelain crates/pyenv/python-build)" ]; then
+            echo "python_build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "python_build=true" >> "$GITHUB_OUTPUT"
+          fi
       - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, 2026-10-02
         if: steps.update.outputs.changed == 'true'
         with:
@@ -108,19 +115,30 @@ jobs:
         if: steps.update.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          PYTHON_BUILD: ${{ steps.update.outputs.python_build }}
         run: |
           branch="sync-python-build-$TAG"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -b "$branch"
           git add crates/pyenv/python-build crates/pyenv/pypy parity/golden
-          git commit -m "Sync python-build definitions with pyenv $TAG"
+          if [ "$PYTHON_BUILD" = "true" ]; then
+            title="Sync python-build definitions with pyenv $TAG"
+          else
+            title="Update the PyPy tables from pypy.org"
+          fi
+          git commit -m "$title"
           git push -f origin "$branch"
           body="$RUNNER_TEMP/pr-body.md"
           {
-            echo "Automated: crates/pyenv/python-build updated from pyenv $TAG ($SHA) by ci/sync_python_build.py,"
-            echo "the parity pin in \`UPSTREAM\` bumped with it, and the Linux parity goldens regenerated. Review the golden diff."
-            echo "The PyPy tables in \`crates/pyenv/pypy/\` were rebuilt by ci/pypy_tables.py from the vendored definitions and pypy.org's pages; review their diff."
+            if [ "$PYTHON_BUILD" = "true" ]; then
+              echo "Automated: crates/pyenv/python-build updated from pyenv $TAG ($SHA) by ci/sync_python_build.py,"
+              echo "the parity pin in \`UPSTREAM\` bumped with it, and the Linux parity goldens regenerated. Review the golden diff."
+              echo "The PyPy tables in \`crates/pyenv/pypy/\` were rebuilt by ci/pypy_tables.py from the vendored definitions and pypy.org's pages; review their diff."
+            else
+              echo "Automated: only the PyPy tables in \`crates/pyenv/pypy/\` changed. ci/pypy_tables.py rebuilt them from the vendored definitions and pypy.org's pages; review their diff."
+              echo "crates/pyenv/python-build and the parity pin are unchanged (still pyenv $OLD_SHA)."
+            fi
             echo
             echo "Checks run by the workflow:"
             echo
@@ -132,7 +150,7 @@ jobs:
             echo "This pull request was created with \`GITHUB_TOKEN\`, which triggers no CI run: push a commit to \`$branch\`, or close and reopen it, to start one."
           } > "$body"
           if [ "$(gh pr list --head "$branch" --state open --json number --jq 'length')" = "0" ]; then
-            gh pr create --base main --head "$branch" --title "Sync python-build definitions with pyenv $TAG" --body-file "$body"
+            gh pr create --base main --head "$branch" --title "$title" --body-file "$body"
           else
-            gh pr edit "$branch" --body-file "$body"
+            gh pr edit "$branch" --title "$title" --body-file "$body"
           fi
