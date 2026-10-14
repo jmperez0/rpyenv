@@ -139,3 +139,117 @@ fn force_reinstall_keeps_packages_in_pypys_site_packages() {
         "the new tree's own files are there"
     );
 }
+
+/// A table folder for `RPYENV_TEST_PYPY_TABLES`: `name` gets `verdict` for this machine's
+/// architecture; `windows.tsv` is empty.
+fn tables(f: &Fixture, name: &str, verdict: &str) -> String {
+    let arch = pyenv::install::pypy::host_arch().expect("tests run on x64 or aarch64");
+    let d = f.base.join("tables");
+    f.file(
+        &d.join("linux.tsv"),
+        &format!("{name}\t{arch}\t{verdict}\n"),
+    );
+    f.file(&d.join("windows.tsv"), "");
+    d.display().to_string()
+}
+
+/// The newest vendored name with this suffix rule, so the test follows the weekly sync.
+fn vendored(pred: impl Fn(&str) -> bool) -> String {
+    pyenv::install::defs::DEFINITIONS
+        .iter()
+        .map(|(n, _)| n.to_string())
+        .filter(|n| n.starts_with("pypy") && pred(n))
+        .last()
+        .expect("a vendored PyPy definition")
+}
+
+#[test]
+fn a_vendored_name_installs_from_its_table_row_without_a_compiler() {
+    let f = Fixture::new();
+    let (s, sha) = serve_pypy(true);
+    let name = vendored(|n| n.starts_with("pypy3.11-") && !n.ends_with("-src"));
+    let verdict = format!(
+        "ok {TOP} {}#{sha} pypy verify_py311 ensurepip",
+        s.url(&format!("/{TOP}.tar.bz2"))
+    );
+    let t = tables(&f, &name, &verdict);
+    // PATH has no compiler beyond the real one: drop it to prove preflight doesn't run.
+    let r = run(
+        &f,
+        &["install", &name],
+        &[("RPYENV_TEST_PYPY_TABLES", &t), ("CC", "/nonexistent/cc")],
+    );
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert_eq!(
+        link_of(&f.root.join(format!("versions/{name}/bin/python"))),
+        "pypy3.11"
+    );
+}
+
+#[test]
+fn source_builds_and_missing_binaries_are_refused_by_name() {
+    let f = Fixture::new();
+    let src = vendored(|n| n.ends_with("-src"));
+    let r = run(&f, &["install", &src], &[]);
+    assert_eq!(r.code, 1, "{}", r.stderr);
+    assert!(
+        r.stderr.contains(&format!(
+            "{src}: PyPy source, nightly and distribution-specific builds are not supported"
+        )),
+        "{}",
+        r.stderr
+    );
+    let name = vendored(|n| !n.ends_with("-src"));
+    let t = tables(&f, &name, "no-binary");
+    let r = run(&f, &["install", &name], &[("RPYENV_TEST_PYPY_TABLES", &t)]);
+    assert_eq!(r.code, 1, "{}", r.stderr);
+    let arch = pyenv::install::pypy::host_arch().unwrap();
+    assert!(
+        r.stderr.contains(&format!(
+            "{name}: The binary distribution of PyPy is not available for {arch}."
+        )),
+        "{}",
+        r.stderr
+    );
+    assert!(left_in_versions(&f).is_empty());
+}
+
+#[test]
+fn a_users_own_template_definition_is_read_with_bash() {
+    let f = Fixture::new();
+    let (s, sha) = serve_pypy(true);
+    let arch = pyenv::install::pypy::host_arch().unwrap();
+    let url = s.url(&format!("/{TOP}.tar.bz2"));
+    // The template's shape: variables, then functions that pick the row (spec §3).
+    let text = format!(
+        "VERSION='7.3.99'\nPYVER='3.11'\nfunction pick {{\n  case \"$1\" in\n  {arch}) echo install_package {TOP} \"{url}#{sha}\" ;;\n  *) exit 1 ;;\n  esac\n}}\ndeclare -a pd=\"$(pick \"$(pypy_architecture)\")\"\n${{pd[0]}} \"${{pd[1]}}\" \"${{pd[2]}}\" pypy verify_py311 ensurepip\n"
+    );
+    let defs = f.base.join("defs");
+    f.file(&defs.join("pypy3.11-7.3.99"), &text);
+    let d = defs.display().to_string();
+    let r = run(
+        &f,
+        &["install", "pypy3.11-7.3.99"],
+        &[("PYTHON_BUILD_DEFINITIONS", &d)],
+    );
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert!(f
+        .root
+        .join("versions/pypy3.11-7.3.99/bin/pip3.11")
+        .is_file());
+    // Without bash on PATH, the error names the file.
+    // -f: the first run left the version installed, which would otherwise stop at the prompt.
+    let r = f.pyenv_env(
+        &["install", "-f", "pypy3.11-7.3.99"],
+        &[
+            ("PYTHON_BUILD_DEFINITIONS", &d),
+            ("PATH", &f.syspath.display().to_string()),
+        ],
+    );
+    assert_eq!(r.code, 1);
+    assert!(
+        r.stderr.contains("pypy3.11-7.3.99 needs bash to be read"),
+        "{}",
+        r.stderr
+    );
+}

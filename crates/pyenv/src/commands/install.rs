@@ -4,6 +4,7 @@ use crate::commands::latest::resolve_known;
 use crate::install::builder::{self, patch_files, Job, Options};
 use crate::install::defs::{self, Found, Origin};
 use crate::install::fetch::Fetcher;
+use crate::install::pypy::{self, Verdict};
 use crate::install::txn::{is_complete, Txn};
 use crate::install::{
     default_packages, interrupted, preflight, prompt, watch_interrupt, InstallError, Reply,
@@ -116,6 +117,44 @@ fn get_os(env: &[(OsString, OsString)], k: &str) -> Option<OsString> {
         .filter(|v| !v.is_empty())
 }
 
+/// M7a design §4.2: what a `pypy*` definition installs here, as a one-line definition the
+/// interpreter reads. The vendored copy uses the table's row; a user's own one that the
+/// interpreter can't read is evaluated with `bash`. `None` for every other definition.
+fn pypy_text(found: &Found, interpretable: bool) -> Option<Result<String, String>> {
+    let builtin = found.origin == Origin::Builtin;
+    if !found.name.starts_with("pypy") || (!builtin && interpretable) {
+        return None;
+    }
+    let arch = pypy::host_arch();
+    let shown = arch.unwrap_or(std::env::consts::ARCH);
+    let verdict = match (&found.origin, arch) {
+        (_, None) => Ok(Verdict::NoBinary),
+        (Origin::Builtin, Some(a)) => pypy::linux_table().map(|rows| {
+            pypy::linux_verdict(&rows, &found.name, a)
+                .cloned()
+                .unwrap_or(Verdict::NoBinary)
+        }),
+        (Origin::Dir(d), Some(a)) => pypy::evaluate(&d.join(&found.name), a),
+        (Origin::Path(p), Some(a)) => pypy::evaluate(p, a),
+    };
+    let name = &found.name;
+    Some(verdict.and_then(|v| match v {
+        Verdict::Ok {
+            package,
+            url,
+            steps,
+        } => Ok(pypy::definition_text(&package, &url, &steps)),
+        Verdict::NoBinary => Err(format!(
+            "python-build: {name}: The binary distribution of PyPy is not available for {shown}."
+        )),
+        Verdict::Unsupported(_) if builtin => Err(format!(
+            "python-build: {name}: PyPy source, nightly and distribution-specific builds are not supported"
+        )),
+        Verdict::Unsupported(why) => Err(format!(
+            "python-build: {name}: rpyenv cannot read this PyPy definition ({why})"
+        )),
+    }))
+}
 pub fn install(ctx: &Ctx, args: &[&str]) -> Output {
     // The process environment, which every lookup and the build itself see.
     let base: Vec<(OsString, OsString)> = std::env::vars_os().collect();
@@ -273,12 +312,31 @@ pub fn install(ctx: &Ctx, args: &[&str]) -> Output {
             Some(dir) => defs::find(&root, &dir.join(n).display().to_string(), &env),
             None => defs::find(&root, n, &env),
         };
-        let parsed = match defs::parse(&found, &env, &sibling) {
-            Ok(d) => d,
-            Err(e) => {
-                say(&e);
+        let first = defs::parse(&found, &env, &sibling);
+        let (found, parsed) = match pypy_text(&found, first.is_ok()) {
+            None => match first {
+                Ok(d) => (found, d),
+                Err(e) => {
+                    say(&e);
+                    status = status.max(1);
+                    break;
+                }
+            },
+            Some(Err(m)) => {
+                say(&m);
                 status = status.max(1);
                 break;
+            }
+            Some(Ok(text)) => {
+                let f = Found { text, ..found };
+                match defs::parse(&f, &env, &sibling) {
+                    Ok(d) => (f, d),
+                    Err(e) => {
+                        say(&e);
+                        status = status.max(1);
+                        break;
+                    }
+                }
             }
         };
         // `-k`, or a non-empty PYENV_BUILD_ROOT: the build happens in (and is kept at)
