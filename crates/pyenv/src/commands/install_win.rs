@@ -177,22 +177,35 @@ pub fn install(ctx: &Ctx, args: &[&str]) -> Output {
             return Output::new().with_code(130);
         }
         let row = rows.iter().find(|r| &r.code == w).expect("checked above");
-        let code = parse_code(w).filter(|_| row.zip_root_dir.is_none());
-        let Some(code) = code.filter(|_| !installed::is_staging_name(w)) else {
-            say(&format!(
-                ":: [Error] :: rpyenv cannot install {w} yet: only CPython is supported."
-            ));
-            status = 1;
-            break;
+        let result = if crate::install::pypy::win_code(w).is_some() {
+            winpkg::install_pypy(
+                &winpkg::PypyJob {
+                    root: &ctx.root,
+                    code: w,
+                    force: o.force,
+                    fetcher: &fetcher,
+                },
+                &mut |l| say(l),
+            )
+        } else {
+            let code = parse_code(w).filter(|_| row.zip_root_dir.is_none());
+            let Some(code) = code.filter(|_| !installed::is_staging_name(w)) else {
+                say(&format!(
+                    ":: [Error] :: rpyenv cannot install {w}: only CPython and PyPy are supported."
+                ));
+                status = 1;
+                break;
+            };
+            let job = Job {
+                root: &ctx.root,
+                code: &code,
+                force: o.force,
+                base: &base,
+                fetcher: &fetcher,
+            };
+            winpkg::install(&job, &mut |l| say(l))
         };
-        let job = Job {
-            root: &ctx.root,
-            code: &code,
-            force: o.force,
-            base: &base,
-            fetcher: &fetcher,
-        };
-        match winpkg::install(&job, &mut |l| say(l)) {
+        match result {
             Ok(winpkg::Done::Installed) => {
                 let prefix = ctx.versions_dir().join(w);
                 if let Some(line) = crate::install::default_packages::run(&ctx.root, &prefix) {
