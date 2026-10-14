@@ -61,3 +61,15 @@ pub fn pypy_versions_json(files: &[&str], base: &str) -> Vec<u8> {
     )
     .into_bytes()
 }
+
+/// pypy.org's checksum page: `(file, sha256)` pairs plus `filler` unrelated entries (the
+/// parser wants at least 500).
+pub fn checksums_page(pairs: &[(&str, &str)], filler: usize) -> Vec<u8> {
+    let mut lines: Vec<String> = pairs.iter().map(|(f, h)| format!("{h}  {f}")).collect();
+    lines.extend((0..filler).map(|i| format!("{i:064x}  pypy0.0-v0.0.{i}-filler.tar.bz2")));
+    format!(
+        "<html><body><p>pypy sha256:</p><pre>{}</pre></body></html>",
+        lines.join("\n")
+    )
+    .into_bytes()
+}

@@ -575,6 +575,91 @@ fn install_one(job: &Job, say: &mut dyn FnMut(&str)) -> Result<Done, InstallErro
     Ok(Done::Installed)
 }
 
+pub struct PypyJob<'a> {
+    pub root: &'a Path,
+    pub code: &'a str,
+    pub force: bool,
+    pub fetcher: &'a Fetcher,
+}
+
+/// One PyPy zip, end to end (M7a design §5.2): the hash from the table (or the checksum page),
+/// the verified download into `install_cache`, the zip's single top folder placed as
+/// `versions\<code>`, then ensurepip. Errors leave nothing behind.
+pub fn install_pypy(job: &PypyJob, say: &mut dyn FnMut(&str)) -> Result<Done, InstallError> {
+    match install_pypy_one(job, say) {
+        Err(_) if interrupted() => Err(InstallError::Interrupted),
+        r => r,
+    }
+}
+
+fn install_pypy_one(job: &PypyJob, say: &mut dyn FnMut(&str)) -> Result<Done, InstallError> {
+    let code = job.code;
+    let versions = job.root.join("versions");
+    let msg = InstallError::Message;
+    if !super::is_plain_name(code) {
+        return Err(msg(format!("invalid version name: {code}")));
+    }
+    if is_complete_for(&versions.join(code), Flavor::PyenvWin) && !job.force {
+        return Ok(Done::Skipped);
+    }
+    let mut txn = Txn::begin_for(&versions, code, Flavor::PyenvWin).map_err(msg)?;
+    let (url, sha256) = super::pypy::win_source(code, job.fetcher).map_err(msg)?;
+    let file = format!("{code}.zip");
+    let pkg = Package::Zip {
+        file: file.clone(),
+        url,
+        sha256,
+    };
+    let fetched = fetch_package(
+        &pkg,
+        code,
+        &job.root.join("install_cache"),
+        job.fetcher,
+        &mut |from, to| {
+            say(&format!(":: [Downloading] ::  {code} ..."));
+            say(&format!(":: [Downloading] ::  From {from}"));
+            say(&format!(":: [Downloading] ::  To   {}", to.display()));
+        },
+    )?;
+    say(&format!(":: [Installing] ::  {code} ..."));
+    let stage = txn.stage_dir().to_path_buf();
+    zipx::extract_zip(&fetched.files[0], &stage).map_err(msg)?;
+    let tops: Vec<PathBuf> = std::fs::read_dir(&stage)
+        .map_err(|e| msg(format!("{}: {e}", stage.display())))?
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .collect();
+    let [top] = tops.as_slice() else {
+        return Err(msg(format!("{file} does not hold one top folder")));
+    };
+    if !top.is_dir() {
+        return Err(msg(format!("{file} does not hold one top folder")));
+    }
+    if interrupted() {
+        return Err(InstallError::Interrupted);
+    }
+    txn.place(top)
+        .map_err(|e| msg(format!("cannot move {} into place: {e}", top.display())))?;
+    let prefix = txn.target();
+    // pip, as pyenv-win's install of a folder with `Lib\ensurepip` gets it.
+    if prefix.join("Lib").join("ensurepip").is_dir() {
+        python(
+            &prefix,
+            &["-m", "ensurepip", "-U", "--default-pip"],
+            "ensurepip",
+            None,
+        )
+        .map_err(msg)?;
+    }
+    if interrupted() {
+        return Err(InstallError::Interrupted);
+    }
+    txn.commit()
+        .map_err(|e| msg(format!("cannot finish installing {code}: {e}")))?;
+    say(&format!(":: [Info] :: completed! {code}"));
+    Ok(Done::Installed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::openpgp::PINNED;
