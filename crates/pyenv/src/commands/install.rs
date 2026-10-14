@@ -291,7 +291,12 @@ pub fn install(ctx: &Ctx, args: &[&str]) -> Output {
             job_env.push(("PYTHON_BUILD_BUILD_PATH".into(), r.join(&name).into()));
         }
         let job_get = |k: &str| builder::get(&job_env, k);
-        if job_get("RPYENV_SKIP_PREFLIGHT").as_deref() != Some("1") {
+        // A binary install (PyPy) compiles nothing, so it needs no build dependencies.
+        let compiles = parsed
+            .packages
+            .iter()
+            .any(|p| p.steps.iter().any(|s| s == "standard" || s == "python"));
+        if compiles && job_get("RPYENV_SKIP_PREFLIGHT").as_deref() != Some("1") {
             let missing = preflight::check(&job_get, f.patch || needs_patch(&found, &parsed));
             let os = std::fs::read_to_string("/etc/os-release").ok();
             let r = preflight::report(

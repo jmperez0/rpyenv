@@ -207,7 +207,7 @@ fn remove_link(p: &Path) -> std::io::Result<()> {
 /// Moves what upstream's build over the old tree would have kept from `old` into the new
 /// tree `new`: `envs/` (pyenv-virtualenv) when `new` has none, and each entry that `new`
 /// lacks in `bin/` and `Scripts\` (scripts pip installed) and in site-packages (`lib/python*/site-packages`,
-/// and `Lib/site-packages` for Windows). Entries in both keep `new`'s copy. Everything moves
+/// `lib/pypy*/site-packages`, and `Lib/site-packages` for Windows). Entries in both keep `new`'s copy. Everything moves
 /// by rename, which moves a symlink as a link, so a failure part way loses nothing: what has
 /// not moved is still in `old`.
 fn carry_over(old: &Path, new: &Path) -> std::io::Result<()> {
@@ -220,7 +220,9 @@ fn carry_over(old: &Path, new: &Path) -> std::io::Result<()> {
     if let Ok(rd) = std::fs::read_dir(old.join("lib")) {
         for e in rd.filter_map(Result::ok) {
             let name = e.file_name();
-            if name.to_string_lossy().starts_with("python") {
+            // `lib/python3.12/site-packages`, and PyPy's `lib/pypy3.11/site-packages`.
+            let n = name.to_string_lossy();
+            if n.starts_with("python") || n.starts_with("pypy") {
                 dirs.push(Path::new("lib").join(name).join("site-packages"));
             }
         }
