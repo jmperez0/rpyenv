@@ -186,6 +186,24 @@ fn a_vendored_name_installs_from_its_table_row_without_a_compiler() {
     );
 }
 
+// allowlist D-106 (ruling R7)
+#[test]
+fn a_third_party_build_row_is_refused_by_name() {
+    let f = Fixture::new();
+    let name = vendored(|n| !n.ends_with("-src"));
+    let t = tables(&f, &name, "unsupported third-party build");
+    let r = run(&f, &["install", &name], &[("RPYENV_TEST_PYPY_TABLES", &t)]);
+    assert_eq!(r.code, 1, "{}", r.stderr);
+    assert!(
+        r.stderr.contains(&format!(
+            "python-build: {name}: PyPy source, nightly, distribution-specific and third-party builds are not supported"
+        )),
+        "{}",
+        r.stderr
+    );
+    assert!(left_in_versions(&f).is_empty());
+}
+
 // allowlist D-106
 #[test]
 fn source_builds_and_missing_binaries_are_refused_by_name() {
@@ -195,7 +213,7 @@ fn source_builds_and_missing_binaries_are_refused_by_name() {
     assert_eq!(r.code, 1, "{}", r.stderr);
     assert!(
         r.stderr.contains(&format!(
-            "{src}: PyPy source, nightly and distribution-specific builds are not supported"
+            "{src}: PyPy source, nightly, distribution-specific and third-party builds are not supported"
         )),
         "{}",
         r.stderr

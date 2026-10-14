@@ -30,6 +30,7 @@ Success means:
 | D5 | Windows hashes | A table built in CI from pypy.org's `versions.json` and `checksums.html`, embedded in rpyenv; reading `checksums.html` at install time only for a release newer than the table (§5). Chosen after a side-agent note: reading the page on every install would let a pypy.org redesign break every Windows PyPy install. |
 | D6 | Windows file without a published hash | Not installable (no table row; the fallback refuses), never a warning. |
 | D7 | Windows ARM64 hosts | As pyenv-win: x64 PyPy rows are listed and installable (they run under emulation). |
+| D8 | Third-party builds on Linux | Refused (user's decision, 2026-10-14; ruling R7). 44 vendored definitions of PyPy 7.1.x and older download squeaky-pl's portable builds, not PyPy's; the Linux table marks any `ok` verdict whose URL is not under `https://downloads.python.org/pypy/` as `unsupported third-party build`, and rpyenv refuses to read an `ok` row outside that folder. |
 
 ## 3. Measurements this design rests on (2026-10-14)
 
@@ -150,7 +151,7 @@ Each names the version, exits 1, and leaves nothing in `versions/`.
 
 | Case | Message |
 |---|---|
-| `-src`, a nightly (`*-c-jit-latest`), `pypy-dev`, a distribution-specific definition (`require_distro`: 15 of PyPy 7.2.0 and older, which pick PyPy's build on an old Ubuntu and a third-party portable build elsewhere) | `PyPy source, nightly and distribution-specific builds are not supported` |
+| `-src`, a nightly (`*-c-jit-latest`), `pypy-dev`, a distribution-specific definition or a definition whose URL is not under `https://downloads.python.org/pypy/` (44 of PyPy 7.1.x and older install squeaky-pl's portable builds; D8) (`require_distro`: 15 of PyPy 7.2.0 and older, which pick PyPy's build on an old Ubuntu and a third-party portable build elsewhere) | `PyPy source, nightly, distribution-specific and third-party builds are not supported` |
 | No binary for this architecture (Linux) | upstream's text: `The binary distribution of PyPy is not available for <arch>.` |
 | Hash mismatch | the existing checksum error |
 | Windows code not in the table, fallback fails | `<code> is newer than this rpyenv's PyPy table and pypy.org's checksum page couldn't be read: update rpyenv` |
