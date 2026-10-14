@@ -148,7 +148,7 @@ fn pypy_text(found: &Found, interpretable: bool) -> Option<Result<String, String
             "python-build: {name}: The binary distribution of PyPy is not available for {shown}."
         )),
         Verdict::Unsupported(_) if builtin => Err(format!(
-            "python-build: {name}: PyPy source, nightly and distribution-specific builds are not supported"
+            "python-build: {name}: PyPy source, nightly, distribution-specific and third-party builds are not supported"
         )),
         Verdict::Unsupported(why) => Err(format!(
             "python-build: {name}: rpyenv cannot read this PyPy definition ({why})"

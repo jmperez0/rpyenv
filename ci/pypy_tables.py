@@ -19,7 +19,9 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEST = os.path.join(REPO, "crates", "pyenv", "pypy")
 EVAL = os.path.join(REPO, "crates", "pyenv", "src", "install", "pypy_eval.sh")
 ARCHES = ("linux64", "linux-aarch64")
-IMAGE = "debian:trixie-slim"
+# debian:trixie-slim as pulled on 2026-10-14, pinned by digest so the table is reproducible
+# (`docker image inspect --format '{{index .RepoDigests 0}}' debian:trixie-slim` after a pull).
+IMAGE = "debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f"
 LOOP = 'for n in "$@"; do for a in linux64 linux-aarch64; do printf "%s\\t%s\\t" "$n" "$a"; bash "$EVAL" "$DEFS/$n" "$a"; done; done'
 
 
@@ -51,12 +53,19 @@ def evaluate(share, names, engine):
     return verdicts
 
 
+THIRD_PARTY = "unsupported third-party build"
+
+
 def linux_rows(names, verdicts):
-    """[(name, arch, verdict)] for every name: `-src` ones are `unsupported source build`."""
+    """[(name, arch, verdict)] for every name: `-src` ones are `unsupported source build`, and an
+    `ok` verdict whose URL is not under PyPy's folder is `unsupported third-party build` (ruling R7)."""
     rows = []
     for n in names:
         for a in ARCHES:
-            rows.append((n, a, "unsupported source build" if n.endswith("-src") else verdicts[(n, a)]))
+            v = "unsupported source build" if n.endswith("-src") else verdicts[(n, a)]
+            if v.startswith("ok ") and not v.split()[2].startswith(DOWNLOADS):
+                v = THIRD_PARTY
+            rows.append((n, a, v))
     return rows
 
 
@@ -70,6 +79,8 @@ DOWNLOADS = "https://downloads.python.org/pypy/"
 # Fewer pairs than this means the page's layout changed (1021 on 2026-10-14). Same number as
 # install::pypy::MIN_PAGE_HASHES.
 MIN_PAGE_HASHES = 500
+# Fewer rows than this means versions.json changed shape (60 on 2026-10-14).
+MIN_WINDOWS_ROWS = 50
 HASH = re.compile(r"[0-9a-f]{64}")
 FILE = re.compile(r"pypy[A-Za-z0-9_.\-]*\.(?:zip|tar\.bz2|tar\.gz)")
 # pyenv-win's own pattern for PyPy zips (pyenv-install-lib.vbs regexJsonUrl), win64 only.
@@ -89,7 +100,7 @@ def page_hashes(html):
     return out
 
 
-def windows_rows(versions_json, sums):
+def windows_rows(versions_json, sums, minimum=MIN_WINDOWS_ROWS):
     """[(code, url, sha256)] for the zips pyenv-win lists that have a published hash, in
     pyenv-win's order: Python version, then PyPy version."""
     rows = {}
@@ -107,6 +118,8 @@ def windows_rows(versions_json, sums):
     def key(code):
         m = WIN.match(code + ".zip")
         return (int(m.group(2)), int(m.group(3)), tuple(int(x) for x in m.group(4).split(".")))
+    if len(rows) < minimum:
+        raise ValueError(f"versions.json gave {len(rows)} Windows PyPy zips with published hashes, fewer than {minimum}: has its layout changed?")
     return [(c, *rows[c]) for c in sorted(rows, key=key)]
 
 
@@ -126,11 +139,14 @@ def check_linux(rows, sums, unpublished, unsupported):
             base, _, sha = w[2].partition("#")
             file = base.rsplit("/", 1)[1]
             seen_files.add(file)
+            if (arch == "linux-aarch64") != ("aarch64" in file):
+                errors.append(f"{name} {arch}: " + (f"linux64 row names an aarch64 file ({file})" if arch == "linux64"
+                                                    else f"linux-aarch64 row names a file without aarch64 ({file})"))
             if file in sums and sums[file] != sha:
                 errors.append(f"{name} {arch}: upstream's SHA-256 for {file} differs from pypy.org's")
             elif file not in sums and file not in unpublished:
                 errors.append(f"{name} {arch}: {file} is not on pypy.org's checksum page and not in linux-unpublished.txt")
-        elif w[0] == "unsupported" and not name.endswith("-src"):
+        elif w[0] == "unsupported" and not name.endswith("-src") and verdict != THIRD_PARTY:
             seen_names.add(name)
             if name not in unsupported:
                 errors.append(f"{name} {arch}: {verdict} (add a stub, or list it in linux-unsupported.txt)")
@@ -164,7 +180,7 @@ def main(argv):
     rows = linux_rows(names, evaluate(a.share, [n for n in names if not n.endswith("-src")], a.engine))
     if a.write_lists:
         unpublished = {v.split()[2].partition("#")[0].rsplit("/", 1)[1] for _, _, v in rows if v.startswith("ok ")} - set(sums)
-        unsupported = {n for n, _, v in rows if v.startswith("unsupported") and not n.endswith("-src")}
+        unsupported = {n for n, _, v in rows if v.startswith("unsupported") and not n.endswith("-src") and v != THIRD_PARTY}
         os.makedirs(DEST, exist_ok=True)
         for fname, items, what in (("linux-unpublished.txt", unpublished, "files pypy.org's checksum page doesn't list"),
                                    ("linux-unsupported.txt", unsupported, "binary definitions the stubs can't evaluate")):

@@ -42,47 +42,47 @@ pypy-2.3.1	linux64	unsupported calls require_distro
 pypy-2.3.1	linux-aarch64	no-binary
 pypy-2.3.1-src	linux64	unsupported source build
 pypy-2.3.1-src	linux-aarch64	unsupported source build
-pypy-2.4.0	linux64	ok pypy-2.4-linux_x86_64-portable https://bitbucket-archive.softwareheritage.org/static/14/140b7b14-aa94-424e-b191-9cd3438381f7/attachments/pypy-2.4-linux_x86_64-portable.tar.bz2#b6ed31aff0ebcc9b40554576b1ce789fe4e8c93f7a34cd3983515e1a9a8a45b6 pypy verify_py27 ensurepip
+pypy-2.4.0	linux64	unsupported third-party build
 pypy-2.4.0	linux-aarch64	no-binary
 pypy-2.4.0-src	linux64	unsupported source build
 pypy-2.4.0-src	linux-aarch64	unsupported source build
-pypy-2.5.0	linux64	ok pypy-2.5-linux_x86_64-portable https://bitbucket-archive.softwareheritage.org/static/14/140b7b14-aa94-424e-b191-9cd3438381f7/attachments/pypy-2.5-linux_x86_64-portable.tar.bz2#26c5a0964b32b09be0282766c27937c843a12b6820ff2d440c6d47a6092837e0 pypy verify_py27 ensurepip
+pypy-2.5.0	linux64	unsupported third-party build
 pypy-2.5.0	linux-aarch64	no-binary
 pypy-2.5.0-src	linux64	unsupported source build
 pypy-2.5.0-src	linux-aarch64	unsupported source build
-pypy-2.5.1	linux64	ok pypy-2.5.1-linux_x86_64-portable https://bitbucket-archive.softwareheritage.org/static/14/140b7b14-aa94-424e-b191-9cd3438381f7/attachments/pypy-2.5.1-linux_x86_64-portable.tar.bz2#157bee6349878cf0ef575b0d7bfd6cbb837c00e83b2872c924580ef7bc32c0d7 pypy verify_py27 ensurepip
+pypy-2.5.1	linux64	unsupported third-party build
 pypy-2.5.1	linux-aarch64	no-binary
 pypy-2.5.1-src	linux64	unsupported source build
 pypy-2.5.1-src	linux-aarch64	unsupported source build
-pypy-2.6.0	linux64	ok pypy-2.6-linux_x86_64-portable https://bitbucket-archive.softwareheritage.org/static/14/140b7b14-aa94-424e-b191-9cd3438381f7/attachments/pypy-2.6-linux_x86_64-portable.tar.bz2#97284b66476c5d1b17a62f5017569a0073730928e19f95b49d78d6bc60b69495 pypy verify_py27 ensurepip
+pypy-2.6.0	linux64	unsupported third-party build
 pypy-2.6.0	linux-aarch64	no-binary
 pypy-2.6.0-src	linux64	unsupported source build
 pypy-2.6.0-src	linux-aarch64	unsupported source build
-pypy-2.6.1	linux64	ok pypy-2.6.1-linux_x86_64-portable https://bitbucket-archive.softwareheritage.org/static/14/140b7b14-aa94-424e-b191-9cd3438381f7/attachments/pypy-2.6.1-linux_x86_64-portable.tar.bz2#ed6a35dee4c982123af716e62975039e18920b599afc4f6a2f3c7c89d0403389 pypy verify_py27 ensurepip
+pypy-2.6.1	linux64	unsupported third-party build
 pypy-2.6.1	linux-aarch64	no-binary
 pypy-2.6.1-src	linux64	unsupported source build
 pypy-2.6.1-src	linux-aarch64	unsupported source build
-pypy-4.0.0	linux64	ok pypy-4.0-linux_x86_64-portable https://bitbucket-archive.softwareheritage.org/static/14/140b7b14-aa94-424e-b191-9cd3438381f7/attachments/pypy-4.0-linux_x86_64-portable.tar.bz2#61fb04eaa823763b8de777e16edc02b09116985586f53c14c6e85d531072a38f pypy verify_py27 ensurepip
+pypy-4.0.0	linux64	unsupported third-party build
 pypy-4.0.0	linux-aarch64	no-binary
 pypy-4.0.0-src	linux64	unsupported source build
 pypy-4.0.0-src	linux-aarch64	unsupported source build
-pypy-4.0.1	linux64	ok pypy-4.0.1-linux_x86_64-portable https://bitbucket-archive.softwareheritage.org/static/14/140b7b14-aa94-424e-b191-9cd3438381f7/attachments/pypy-4.0.1-linux_x86_64-portable.tar.bz2#b3803f6dd9bbb964f7d322aa4aeb93191ff0ebe573428c1d2014ea26da49ff53 pypy verify_py27 ensurepip
+pypy-4.0.1	linux64	unsupported third-party build
 pypy-4.0.1	linux-aarch64	no-binary
 pypy-4.0.1-src	linux64	unsupported source build
 pypy-4.0.1-src	linux-aarch64	unsupported source build
-pypy-5.0.0	linux64	ok pypy-5.0-linux_x86_64-portable https://bitbucket-archive.softwareheritage.org/static/14/140b7b14-aa94-424e-b191-9cd3438381f7/attachments/pypy-5.0-linux_x86_64-portable.tar.bz2#57c9ea251bf1e7074e14aeecdd1ac8bb2fc53dbf3f90a9613d03e33076a7fa08 pypy verify_py27 ensurepip
+pypy-5.0.0	linux64	unsupported third-party build
 pypy-5.0.0	linux-aarch64	no-binary
 pypy-5.0.0-src	linux64	unsupported source build
 pypy-5.0.0-src	linux-aarch64	unsupported source build
-pypy-5.0.1	linux64	ok pypy-5.0.1-linux_x86_64-portable https://bitbucket-archive.softwareheritage.org/static/14/140b7b14-aa94-424e-b191-9cd3438381f7/attachments/pypy-5.0.1-linux_x86_64-portable.tar.bz2#14d65f84fe8228cfa2b8e924364cf4c71e2bc6b13649098fa340baf044606436 pypy verify_py27 ensurepip
+pypy-5.0.1	linux64	unsupported third-party build
 pypy-5.0.1	linux-aarch64	no-binary
 pypy-5.0.1-src	linux64	unsupported source build
 pypy-5.0.1-src	linux-aarch64	unsupported source build
-pypy-5.1	linux64	ok pypy-5.1-linux_x86_64-portable https://bitbucket-archive.softwareheritage.org/static/14/140b7b14-aa94-424e-b191-9cd3438381f7/attachments/pypy-5.1-linux_x86_64-portable.tar.bz2#b2df9b0127457d1c3cc0dc9b8f027a53569ccd3ba5a79012d641e576d9cc003a pypy verify_py27 ensurepip
+pypy-5.1	linux64	unsupported third-party build
 pypy-5.1	linux-aarch64	no-binary
 pypy-5.1-src	linux64	unsupported source build
 pypy-5.1-src	linux-aarch64	unsupported source build
-pypy-5.1.1	linux64	ok pypy-5.1.1-linux_x86_64-portable https://bitbucket-archive.softwareheritage.org/static/14/140b7b14-aa94-424e-b191-9cd3438381f7/attachments/pypy-5.1.1-linux_x86_64-portable.tar.bz2#c0502d8db1cc2b81513cc6047813669b0a561cb20e41d60e179f51fe8657a794 pypy verify_py27 ensurepip
+pypy-5.1.1	linux64	unsupported third-party build
 pypy-5.1.1	linux-aarch64	no-binary
 pypy-5.1.1-src	linux64	unsupported source build
 pypy-5.1.1-src	linux-aarch64	unsupported source build
@@ -90,27 +90,27 @@ pypy-5.3	linux64	unsupported calls require_distro
 pypy-5.3	linux-aarch64	no-binary
 pypy-5.3-src	linux64	unsupported source build
 pypy-5.3-src	linux-aarch64	unsupported source build
-pypy-5.3.1	linux64	ok pypy-5.3.1-linux_x86_64-portable https://bitbucket-archive.softwareheritage.org/static/14/140b7b14-aa94-424e-b191-9cd3438381f7/attachments/pypy-5.3.1-linux_x86_64-portable.tar.bz2#73014c3840609a62c0984b9c383652097f0a8c52fb74dd9de70d9df2a9a743ff pypy verify_py27 ensurepip
+pypy-5.3.1	linux64	unsupported third-party build
 pypy-5.3.1	linux-aarch64	no-binary
 pypy-5.3.1-src	linux64	unsupported source build
 pypy-5.3.1-src	linux-aarch64	unsupported source build
-pypy-5.4	linux64	ok pypy-5.4-linux_x86_64-portable https://bitbucket-archive.softwareheritage.org/static/14/140b7b14-aa94-424e-b191-9cd3438381f7/attachments/pypy-5.4-linux_x86_64-portable.tar.bz2#0a48c7ba7163589b1ade9cfe184f422d1bc9a0f988321b2fdcbd924d90594d9a pypy verify_py27 ensurepip
+pypy-5.4	linux64	unsupported third-party build
 pypy-5.4	linux-aarch64	no-binary
 pypy-5.4-src	linux64	unsupported source build
 pypy-5.4-src	linux-aarch64	unsupported source build
-pypy-5.4.1	linux64	ok pypy-5.4.1-linux_x86_64-portable https://bitbucket-archive.softwareheritage.org/static/14/140b7b14-aa94-424e-b191-9cd3438381f7/attachments/pypy-5.4.1-linux_x86_64-portable.tar.bz2#0b59f8e69c7883d454fce6364ab01a5ec6a481ed7f0cc0f1612c3b0c253f7da4 pypy verify_py27 ensurepip
+pypy-5.4.1	linux64	unsupported third-party build
 pypy-5.4.1	linux-aarch64	no-binary
 pypy-5.4.1-src	linux64	unsupported source build
 pypy-5.4.1-src	linux-aarch64	unsupported source build
-pypy-5.6.0	linux64	ok pypy-5.6-linux_x86_64-portable https://bitbucket-archive.softwareheritage.org/static/14/140b7b14-aa94-424e-b191-9cd3438381f7/attachments/pypy-5.6-linux_x86_64-portable.tar.bz2#9bd220bc54000e142bd4929435959305efeef8c832fbe3c907211cc5214095ce pypy verify_py27 ensurepip
+pypy-5.6.0	linux64	unsupported third-party build
 pypy-5.6.0	linux-aarch64	no-binary
 pypy-5.6.0-src	linux64	unsupported source build
 pypy-5.6.0-src	linux-aarch64	unsupported source build
-pypy-5.7.0	linux64	ok pypy-5.7-linux_x86_64-portable https://bitbucket-archive.softwareheritage.org/static/14/140b7b14-aa94-424e-b191-9cd3438381f7/attachments/pypy-5.7-linux_x86_64-portable.tar.bz2#209d2224fe461d85afb201a0c8da18df21219687defadd4550b60420a120bacb pypy verify_py27 ensurepip
+pypy-5.7.0	linux64	unsupported third-party build
 pypy-5.7.0	linux-aarch64	no-binary
 pypy-5.7.0-src	linux64	unsupported source build
 pypy-5.7.0-src	linux-aarch64	unsupported source build
-pypy-5.7.1	linux64	ok pypy-5.7.1-linux_x86_64-portable https://bitbucket-archive.softwareheritage.org/static/14/140b7b14-aa94-424e-b191-9cd3438381f7/attachments/pypy-5.7.1-linux_x86_64-portable.tar.bz2#8a6a194963eb58d582413c4bcdef6119f9f9f117a05032d1fb13192d934510c6 pypy verify_py27 ensurepip
+pypy-5.7.1	linux64	unsupported third-party build
 pypy-5.7.1	linux-aarch64	no-binary
 pypy-5.7.1-src	linux64	unsupported source build
 pypy-5.7.1-src	linux-aarch64	unsupported source build
@@ -126,51 +126,51 @@ pypy2-5.3	linux64	unsupported calls require_distro
 pypy2-5.3	linux-aarch64	no-binary
 pypy2-5.3-src	linux64	unsupported source build
 pypy2-5.3-src	linux-aarch64	unsupported source build
-pypy2-5.3.1	linux64	ok pypy-5.3.1-linux_x86_64-portable https://bitbucket-archive.softwareheritage.org/static/14/140b7b14-aa94-424e-b191-9cd3438381f7/attachments/pypy-5.3.1-linux_x86_64-portable.tar.bz2#73014c3840609a62c0984b9c383652097f0a8c52fb74dd9de70d9df2a9a743ff pypy verify_py27 ensurepip
+pypy2-5.3.1	linux64	unsupported third-party build
 pypy2-5.3.1	linux-aarch64	no-binary
 pypy2-5.3.1-src	linux64	unsupported source build
 pypy2-5.3.1-src	linux-aarch64	unsupported source build
-pypy2-5.4	linux64	ok pypy-5.4-linux_x86_64-portable https://bitbucket-archive.softwareheritage.org/static/14/140b7b14-aa94-424e-b191-9cd3438381f7/attachments/pypy-5.4-linux_x86_64-portable.tar.bz2#0a48c7ba7163589b1ade9cfe184f422d1bc9a0f988321b2fdcbd924d90594d9a pypy verify_py27 ensurepip
+pypy2-5.4	linux64	unsupported third-party build
 pypy2-5.4	linux-aarch64	no-binary
 pypy2-5.4-src	linux64	unsupported source build
 pypy2-5.4-src	linux-aarch64	unsupported source build
-pypy2-5.4.1	linux64	ok pypy-5.4.1-linux_x86_64-portable https://bitbucket-archive.softwareheritage.org/static/14/140b7b14-aa94-424e-b191-9cd3438381f7/attachments/pypy-5.4.1-linux_x86_64-portable.tar.bz2#0b59f8e69c7883d454fce6364ab01a5ec6a481ed7f0cc0f1612c3b0c253f7da4 pypy verify_py27 ensurepip
+pypy2-5.4.1	linux64	unsupported third-party build
 pypy2-5.4.1	linux-aarch64	no-binary
 pypy2-5.4.1-src	linux64	unsupported source build
 pypy2-5.4.1-src	linux-aarch64	unsupported source build
-pypy2-5.6.0	linux64	ok pypy-5.6-linux_x86_64-portable https://bitbucket-archive.softwareheritage.org/static/14/140b7b14-aa94-424e-b191-9cd3438381f7/attachments/pypy-5.6-linux_x86_64-portable.tar.bz2#9bd220bc54000e142bd4929435959305efeef8c832fbe3c907211cc5214095ce pypy verify_py27 ensurepip
+pypy2-5.6.0	linux64	unsupported third-party build
 pypy2-5.6.0	linux-aarch64	no-binary
 pypy2-5.6.0-src	linux64	unsupported source build
 pypy2-5.6.0-src	linux-aarch64	unsupported source build
-pypy2-5.7.0	linux64	ok pypy-5.7-linux_x86_64-portable https://bitbucket-archive.softwareheritage.org/static/14/140b7b14-aa94-424e-b191-9cd3438381f7/attachments/pypy-5.7-linux_x86_64-portable.tar.bz2#209d2224fe461d85afb201a0c8da18df21219687defadd4550b60420a120bacb pypy verify_py27 ensurepip
+pypy2-5.7.0	linux64	unsupported third-party build
 pypy2-5.7.0	linux-aarch64	no-binary
 pypy2-5.7.0-src	linux64	unsupported source build
 pypy2-5.7.0-src	linux-aarch64	unsupported source build
-pypy2-5.7.1	linux64	ok pypy-5.7.1-linux_x86_64-portable https://bitbucket-archive.softwareheritage.org/static/14/140b7b14-aa94-424e-b191-9cd3438381f7/attachments/pypy-5.7.1-linux_x86_64-portable.tar.bz2#8a6a194963eb58d582413c4bcdef6119f9f9f117a05032d1fb13192d934510c6 pypy verify_py27 ensurepip
+pypy2-5.7.1	linux64	unsupported third-party build
 pypy2-5.7.1	linux-aarch64	no-binary
 pypy2-5.7.1-src	linux64	unsupported source build
 pypy2-5.7.1-src	linux-aarch64	unsupported source build
-pypy2.7-5.10.0	linux64	ok pypy-5.10.0-linux_x86_64-portable https://bitbucket-archive.softwareheritage.org/static/14/140b7b14-aa94-424e-b191-9cd3438381f7/attachments/pypy-5.10.0-linux_x86_64-portable.tar.bz2#c966124497ba8728654ce1161fa4c46b035ff30f289be70960f58292e5897cc8 pypy verify_py27 ensurepip
+pypy2.7-5.10.0	linux64	unsupported third-party build
 pypy2.7-5.10.0	linux-aarch64	no-binary
 pypy2.7-5.10.0-src	linux64	unsupported source build
 pypy2.7-5.10.0-src	linux-aarch64	unsupported source build
-pypy2.7-5.8.0	linux64	ok pypy-5.8-linux_x86_64-portable https://bitbucket-archive.softwareheritage.org/static/14/140b7b14-aa94-424e-b191-9cd3438381f7/attachments/pypy-5.8-1-linux_x86_64-portable.tar.bz2#52556230af5769c656173ae8a1bdcb2e16aef46e3993ed89f3aec3d220aec862 pypy verify_py27 ensurepip
+pypy2.7-5.8.0	linux64	unsupported third-party build
 pypy2.7-5.8.0	linux-aarch64	no-binary
 pypy2.7-5.8.0-src	linux64	unsupported source build
 pypy2.7-5.8.0-src	linux-aarch64	unsupported source build
-pypy2.7-5.9.0	linux64	ok pypy-5.9-linux_x86_64-portable https://bitbucket-archive.softwareheritage.org/static/14/140b7b14-aa94-424e-b191-9cd3438381f7/attachments/pypy-5.9-linux_x86_64-portable.tar.bz2#8d39eb98df3adf7882a7f3551f47b8c7cff47a0e20d6aabc57bb592f155c2616 pypy verify_py27 ensurepip
+pypy2.7-5.9.0	linux64	unsupported third-party build
 pypy2.7-5.9.0	linux-aarch64	no-binary
 pypy2.7-5.9.0-src	linux64	unsupported source build
 pypy2.7-5.9.0-src	linux-aarch64	unsupported source build
-pypy2.7-6.0.0	linux64	ok pypy-6.0.0-linux_x86_64-portable https://bitbucket-archive.softwareheritage.org/static/14/140b7b14-aa94-424e-b191-9cd3438381f7/attachments/pypy-6.0.0-linux_x86_64-portable.tar.bz2#1d2a833680f9432b6b5f6b8503f656535f429eeb6c4bc5408abe5b637bfb9b94 pypy verify_py27 ensurepip
+pypy2.7-6.0.0	linux64	unsupported third-party build
 pypy2.7-6.0.0	linux-aarch64	no-binary
 pypy2.7-6.0.0-src	linux64	unsupported source build
 pypy2.7-6.0.0-src	linux-aarch64	unsupported source build
-pypy2.7-7.0.0	linux64	ok pypy-7.0.0-linux_x86_64-portable https://bitbucket-archive.softwareheritage.org/static/14/140b7b14-aa94-424e-b191-9cd3438381f7/attachments/pypy-7.0.0-linux_x86_64-portable.tar.bz2#fd71f2bef69c342e492239c2de04a67676bbc08b262d31948bef9e1385a44646 pypy verify_py27 ensurepip
+pypy2.7-7.0.0	linux64	unsupported third-party build
 pypy2.7-7.0.0	linux-aarch64	no-binary
 pypy2.7-7.0.0-src	linux64	unsupported source build
 pypy2.7-7.0.0-src	linux-aarch64	unsupported source build
-pypy2.7-7.1.0	linux64	ok pypy-7.1.0-linux_x86_64-portable https://bitbucket-archive.softwareheritage.org/static/14/140b7b14-aa94-424e-b191-9cd3438381f7/attachments/pypy-7.1.0-linux_x86_64-portable.tar.bz2#ee917d9d72fb6a7d15e31e6c5e470ce561a940f112e99f29ac5dd6b41f512657 pypy verify_py27 ensurepip
+pypy2.7-7.1.0	linux64	unsupported third-party build
 pypy2.7-7.1.0	linux-aarch64	no-binary
 pypy2.7-7.1.0-src	linux64	unsupported source build
 pypy2.7-7.1.0-src	linux-aarch64	unsupported source build
@@ -278,11 +278,11 @@ pypy2.7-8.0.0	linux64	ok pypy2.7-v8.0.0-linux64 https://downloads.python.org/pyp
 pypy2.7-8.0.0	linux-aarch64	ok pypy2.7-v8.0.0-aarch64 https://downloads.python.org/pypy/pypy2.7-v8.0.0-aarch64.tar.gz#9ece5a6f575514ed38dde663e7f54e59de01c35b2df6d1ef83e25490d6b7c7b8 pypy verify_py27 ensurepip_lt21
 pypy2.7-8.0.0-src	linux64	unsupported source build
 pypy2.7-8.0.0-src	linux-aarch64	unsupported source build
-pypy3-2.3.1	linux64	ok pypy3-2.3.1-linux_x86_64-portable https://bitbucket-archive.softwareheritage.org/static/14/140b7b14-aa94-424e-b191-9cd3438381f7/attachments/pypy3-2.3.1-linux_x86_64-portable.tar.bz2#cb56b5bde8f444d44a0ea9cd475ddeed00aa895f3dcc89fd37577a51439540aa pypy verify_py32 ensurepip
+pypy3-2.3.1	linux64	unsupported third-party build
 pypy3-2.3.1	linux-aarch64	no-binary
 pypy3-2.3.1-src	linux64	unsupported source build
 pypy3-2.3.1-src	linux-aarch64	unsupported source build
-pypy3-2.4.0	linux64	ok pypy3-2.4-linux_x86_64-portable https://bitbucket-archive.softwareheritage.org/static/14/140b7b14-aa94-424e-b191-9cd3438381f7/attachments/pypy3-2.4-linux_x86_64-portable.tar.bz2#7b3e0f0bc924bd0d68d85c0b566979e74a2b366595db3d81502267367370a5fb pypy verify_py32 ensurepip
+pypy3-2.4.0	linux64	unsupported third-party build
 pypy3-2.4.0	linux-aarch64	no-binary
 pypy3-2.4.0-src	linux64	unsupported source build
 pypy3-2.4.0-src	linux-aarch64	unsupported source build
@@ -350,55 +350,55 @@ pypy3.12-8.0.0	linux64	ok pypy3.12-v8.0.0-linux64 https://downloads.python.org/p
 pypy3.12-8.0.0	linux-aarch64	ok pypy3.12-v8.0.0-aarch64 https://downloads.python.org/pypy/pypy3.12-v8.0.0-aarch64.tar.gz#72de008683246b0c18aeb8e163dc5d022d3f19b001e8cc5c258010968f10e336 pypy verify_py312 ensurepip
 pypy3.12-8.0.0-src	linux64	unsupported source build
 pypy3.12-8.0.0-src	linux-aarch64	unsupported source build
-pypy3.3-5.2-alpha1	linux64	ok pypy3.3-5.2-alpha-20160602-linux_x86_64-portable https://bitbucket-archive.softwareheritage.org/static/14/140b7b14-aa94-424e-b191-9cd3438381f7/attachments/pypy3.3-5.2-alpha-20160602-linux_x86_64-portable.tar.bz2#4d1e7dd727448c1b2caa90c943713c0aa10b32e9d977c2c3b348835f515a3ad4 pypy verify_py33 ensurepip
+pypy3.3-5.2-alpha1	linux64	unsupported third-party build
 pypy3.3-5.2-alpha1	linux-aarch64	no-binary
 pypy3.3-5.2-alpha1-src	linux64	unsupported source build
 pypy3.3-5.2-alpha1-src	linux-aarch64	unsupported source build
-pypy3.3-5.5-alpha	linux64	ok pypy3.3-5.5-alpha-20161013-linux_x86_64-portable https://bitbucket-archive.softwareheritage.org/static/14/140b7b14-aa94-424e-b191-9cd3438381f7/attachments/pypy3.3-5.5-alpha-20161013-linux_x86_64-portable.tar.bz2#1cd7a00da376b2db29b3e1f3e9bb7a77afc8ad988b3f13fd0805f37b23960a34 pypy verify_py33 ensurepip
+pypy3.3-5.5-alpha	linux64	unsupported third-party build
 pypy3.3-5.5-alpha	linux-aarch64	no-binary
 pypy3.3-5.5-alpha-src	linux64	unsupported source build
 pypy3.3-5.5-alpha-src	linux-aarch64	unsupported source build
-pypy3.5-5.10.0	linux64	ok pypy3.5-5.10.0-linux_x86_64-portable https://bitbucket-archive.softwareheritage.org/static/14/140b7b14-aa94-424e-b191-9cd3438381f7/attachments/pypy3.5-5.10.0-linux_x86_64-portable.tar.bz2#d03f81f26e5e67d808569c5c69d56ceb007df78f7e36ab1c50da4d9096cebde0 pypy verify_py35 ensurepip
+pypy3.5-5.10.0	linux64	unsupported third-party build
 pypy3.5-5.10.0	linux-aarch64	no-binary
 pypy3.5-5.10.0-src	linux64	unsupported source build
 pypy3.5-5.10.0-src	linux-aarch64	unsupported source build
-pypy3.5-5.10.1	linux64	ok pypy3.5-5.10.1-linux_x86_64-portable https://bitbucket-archive.softwareheritage.org/static/14/140b7b14-aa94-424e-b191-9cd3438381f7/attachments/pypy3.5-5.10.1-linux_x86_64-portable.tar.bz2#b7c7b0e0905208ce8a8061b1a0ae136a702e5218d0d350cb5216ad5a7c20d12e pypy verify_py35 ensurepip
+pypy3.5-5.10.1	linux64	unsupported third-party build
 pypy3.5-5.10.1	linux-aarch64	no-binary
 pypy3.5-5.10.1-src	linux64	unsupported source build
 pypy3.5-5.10.1-src	linux-aarch64	unsupported source build
-pypy3.5-5.7-beta	linux64	ok pypy3.5-5.7-beta-linux_x86_64-portable https://bitbucket-archive.softwareheritage.org/static/14/140b7b14-aa94-424e-b191-9cd3438381f7/attachments/pypy3.5-5.7-beta-linux_x86_64-portable.tar.bz2#d289ff7c32fd4263c3889994c8191c626891513e8ab60a65ba41a58b331db92c pypy verify_py35 ensurepip
+pypy3.5-5.7-beta	linux64	unsupported third-party build
 pypy3.5-5.7-beta	linux-aarch64	no-binary
 pypy3.5-5.7-beta-src	linux64	unsupported source build
 pypy3.5-5.7-beta-src	linux-aarch64	unsupported source build
-pypy3.5-5.7.1-beta	linux64	ok pypy3.5-5.7.1-beta-linux_x86_64-portable https://bitbucket-archive.softwareheritage.org/static/14/140b7b14-aa94-424e-b191-9cd3438381f7/attachments/pypy3.5-5.7.1-beta-linux_x86_64-portable.tar.bz2#3d1b02f6ef50d4e9069885e0b3f19f26491c7f4f9c5ccc8aa118e38fd6a23997 pypy verify_py35 ensurepip
+pypy3.5-5.7.1-beta	linux64	unsupported third-party build
 pypy3.5-5.7.1-beta	linux-aarch64	no-binary
 pypy3.5-5.7.1-beta-src	linux64	unsupported source build
 pypy3.5-5.7.1-beta-src	linux-aarch64	unsupported source build
-pypy3.5-5.8.0	linux64	ok pypy3.5-5.8-beta-linux_x86_64-portable https://bitbucket-archive.softwareheritage.org/static/14/140b7b14-aa94-424e-b191-9cd3438381f7/attachments/pypy3.5-5.8-1-beta-linux_x86_64-portable.tar.bz2#cab20a6d315a1bb05aa953ebc37d8deaa34dcbe298cb5938e373c42c05542b99 pypy verify_py35 ensurepip
+pypy3.5-5.8.0	linux64	unsupported third-party build
 pypy3.5-5.8.0	linux-aarch64	no-binary
 pypy3.5-5.8.0-src	linux64	unsupported source build
 pypy3.5-5.8.0-src	linux-aarch64	unsupported source build
-pypy3.5-5.9.0	linux64	ok pypy3.5-5.9-beta-linux_x86_64-portable https://bitbucket-archive.softwareheritage.org/static/14/140b7b14-aa94-424e-b191-9cd3438381f7/attachments/pypy3.5-5.9-beta-linux_x86_64-portable.tar.bz2#b0a79dabe2c48b0374d567936139ecf1379904a504d4a645be5c3e7e35140575 pypy verify_py35 ensurepip
+pypy3.5-5.9.0	linux64	unsupported third-party build
 pypy3.5-5.9.0	linux-aarch64	no-binary
 pypy3.5-5.9.0-src	linux64	unsupported source build
 pypy3.5-5.9.0-src	linux-aarch64	unsupported source build
-pypy3.5-6.0.0	linux64	ok pypy3.5-6.0.0-linux_x86_64-portable https://bitbucket-archive.softwareheritage.org/static/14/140b7b14-aa94-424e-b191-9cd3438381f7/attachments/pypy3.5-6.0.0-linux_x86_64-portable.tar.bz2#07f16282d126abfa759702baea869b0f661aa97f4c553ebec66c624bda28155f pypy verify_py35 ensurepip
+pypy3.5-6.0.0	linux64	unsupported third-party build
 pypy3.5-6.0.0	linux-aarch64	no-binary
 pypy3.5-6.0.0-src	linux64	unsupported source build
 pypy3.5-6.0.0-src	linux-aarch64	unsupported source build
-pypy3.5-7.0.0	linux64	ok pypy3.5-7.0.0-linux_x86_64-portable https://bitbucket-archive.softwareheritage.org/static/14/140b7b14-aa94-424e-b191-9cd3438381f7/attachments/pypy3.5-7.0.0-linux_x86_64-portable.tar.bz2#b0fa200f25a5a0ef90b8776ab1d0665c47d47c607d2ef057cce1da1ad2568e1f pypy verify_py35 ensurepip
+pypy3.5-7.0.0	linux64	unsupported third-party build
 pypy3.5-7.0.0	linux-aarch64	no-binary
 pypy3.5-7.0.0-src	linux64	unsupported source build
 pypy3.5-7.0.0-src	linux-aarch64	unsupported source build
-pypy3.6-7.0.0	linux64	ok pypy3.6-7.0.0-alpha-20190209-linux_x86_64-portable https://bitbucket-archive.softwareheritage.org/static/14/140b7b14-aa94-424e-b191-9cd3438381f7/attachments/pypy3.6-7.0.0-alpha-20190209-linux_x86_64-portable.tar.bz2#ef8a5254b9a082dec23a6e029b1bb674a122a789c29d9c452452a9e97498bcbe pypy verify_py36 ensurepip
+pypy3.6-7.0.0	linux64	unsupported third-party build
 pypy3.6-7.0.0	linux-aarch64	no-binary
 pypy3.6-7.0.0-src	linux64	unsupported source build
 pypy3.6-7.0.0-src	linux-aarch64	unsupported source build
-pypy3.6-7.1.0	linux64	ok pypy3.6-7.1.0-beta-linux_x86_64-portable https://bitbucket-archive.softwareheritage.org/static/14/140b7b14-aa94-424e-b191-9cd3438381f7/attachments/pypy3.6-7.1.0-beta-linux_x86_64-portable.tar.bz2#d1bde814fb0c3645dfc0bdab67c335c8aa259b83fb39106e2e11b0112bcbb602 pypy verify_py36 ensurepip
+pypy3.6-7.1.0	linux64	unsupported third-party build
 pypy3.6-7.1.0	linux-aarch64	no-binary
 pypy3.6-7.1.0-src	linux64	unsupported source build
 pypy3.6-7.1.0-src	linux-aarch64	unsupported source build
-pypy3.6-7.1.1	linux64	ok pypy3.6-7.1.1-beta-linux_x86_64-portable https://bitbucket-archive.softwareheritage.org/static/14/140b7b14-aa94-424e-b191-9cd3438381f7/attachments/pypy3.6-7.1.1-beta-linux_x86_64-portable.tar.bz2#82c878b61ad34fc2cf1686fa600a7a002d352e1b33a99a43007eec486ecd068e pypy verify_py36 ensurepip
+pypy3.6-7.1.1	linux64	unsupported third-party build
 pypy3.6-7.1.1	linux-aarch64	no-binary
 pypy3.6-7.1.1-src	linux64	unsupported source build
 pypy3.6-7.1.1-src	linux-aarch64	unsupported source build

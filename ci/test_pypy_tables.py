@@ -138,6 +138,15 @@ def page(pairs, filler=t.MIN_PAGE_HASHES):
     return '<html><head><meta content="x"></head><body><p>pypy sha256:</p><pre>' + "\n".join(lines) + "</pre></body></html>"
 
 
+class ThirdParty(unittest.TestCase):
+    def test_an_ok_verdict_off_pypys_folder_is_a_third_party_build(self):
+        good = f"ok pypy-v1-linux64 {t.DOWNLOADS}pypy-v1-linux64.tar.bz2#{SHA} pypy"
+        bad = f"ok portable-pypy-1 https://bitbucket-archive.softwareheritage.org/x/pypy-1-linux_x86_64-portable.tar.bz2#{SHA} pypy"
+        rows = t.linux_rows(["a", "b"], {("a", "linux64"): good, ("a", "linux-aarch64"): "no-binary",
+                                         ("b", "linux64"): bad, ("b", "linux-aarch64"): "no-binary"})
+        self.assertEqual([v for _, _, v in rows], [good, "no-binary", "unsupported third-party build", "no-binary"])
+
+
 class Page(unittest.TestCase):
     def test_the_saved_page_parses_into_its_pairs(self):
         # 1021 on 2026-10-14 (C:\tmp\m7_page_count.py); the Rust parser pins the same number.
@@ -166,14 +175,21 @@ class Windows(unittest.TestCase):
         vj = '[{"pypy_version":"7.3.99","python_version":"3.11.9","files":[' \
              '{"filename":"pypy3.11-v7.3.99-win64.zip","arch":"x64","platform":"win64","download_url":"https://downloads.python.org/pypy/pypy3.11-v7.3.99-win64.zip"},' \
              '{"filename":"pypy-c-jit-latest-win64.zip","arch":"x64","platform":"win64","download_url":"https://downloads.python.org/pypy/pypy-c-jit-latest-win64.zip"}]}]'
-        self.assertEqual(t.windows_rows(vj, {}), [])
-        self.assertEqual(t.windows_rows(vj, {"pypy3.11-v7.3.99-win64.zip": SHA}),
+        self.assertEqual(t.windows_rows(vj, {}, minimum=0), [])
+        self.assertEqual(t.windows_rows(vj, {"pypy3.11-v7.3.99-win64.zip": SHA}, minimum=0),
                          [("pypy3.11-v7.3.99-win64", "https://downloads.python.org/pypy/pypy3.11-v7.3.99-win64.zip", SHA)])
+
+    def test_a_reshaped_versions_json_fails_before_anything_is_written(self):
+        # The saved file with `files` renamed: no zips at all.
+        reshaped = read("versions.json").replace('"files"', '"assets"')
+        with self.assertRaisesRegex(ValueError, "fewer than 50: has its layout changed"):
+            t.windows_rows(reshaped, t.page_hashes(read("checksums.html")))
+        self.assertEqual(t.MIN_WINDOWS_ROWS, 50)
 
     def test_a_download_url_off_pypys_folder_fails(self):
         vj = '[{"files":[{"filename":"pypy3.11-v7.3.99-win64.zip","download_url":"https://evil.example/pypy3.11-v7.3.99-win64.zip"}]}]'
         with self.assertRaisesRegex(ValueError, "not under https://downloads.python.org/pypy/"):
-            t.windows_rows(vj, {"pypy3.11-v7.3.99-win64.zip": SHA})
+            t.windows_rows(vj, {"pypy3.11-v7.3.99-win64.zip": SHA}, minimum=0)
 
 
 class CrossCheck(unittest.TestCase):
@@ -194,6 +210,21 @@ class CrossCheck(unittest.TestCase):
         errs = t.check_linux(self.rows(), {}, set(), set())
         self.assertIn("not in linux-unpublished.txt", errs[0])
         self.assertEqual(t.check_linux(self.rows(), {}, {"pypy3.11-v7.3.99-linux64.tar.bz2"}, set()), [])
+
+    def test_a_third_party_row_needs_no_listing(self):
+        sums = {"pypy3.11-v7.3.99-linux64.tar.bz2": SHA}
+        extra = [("pypy-old", "linux64", "unsupported third-party build")]
+        self.assertEqual(t.check_linux(self.rows(extra=extra), sums, set(), set()), [])
+
+    def test_the_architecture_must_match_the_file(self):
+        aarch = "https://downloads.python.org/pypy/pypy3.11-v7.3.99-aarch64.tar.bz2"
+        sums = {"pypy3.11-v7.3.99-linux64.tar.bz2": SHA, "pypy3.11-v7.3.99-aarch64.tar.bz2": SHA}
+        rows = [("n", "linux64", f"ok c {aarch}#{SHA} pypy"), ("n", "linux-aarch64", f"ok c {self.URL}#{SHA} pypy")]
+        errs = t.check_linux(rows, sums, set(), set())
+        self.assertEqual(len(errs), 2, errs)
+        self.assertIn("linux64 row names an aarch64 file", errs[0])
+        self.assertIn("linux-aarch64 row names a file without aarch64", errs[1])
+        self.assertEqual(t.check_linux([("n", "linux-aarch64", f"ok c {aarch}#{SHA} pypy")], sums, set(), set()), [])
 
     def test_an_unexpected_stub_gap_fails_and_stale_list_entries_fail(self):
         gap = [("pypy-dev", "linux64", "unsupported calls install_nightly_package")]

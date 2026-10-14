@@ -69,18 +69,31 @@ pub struct LinuxRow {
     pub verdict: Verdict,
 }
 
-/// `linux.tsv`: `#` comments, then `<name>\t<arch>\t<verdict>` lines.
+/// `linux.tsv`: `#` comments, then `<name>\t<arch>\t<verdict>` lines. An `ok` row's URL must
+/// be under pypy.org's downloads folder (the trust rule `parse_windows` applies).
 pub fn parse_linux(text: &str) -> Result<Vec<LinuxRow>, String> {
+    parse_linux_with(text, true)
+}
+
+fn parse_linux_with(text: &str, trusted_only: bool) -> Result<Vec<LinuxRow>, String> {
     text.lines()
         .filter(|l| !l.is_empty() && !l.starts_with('#'))
         .map(|l| {
             let mut f = l.splitn(3, '\t');
             match (f.next(), f.next(), f.next()) {
                 (Some(name), Some(arch), Some(v)) if !name.is_empty() && !arch.is_empty() => {
+                    let verdict = parse_verdict(v)?;
+                    if let Verdict::Ok { url, .. } = &verdict {
+                        if trusted_only && !url.starts_with(&format!("{DOWNLOADS}/")) {
+                            return Err(format!(
+                                "linux.tsv: {name} {arch} names a file outside {DOWNLOADS}/"
+                            ));
+                        }
+                    }
                     Ok(LinuxRow {
                         name: name.to_string(),
                         arch: arch.to_string(),
-                        verdict: parse_verdict(v)?,
+                        verdict,
                     })
                 }
                 _ => Err(format!("unreadable linux.tsv line: {l}")),
@@ -134,7 +147,10 @@ fn table_text(file: &str, embedded: &'static str) -> Result<String, String> {
 }
 
 pub fn linux_table() -> Result<Vec<LinuxRow>, String> {
-    parse_linux(&table_text("linux.tsv", LINUX_TSV)?)
+    // A test table points `ok` rows at a local server, so the folder rule is for the embedded one.
+    let overridden = cfg!(debug_assertions)
+        && std::env::var_os("RPYENV_TEST_PYPY_TABLES").is_some_and(|v| !v.is_empty());
+    parse_linux_with(&table_text("linux.tsv", LINUX_TSV)?, !overridden)
 }
 
 pub fn windows_table() -> Result<Vec<WinRow>, String> {
@@ -341,7 +357,7 @@ mod tests {
 
     #[test]
     fn tables_parse_and_refuse_malformed_lines() {
-        let linux = format!("# c\npypy3.11-7.3.99\tlinux64\tok p https://x/p.tar.bz2#{SHA} pypy\npypy3.11-7.3.99\tlinux-aarch64\tno-binary\n");
+        let linux = format!("# c\npypy3.11-7.3.99\tlinux64\tok p {DOWNLOADS}/p.tar.bz2#{SHA} pypy\npypy3.11-7.3.99\tlinux-aarch64\tno-binary\n");
         let rows = parse_linux(&linux).unwrap();
         assert_eq!(
             linux_verdict(&rows, "pypy3.11-7.3.99", "linux-aarch64"),
@@ -349,6 +365,13 @@ mod tests {
         );
         assert_eq!(linux_verdict(&rows, "pypy3.11-7.3.99", "s390x"), None);
         assert!(parse_linux("pypy3.11-7.3.99\tlinux64\n").is_err());
+        // A third-party URL (squeaky-pl's portable builds) is refused, as parse_windows does.
+        let third = format!("pypy-5.7.1\tlinux64\tok p https://bitbucket-archive.softwareheritage.org/p.tar.bz2#{SHA} pypy\n");
+        assert!(parse_linux(&third).unwrap_err().contains("outside"));
+        let look_alike =
+            format!("pypy-5.7.1\tlinux64\tok p {DOWNLOADS}.evil.example/p.tar.bz2#{SHA} pypy\n");
+        assert!(parse_linux(&look_alike).is_err());
+        assert!(parse_linux("pypy-5.7.1\tlinux64\tunsupported third-party build\n").is_ok());
         let code = "pypy3.11-v7.3.99-win64";
         let win = format!("{code}\t{DOWNLOADS}/{code}.zip\t{SHA}\n");
         assert_eq!(parse_windows(&win).unwrap()[0].code, code);
