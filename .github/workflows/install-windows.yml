@@ -22,9 +22,9 @@ jobs:
           EVENT: ${{ github.event_name }}
         run: |
           if [ "$EVENT" = "pull_request" ]; then
-            echo 'versions=["3.10.11","3.12.10"]' >> "$GITHUB_OUTPUT"
+            echo 'versions=["3.10.11","3.12.10","pypy"]' >> "$GITHUB_OUTPUT"
           else
-            echo 'versions=["2.7.18","3.4.4","3.5.2","3.10.11","3.12.5","3.12.10","3.13.0t","3.14.0"]' >> "$GITHUB_OUTPUT"
+            echo 'versions=["2.7.18","3.4.4","3.5.2","3.10.11","3.12.5","3.12.10","3.13.0t","3.14.0","pypy"]' >> "$GITHUB_OUTPUT"
           fi
 
   install:
@@ -60,6 +60,11 @@ jobs:
           $pyenv = 'target\release\pyenv.exe'
           & $pyenv update
           if ($LASTEXITCODE) { exit 1 }
+          if ($env:VERSION -eq 'pypy') {
+            # M7a design §8: the newest pypy3.11 code pyenv update listed.
+            $env:VERSION = (& $pyenv install --list | Select-String '^pypy3\.11-v' | Select-Object -Last 1).Line.Trim()
+            if (-not $env:VERSION) { Write-Error 'no pypy3.11 code listed'; exit 1 }
+          }
           $start = Get-Date
           & $pyenv install $env:VERSION
           $code = $LASTEXITCODE

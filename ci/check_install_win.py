@@ -16,9 +16,15 @@ import subprocess
 import sys
 import tempfile
 
+# A pyenv-win PyPy code (M7a design §5.1).
+PYPY = re.compile(r"^pypy(\d+)\.(\d+)-v[\d.]+-win64$")
+
 
 def parse(code):
-    """(major, minor, free-threaded) of a pyenv-win version code."""
+    """(major, minor, free-threaded) of a pyenv-win version code, CPython or PyPy."""
+    m = PYPY.match(code)
+    if m:
+        return int(m.group(1)), int(m.group(2)), False
     m = re.match(r"^(\d+)\.(\d+)(?:\.\d+)?(?:(?:a|b|c|rc)\d+)?(t)?(?:-win32|-arm)?$", code)
     if not m:
         raise SystemExit(f"not a version code: {code}")
@@ -37,8 +43,10 @@ GIL_PROBE = (
 
 
 def expected_version(code):
-    """'X.Y.Z' for a three-part code, 'X.Y' for a two-part one (compare major.minor only)."""
-    parse(code)
+    """'X.Y.Z' for a three-part code, 'X.Y' for a two-part one or a PyPy code (compare major.minor only)."""
+    x, y, _ = parse(code)
+    if PYPY.match(code):
+        return f"{x}.{y}"
     m = re.match(r"^(\d+\.\d+(?:\.\d+)?)", code)
     return m.group(1)
 
@@ -48,7 +56,9 @@ def version_matches(code, actual):
     return actual == want or (want.count(".") == 1 and actual.startswith(want + "."))
 
 
-def modules(x, y):
+def modules(x, y, pypy=False):
+    if pypy:
+        return ["zlib", "bz2", "ctypes", "ssl", "sqlite3", "venv"]
     if x == 2 and y < 6:
         return ["zlib", "Tkinter"]
     if x == 2:
@@ -59,7 +69,10 @@ def modules(x, y):
     return mods
 
 
-def copies(x, y):
+def copies(x, y, pypy=False):
+    if pypy:
+        # The zip's own executables (M7a design §3); rpyenv makes no copies (allowlist D-104).
+        return ["python.exe", "python3.exe", f"python{x}.{y}.exe", f"pypy{x}.{y}.exe"]
     return ["python.exe", f"python{x}.exe", f"python{x}{y}.exe", f"python{x}.{y}.exe"]
 
 
@@ -73,6 +86,7 @@ def run(cmd, env=None):
 
 def main(root, code):
     x, y, ft = parse(code)
+    pypy = bool(PYPY.match(code))
     versions = os.path.join(root, "versions")
     prefix = os.path.join(versions, code)
     fails = []
@@ -83,14 +97,14 @@ def main(root, code):
     stray = [n for n in os.listdir(versions) if n.startswith((".tmp-", ".old-"))]
     if stray:
         fails.append(f"staging leftovers: {stray}")
-    for name in copies(x, y):
+    for name in copies(x, y, pypy):
         if not os.path.isfile(os.path.join(prefix, name)):
             fails.append(f"missing {name}")
     py = os.path.join(prefix, "python.exe")
     env = dict(os.environ, PYTHONNOUSERSITE="1")
     env.pop("PYTHONHOME", None)
     env.pop("PYTHONPATH", None)
-    rc, out = run([py, "-E", "-s", "-c", "import " + ", ".join(modules(x, y))], env)
+    rc, out = run([py, "-E", "-s", "-c", "import " + ", ".join(modules(x, y, pypy))], env)
     if rc:
         fails.append(f"imports failed: {out}")
     rc, out = run([py, "-E", "-s", "-c", "import sys; print('%d.%d.%d' % sys.version_info[:3])"], env)
@@ -100,7 +114,7 @@ def main(root, code):
     if rc or (out == "1") != ft:
         fails.append(f"free-threaded mismatch: Py_GIL_DISABLED={out!r} (rc {rc}), expected {'1' if ft else 'not 1'}")
     outs = {}
-    for name in copies(x, y):
+    for name in copies(x, y, pypy):
         rc, out = run([os.path.join(prefix, name), "-E", "-s", "-c", "import sys; print(sys.version)"], env)
         if rc:
             fails.append(f"{name} did not run (rc {rc}): {out}")

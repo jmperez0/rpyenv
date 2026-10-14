@@ -5,16 +5,23 @@ set -euo pipefail
 root="$1"
 v="$2"
 p="$root/versions/$v"
-xy=$(echo "$v" | sed -E 's/^([0-9]+\.[0-9]+).*/\1/')
-major=${xy%%.*}
-minor=${xy#*.}
-# A free-threaded build ("3.14.7t") installs python3.14t, not python3.14.
-name="python$xy"
-case "$v" in *t) name="python${xy}t" ;; esac
+case "$v" in
+  pypy*)
+    # PyPy (M7a design §8): bin/python is upstream's link to bin/pypy*, the shim checked is
+    # `python`, and its module set is smaller.
+    name=python
+    mods="ssl, sqlite3, ctypes, zlib, bz2" ;;
+  *)
+    xy=$(echo "$v" | sed -E 's/^([0-9]+\.[0-9]+).*/\1/')
+    major=${xy%%.*}
+    minor=${xy#*.}
+    # A free-threaded build ("3.14.7t") installs python3.14t, not python3.14.
+    name="python$xy"
+    case "$v" in *t) name="python${xy}t" ;; esac
+    mods="ssl, sqlite3, lzma, ctypes, bz2, zlib, readline, curses, tkinter, uuid, _decimal, pyexpat"
+    if [ "$major" -eq 3 ] && [ "$minor" -ge 14 ]; then mods="$mods, compression.zstd"; fi ;;
+esac
 py="$p/bin/$name"
-
-mods="ssl, sqlite3, lzma, ctypes, bz2, zlib, readline, curses, tkinter, uuid, _decimal, pyexpat"
-if [ "$major" -eq 3 ] && [ "$minor" -ge 14 ]; then mods="$mods, compression.zstd"; fi
 "$py" -c "import $mods; print('modules ok')"
 
 # Every script in bin/ with a shebang must name an interpreter that this install provides;
