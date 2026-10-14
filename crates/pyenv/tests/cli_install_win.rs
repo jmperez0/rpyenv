@@ -271,6 +271,7 @@ fn table_row(sha: &str) -> Option<String> {
     ))
 }
 
+// allowlist D-104
 #[test]
 fn a_pypy_code_installs_from_the_table() {
     let f = Fixture::new();
@@ -354,6 +355,7 @@ fn a_file_the_page_has_no_hash_for_is_refused() {
     );
 }
 
+// allowlist D-105
 #[test]
 fn a_pypy_zip_with_another_hash_is_refused_and_not_cached() {
     let f = Fixture::new();
