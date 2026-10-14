@@ -109,6 +109,86 @@ class LinuxTable(unittest.TestCase):
         self.assertIn("pypy3.11-7.3.99-src\tlinux64\tunsupported source build\n", text)
 
 
+FIXTURES = os.path.join(t.REPO, "crates", "pyenv", "tests", "fixtures", "pypy")
+
+
+def read(name):
+    with open(os.path.join(FIXTURES, name), encoding="utf-8") as f:
+        return f.read()
+
+
+def page(pairs, filler=t.MIN_PAGE_HASHES):
+    """A checksum page: `pairs` plus `filler` unrelated entries, in pypy.org's markup."""
+    lines = [f"{h}  {n}" for n, h in pairs] + [f"{i:064x}  pypy0.0-v0.0.{i}-filler.tar.bz2" for i in range(filler)]
+    return '<html><head><meta content="x"></head><body><p>pypy sha256:</p><pre>' + "\n".join(lines) + "</pre></body></html>"
+
+
+class Page(unittest.TestCase):
+    def test_the_saved_page_parses_into_its_pairs(self):
+        # 1021 on 2026-10-14 (C:\tmp\m7_page_count.py); the Rust parser pins the same number.
+        self.assertEqual(len(t.page_hashes(read("checksums.html"))), 1021)
+
+    def test_tags_split_words_and_two_values_for_one_file_fail(self):
+        self.assertEqual(t.page_hashes(page([("pypy3.11-v7.3.99-win64.zip", SHA)]))["pypy3.11-v7.3.99-win64.zip"], SHA)
+        with self.assertRaisesRegex(ValueError, "two SHA-256 values"):
+            t.page_hashes(page([("pypy3.11-v7.3.99-win64.zip", SHA), ("pypy3.11-v7.3.99-win64.zip", OTHER)]))
+
+    def test_a_page_with_few_pairs_means_the_layout_changed(self):
+        with self.assertRaisesRegex(ValueError, "fewer than 500"):
+            t.page_hashes(page([("pypy3.11-v7.3.99-win64.zip", SHA)], filler=10))
+
+
+class Windows(unittest.TestCase):
+    def test_the_saved_files_give_pyenv_win_codes_in_pyenv_wins_order(self):
+        rows = t.windows_rows(read("versions.json"), t.page_hashes(read("checksums.html")))
+        self.assertEqual(len(rows), 57)
+        codes = [c for c, _, _ in rows]
+        self.assertLess(codes.index("pypy3.10-v7.3.19-win64"), codes.index("pypy3.11-v7.3.18-win64"))
+        self.assertLess(codes.index("pypy2.7-v7.3.9-win64"), codes.index("pypy2.7-v7.3.10-win64"))
+        self.assertTrue(all(u == f"https://downloads.python.org/pypy/{c}.zip" for c, u, _ in rows))
+
+    def test_a_file_without_a_published_hash_gets_no_row(self):
+        vj = '[{"pypy_version":"7.3.99","python_version":"3.11.9","files":[' \
+             '{"filename":"pypy3.11-v7.3.99-win64.zip","arch":"x64","platform":"win64","download_url":"https://downloads.python.org/pypy/pypy3.11-v7.3.99-win64.zip"},' \
+             '{"filename":"pypy-c-jit-latest-win64.zip","arch":"x64","platform":"win64","download_url":"https://downloads.python.org/pypy/pypy-c-jit-latest-win64.zip"}]}]'
+        self.assertEqual(t.windows_rows(vj, {}), [])
+        self.assertEqual(t.windows_rows(vj, {"pypy3.11-v7.3.99-win64.zip": SHA}),
+                         [("pypy3.11-v7.3.99-win64", "https://downloads.python.org/pypy/pypy3.11-v7.3.99-win64.zip", SHA)])
+
+    def test_a_download_url_off_pypys_folder_fails(self):
+        vj = '[{"files":[{"filename":"pypy3.11-v7.3.99-win64.zip","download_url":"https://evil.example/pypy3.11-v7.3.99-win64.zip"}]}]'
+        with self.assertRaisesRegex(ValueError, "not under https://downloads.python.org/pypy/"):
+            t.windows_rows(vj, {"pypy3.11-v7.3.99-win64.zip": SHA})
+
+
+class CrossCheck(unittest.TestCase):
+    URL = "https://downloads.python.org/pypy/pypy3.11-v7.3.99-linux64.tar.bz2"
+
+    def rows(self, sha=SHA, extra=()):
+        return [("pypy3.11-7.3.99", "linux64", f"ok pypy3.11-v7.3.99-linux64 {self.URL}#{sha} pypy verify_py311 ensurepip"),
+                ("pypy3.11-7.3.99", "linux-aarch64", "no-binary"), *extra]
+
+    def test_a_published_hash_must_match(self):
+        sums = {"pypy3.11-v7.3.99-linux64.tar.bz2": SHA}
+        self.assertEqual(t.check_linux(self.rows(), sums, set(), set()), [])
+        errs = t.check_linux(self.rows(OTHER), sums, set(), set())
+        self.assertEqual(len(errs), 1)
+        self.assertIn("differs from pypy.org's", errs[0])
+
+    def test_a_file_missing_from_the_page_must_be_listed(self):
+        errs = t.check_linux(self.rows(), {}, set(), set())
+        self.assertIn("not in linux-unpublished.txt", errs[0])
+        self.assertEqual(t.check_linux(self.rows(), {}, {"pypy3.11-v7.3.99-linux64.tar.bz2"}, set()), [])
+
+    def test_an_unexpected_stub_gap_fails_and_stale_list_entries_fail(self):
+        gap = [("pypy-dev", "linux64", "unsupported calls install_nightly_package")]
+        sums = {"pypy3.11-v7.3.99-linux64.tar.bz2": SHA}
+        self.assertIn("add a stub, or list it", t.check_linux(self.rows(extra=gap), sums, set(), set())[0])
+        self.assertEqual(t.check_linux(self.rows(extra=gap), sums, set(), {"pypy-dev"}), [])
+        stale = t.check_linux(self.rows(), sums, {"gone.tar.bz2"}, {"pypy-gone"})
+        self.assertEqual(sorted(e.split(":")[0] for e in stale), ["linux-unpublished.txt", "linux-unsupported.txt"])
+
+
 def engine():
     for e in ("docker", "podman"):
         if shutil.which(e) and subprocess.run([e, "info"], capture_output=True).returncode == 0:
