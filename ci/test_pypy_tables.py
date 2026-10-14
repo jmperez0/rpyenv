@@ -49,7 +49,22 @@ esac
 """ % SHA
 
 
-@unittest.skipUnless(shutil.which("bash"), "needs bash")
+def bash_works():
+    # shutil.which can find Windows' bash.exe, the WSL launcher: it runs `bash -c`, but cannot
+    # open a script given as a Windows path (exit 127). So probe the way the tests call bash.
+    p = shutil.which("bash")
+    if not p:
+        return False
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            script = os.path.join(d, "probe.sh")
+            with open(script, "w", encoding="utf-8", newline="\n") as f:
+                f.write("exit 0\n")
+            return subprocess.run([p, script], capture_output=True).returncode == 0
+    except OSError:
+        return False
+
+@unittest.skipUnless(bash_works(), "needs a working bash")
 class Evaluator(unittest.TestCase):
     def verdict(self, files, name, arch="linux64"):
         with tempfile.TemporaryDirectory() as d:
@@ -89,7 +104,7 @@ class Evaluator(unittest.TestCase):
         self.assertEqual(self.verdict({"pypy-x": bare}, "pypy-x"), "unsupported no sha256 in https://x/a.tar.bz2")
 
 
-@unittest.skipUnless(shutil.which("bash"), "needs bash")
+@unittest.skipUnless(bash_works(), "needs a working bash")
 class LinuxTable(unittest.TestCase):
     def test_rows_cover_every_definition_and_architecture_in_order(self):
         with tempfile.TemporaryDirectory() as d:
