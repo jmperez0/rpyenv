@@ -54,23 +54,24 @@ repeats the evaluation and cross-check on the pinned copy.
 1. **Vendoring.** Every upstream `pypy*` definition is copied into
    `crates/pyenv/python-build/share/`, `-src` ones included, so `install --list`
    matches upstream. PyPy patches are not copied (they serve source builds only).
-2. **Evaluation.** `ci/eval_pypy_defs.sh` sources each binary definition with stub
+2. **Evaluation.** `crates/pyenv/src/install/pypy_eval.sh` (run by `ci/pypy_tables.py`)
+   sources each binary definition with stub
    python-build functions, once per architecture (`linux64`, `linux-aarch64`), and
    prints what it would install. It runs in a container started with
    `--network none` and the definitions mounted read-only (podman locally, docker on
    the runner); the stubs download nothing.
-3. **Output.** `crates/pyenv/python-build/pypy-linux.tsv`, one row per vendored `pypy*`
+3. **Output.** `crates/pyenv/pypy/linux.tsv`, one row per vendored `pypy*`
    name and architecture, with a status:
    - `ok`: package directory, URL, SHA-256, build steps (`pypy verify_pyXY ensurepip`);
    - `no-binary`: the definition stopped on upstream's "binary not available" error;
    - `unsupported`: `-src`, or a definition that called a function the stubs lack
      (nightlies, `pypy-dev`).
    The §6 refusal for a name comes from its status. `unsupported` is allowed only for
-   `-src` names and the names listed in `pypy-linux-unsupported.txt` (from the first
+   `-src` names and the names listed in `crates/pyenv/pypy/linux-unsupported.txt` (from the first
    run: the nightlies and `pypy-dev` of §3); any other stub gap fails the job.
 4. **Cross-check.** The job fetches pypy.org's `checksums.html`. A row whose file is on
    the page must carry the same SHA-256, or the job fails. A row whose file is not on
-   the page must be listed in `crates/pyenv/python-build/pypy-linux-unpublished.txt`
+   the page must be listed in `crates/pyenv/pypy/linux-unpublished.txt`
    (created from the first run: the 63 rows of §3), or the job fails.
 5. Any failure stops the job before a pull request is opened, so a changed definition
    shape, stub gap or page layout fails in CI, never on a user's machine.
@@ -86,7 +87,7 @@ repeats the evaluation and cross-check on the pinned copy.
 - **A user's own PyPy definition** (a `pypy*` name found in `PYTHON_BUILD_DEFINITIONS`,
   a plugin, or given as a path) that the interpreter does not accept is evaluated at
   run time: rpyenv runs
-  `bash` with the same stub script (embedded from `ci/eval_pypy_defs.sh`) and the
+  `bash` with the same stub script (`pypy_eval.sh`, embedded in the binary) and the
   host's architecture, and takes the one row it prints. Upstream sources definitions
   with bash too, so this adds no new trust. Without `bash`, the error names the file.
 
@@ -111,7 +112,7 @@ New step `pypy` (upstream's `build_package_pypy`):
 ### 5.1 The table and `update`
 
 - The same sync job reads `versions.json` (files, versions) and `checksums.html`
-  (hashes) and writes `crates/pyenv/python-build/pypy-windows.tsv`: pyenv-win code,
+  (hashes) and writes `crates/pyenv/pypy/windows.tsv`: pyenv-win code,
   URL, SHA-256. A file without a hash on the page gets no row. The code is pyenv-win's:
   the zip's file name without `.zip`, for files pyenv-win's own pattern accepts
   (`pypy<X.Y>-v<version>-win64`).
@@ -158,9 +159,11 @@ Each names the version, exits 1, and leaves nothing in `versions/`.
   covers the PyPy lines.
 - **D-79** (Windows `update`): the PyPy half closes; GraalPy stays.
 - **D-82** (Windows `install`): narrowed to GraalPy.
-- **New rows (Windows):** rpyenv makes no `python<pypy…>.exe` copies (pyenv-win splits
-  the code on dots and writes names like `pythonpypy3.exe`); runs `ensurepip`, so pip
-  is present; checks the SHA-256, where pyenv-win checks none.
+- **New rows:** Windows: rpyenv makes no `python<pypy…>.exe` copies (pyenv-win splits
+  the code on dots and writes names like `pythonpypy3.exe`); it checks the SHA-256,
+  where pyenv-win checks none. (Both run `ensurepip`: the zip has `Lib\ensurepip`, which
+  is pyenv-win's condition, so pip is not a difference.) Linux: `-src`, nightlies and
+  `pypy-dev` are refused where upstream builds or installs them.
 - `parity/diff_cases.py` gains PyPy `install --list` and `latest` cases against
   upstream.
 
