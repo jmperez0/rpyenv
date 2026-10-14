@@ -48,3 +48,16 @@ pub fn sha256(bytes: &[u8]) -> String {
         .map(|b| format!("{b:02x}"))
         .collect()
 }
+
+/// PyPy's `versions.json` listing `files` (file names) under `base`.
+pub fn pypy_versions_json(files: &[&str], base: &str) -> Vec<u8> {
+    let entries: Vec<String> = files
+        .iter()
+        .map(|f| format!("{{\"filename\":\"{f}\",\"arch\":\"x64\",\"platform\":\"win64\",\"download_url\":\"{base}/{f}\"}}"))
+        .collect();
+    format!(
+        "[{{\"pypy_version\":\"7.3.99\",\"files\":[{}]}}]",
+        entries.join(",")
+    )
+    .into_bytes()
+}

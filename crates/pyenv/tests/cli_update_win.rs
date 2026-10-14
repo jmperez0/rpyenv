@@ -3,14 +3,21 @@
 
 mod common;
 use common::server::{start_with, Reply, Server};
-use common::winfake::{index_json, listing};
+use common::winfake::{index_json, listing, pypy_versions_json};
 use common::Fixture;
 
 const BANNER: &str = ":: [Info] ::  Mirror: https://www.python.org/ftp/python\r\n:: [Info] ::  Mirror: https://downloads.python.org/pypy/versions.json\r\n:: [Info] ::  Mirror: https://api.github.com/repos/oracle/graalpython/releases\r\n";
 const SHA: &str = "11a906a2f36cacaee938c048968d99aa68ec0db592693b5a0fe3b161bb280ec5";
 
 fn run(f: &Fixture, base: &str, args: &[&str]) -> common::Run {
-    f.pyenv_env(args, &[("RPYENV_TEST_PYTHON_ORG", base)])
+    let pypy = format!("{}/pypy", base.trim_end_matches("/ftp/python"));
+    f.pyenv_env(
+        args,
+        &[
+            ("RPYENV_TEST_PYTHON_ORG", base),
+            ("RPYENV_TEST_PYPY", &pypy),
+        ],
+    )
 }
 
 fn fake(root: Reply, page_2_7: Reply) -> Server {
@@ -39,6 +46,17 @@ fn fake(root: Reply, page_2_7: Reply) -> Server {
                 vec![Reply::Body(index_json(
                     &[(&format!("{base}/3.13.0/python-3.13.0t-amd64.zip"), SHA)],
                     None,
+                ))],
+            ),
+            (
+                "/pypy/versions.json".into(),
+                vec![Reply::Body(pypy_versions_json(
+                    &[
+                        "pypy3.11-v7.3.99-win64.zip",
+                        "pypy3.10-v7.3.99-win64.zip",
+                        "pypy3.11-v7.3.99-linux64.tar.bz2",
+                    ],
+                    &format!("{host}/pypy"),
                 ))],
             ),
         ]
@@ -70,7 +88,7 @@ fn update_writes_the_cache_from_listings_and_the_index() {
     assert_eq!(r.code, 0, "{}", r.stdout);
     assert_eq!(
         r.stdout,
-        format!("{BANNER}:: [Info] ::  Scanned 5 pages and found 7 installers.\r\n")
+        format!("{BANNER}:: [Info] ::  Scanned 6 pages and found 9 installers.\r\n")
     );
     assert_eq!(
         codes(&f),
@@ -81,11 +99,97 @@ fn update_writes_the_cache_from_listings_and_the_index() {
             "3.10.0-win32",
             "3.10.0",
             "3.13.0",
-            "3.13.0t"
+            "3.13.0t",
+            "pypy3.10-v7.3.99-win64",
+            "pypy3.11-v7.3.99-win64"
         ]
     );
     let raw = std::fs::read(f.root.join(".versions_cache.xml")).unwrap();
     assert!(raw.ends_with(b"</versions>") && raw.windows(2).any(|w| w == b"\r\n"));
+}
+
+// allowlist D-79
+#[test]
+fn update_adds_pypy_rows_after_cpython_in_pyenv_wins_format() {
+    let f = Fixture::new();
+    let s = fake(ok_listing(), ok_27());
+    assert_eq!(run(&f, &s.url("/ftp/python"), &["update"]).code, 0);
+    let xml = std::fs::read_to_string(f.root.join(".versions_cache.xml")).unwrap();
+    assert!(xml.contains("\t<version x64=\"true\" webInstall=\"false\" msi=\"false\">\r\n\t\t<code>pypy3.10-v7.3.99-win64</code>\r\n\t\t<file>pypy3.10-v7.3.99-win64.zip</file>\r\n"), "{xml}");
+    assert!(
+        xml.contains("\t\t<zipRootDir>pypy3.11-v7.3.99-win64</zipRootDir>\r\n"),
+        "{xml}"
+    );
+}
+
+/// Ruling R3 (the user's, 2026-10-14): a pypy.org outage never blocks the python.org list.
+/// The fresh CPython rows are saved, the PyPy rows already in the cache are kept, and the
+/// error is printed with a warning; exit 0, with or without `--ignore`.
+#[test]
+fn a_failed_pypy_listing_keeps_the_cached_pypy_rows_and_saves_cpython() {
+    let f = Fixture::new();
+    let s = fake(ok_listing(), ok_27());
+    let base = s.url("/ftp/python");
+    let down = s.url("/nowhere");
+    // No cache yet: CPython rows only.
+    let r = f.pyenv_env(
+        &["update"],
+        &[
+            ("RPYENV_TEST_PYTHON_ORG", &base),
+            ("RPYENV_TEST_PYPY", &down),
+        ],
+    );
+    assert_eq!(r.code, 0, "{}", r.stdout);
+    assert!(
+        r.stdout.contains(&format!(
+            "HTTP Error downloading from mirror \"{down}/versions.json\"\r\n"
+        )),
+        "{}",
+        r.stdout
+    );
+    assert!(r.stdout.contains(":: [Warning] :: PyPy's list couldn't be read; kept the 0 PyPy versions already listed.\r\n"), "{}", r.stdout);
+    assert!(codes(&f).contains(&"3.13.0".to_string()));
+    assert!(!codes(&f).iter().any(|c| c.starts_with("pypy")));
+    // A good update, then an outage: the PyPy rows survive, CPython is refreshed.
+    assert_eq!(run(&f, &base, &["update"]).code, 0);
+    let r = f.pyenv_env(
+        &["update", "--ignore"],
+        &[
+            ("RPYENV_TEST_PYTHON_ORG", &base),
+            ("RPYENV_TEST_PYPY", &down),
+        ],
+    );
+    assert_eq!(r.code, 0, "{}", r.stdout);
+    assert!(
+        r.stdout
+            .contains("kept the 2 PyPy versions already listed."),
+        "{}",
+        r.stdout
+    );
+    let c = codes(&f);
+    assert!(c.contains(&"3.13.0".to_string()));
+    assert_eq!(
+        c.iter().filter(|c| c.starts_with("pypy")).count(),
+        2,
+        "{c:?}"
+    );
+}
+
+/// Review focus 5: pyenv-win's banner names only the mirror, so PyPy isn't read.
+#[test]
+fn a_mirror_replaces_pypy_too() {
+    let f = Fixture::new();
+    let s = fake(ok_listing(), ok_27());
+    let base = s.url("/ftp/python");
+    let r = f.pyenv_env(
+        &["update"],
+        &[
+            ("PYTHON_BUILD_MIRROR_URL", &base),
+            ("RPYENV_TEST_PYPY", &s.url("/pypy")),
+        ],
+    );
+    assert_eq!(r.code, 0, "{}", r.stdout);
+    assert_eq!(s.hits("/pypy/versions.json"), 0);
 }
 
 // allowlist D-79
