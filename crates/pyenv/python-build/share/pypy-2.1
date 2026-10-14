@@ -1,0 +1,38 @@
+case "$(pypy_architecture 2>/dev/null || true)" in
+"linux" )
+  require_distro "Ubuntu 10.04" || true
+  install_package "pypy-2.1" "https://bitbucket-archive.softwareheritage.org/static/14/140b7b14-aa94-424e-b191-9cd3438381f7/attachments/pypy-2.1-linux_i686-portable.tar.bz2#05a269b12c35fd3038e8373bf447ea769b506977c99b778bc23b0beb76def85c" "pypy" verify_py27 ensurepip
+  ;;
+"linux-armel" )
+  require_distro "Ubuntu 12.04" || true
+  install_package "pypy-2.1" "https://downloads.python.org/pypy/pypy-2.1-linux-armel.tar.bz2#15af2d7485c9e4363805ad5b63bf8a67cd9516e7e34c4abb822229a2a41aee1d" "pypy" verify_py27 ensurepip
+  ;;
+"linux-armhf" )
+  if [[ "$(cat /etc/issue 2>/dev/null || true)" == "Raspbian"* ]]; then
+    install_package "pypy-2.1" "https://downloads.python.org/pypy/pypy-2.1-linux-armhf-raspbian.tar.bz2#b11c27447051af00928fcc3d1f20f1441c285045a3acb8cfba8721c63ee90df3" "pypy" verify_py27 ensurepip
+  else
+    require_distro "Ubuntu 13.04" || true
+    install_package "pypy-2.1" "https://downloads.python.org/pypy/pypy-2.1-linux-armhf-raring.tar.bz2#fbab31154848f309ef72b6e845e289285907eda950f6b632963217c463b5d4de" "pypy" verify_py27 ensurepip
+  fi
+  ;;
+"linux64" )
+  require_distro "Ubuntu 12.04" || true
+  install_package "pypy-2.1" "https://bitbucket-archive.softwareheritage.org/static/14/140b7b14-aa94-424e-b191-9cd3438381f7/attachments/pypy-2.1-linux_x86_64-portable.tar.bz2#a066b6f2627bae90f53a9538f00f38d17bb80c75f3b6b270ac64918811ec86ff" "pypy" verify_py27 ensurepip
+  ;;
+"osx64" )
+  install_package "pypy-2.1" "https://downloads.python.org/pypy/pypy-2.1-osx64.tar.bz2#d0d788c6d54bb866ace67a1740133cb5bc62357b5ca4783244097f1f648876f0" "pypy" verify_py27 ensurepip
+  ;;
+"win32" )
+  # FIXME: never tested on Windows
+  install_zip "pypy-2.1" "https://downloads.python.org/pypy/pypy-2.1-win32.zip#c425a35a6c4938e314ad48014816e05c8e5246d770abe135e11a1f9821eecf53" "pypy" verify_py27 ensurepip
+  ;;
+* )
+  { echo
+    colorize 1 "ERROR"
+    echo ": The binary distribution of PyPy is not available for $(pypy_architecture 2>/dev/null || true)."
+    echo "try 'pypy-2.1-src' to build from source."
+    echo
+  } >&2
+  exit 1
+  ;;
+esac
