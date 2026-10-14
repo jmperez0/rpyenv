@@ -1,0 +1,26 @@
+case "$(pypy_architecture 2>/dev/null || true)" in
+"linux" )
+  require_distro "Ubuntu 10.04" || true
+  install_package "pypy-2.0.2" "https://bitbucket-archive.softwareheritage.org/static/14/140b7b14-aa94-424e-b191-9cd3438381f7/attachments/pypy-2.0.2-linux_i686-portable.tar.bz2#4bbd9d8ca9035489d196dc3fc1ac52a6887709776f03e98a8559fdd49ab1e7d3" "pypy" verify_py27 ensurepip
+  ;;
+"linux64" )
+  require_distro "Ubuntu 12.04" || true
+  install_package "pypy-2.0.2" "https://bitbucket-archive.softwareheritage.org/static/14/140b7b14-aa94-424e-b191-9cd3438381f7/attachments/pypy-2.0.2-linux_x86_64-portable.tar.bz2#46ba5719447e4aa2520ba62c677cb4b96f72b3293837105317c963ba9a619986" "pypy" verify_py27 ensurepip
+  ;;
+"osx64" )
+  install_package "pypy-2.0.2" "https://downloads.python.org/pypy/pypy-2.0.2-osx64.tar.bz2#34f5a7bf22a8bca3b9d79ae3186016c34638669ab19b4af6e38412181c757761" "pypy" verify_py27 ensurepip
+  ;;
+"win32" )
+  # FIXME: never tested on Windows
+  install_zip "pypy-2.0.2" "https://downloads.python.org/pypy/pypy-2.0.2-win32.zip#f3cfa54740076c59e6ef02e1411f62551230df5cd20a247e81b6e589478afe66" "pypy" verify_py27 ensurepip
+  ;;
+* )
+  { echo
+    colorize 1 "ERROR"
+    echo ": The binary distribution of PyPy is not available for $(pypy_architecture 2>/dev/null || true)."
+    echo "try 'pypy-2.0.2-src' to build from source."
+    echo
+  } >&2
+  exit 1
+  ;;
+esac

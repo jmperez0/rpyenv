@@ -2,8 +2,9 @@
 
   python ci/sync_python_build.py --upstream <pyenv checkout> --commit <sha> [--write]
 
-Copies the CPython definitions (file names starting with a digit) and their
-`patches/<name>/` directories byte for byte, plus pyenv's LICENSE, and records the commit
+Copies the CPython definitions (file names starting with a digit), their
+`patches/<name>/` directories, and the PyPy definitions (`pypy*`, M7a design §4.1; their
+patches serve only source builds and are not copied) byte for byte, plus pyenv's LICENSE, and records the commit
 and version in UPSTREAM. Without --write it only lists the differences and exits 1 if any.
 """
 import argparse
@@ -40,11 +41,14 @@ def wanted(upstream):
     share = os.path.join(upstream, "plugins", "python-build", "share", "python-build")
     out = {}
     refuse_links(share, upstream)
-    names = sorted(n for n in os.listdir(share) if n[:1].isdigit() and os.path.isfile(os.path.join(share, n)))
+    names = sorted(n for n in os.listdir(share)
+                   if (n[:1].isdigit() or n.startswith("pypy")) and os.path.isfile(os.path.join(share, n)))
     for n in names:
         refuse_links(os.path.join(share, n), upstream)
         with open(os.path.join(share, n), "rb") as f:
             out["share/" + n] = f.read()
+        if not n[:1].isdigit():
+            continue
         pdir = os.path.join(share, "patches", n)
         src = pdir
         if os.path.islink(pdir):

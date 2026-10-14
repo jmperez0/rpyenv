@@ -29,11 +29,12 @@ class Sync(unittest.TestCase):
         files.update(extra or {})
         tree(d, files)
 
-    def test_copies_cpython_definitions_and_their_patches_only(self):
+    def test_copies_cpython_and_pypy_definitions_and_only_cpython_patches(self):
         with tempfile.TemporaryDirectory() as up, tempfile.TemporaryDirectory() as dest:
             self.upstream(up)
             changes = s.sync(up, dest, "abc123", write=True)
-            self.assertEqual(sorted(os.listdir(os.path.join(dest, "share"))), ["3.12.0", "3.12.0t", "patches"])
+            self.assertEqual(sorted(os.listdir(os.path.join(dest, "share"))),
+                             ["3.12.0", "3.12.0t", "patches", "pypy3.10-7.3.12"])
             self.assertEqual(os.listdir(os.path.join(dest, "share", "patches")), ["3.12.0"])
             with open(os.path.join(dest, "share", "patches", "3.12.0", "Python-3.12.0", "0001.patch"), "rb") as f:
                 self.assertEqual(f.read(), b"p\r\n", "bytes are copied exactly")

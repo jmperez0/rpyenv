@@ -5,6 +5,7 @@ name: sync-python-build
 #   - updates the vendored copy (ci/sync_python_build.py), including python-build/UPSTREAM,
 #     which pins the pyenv commit parity.yml compares against. The pin is not in a workflow
 #     file because GITHUB_TOKEN may not push workflow changes (the 2026-10-12 run failed so);
+#   - rebuilds the PyPy tables (ci/pypy_tables.py) from the vendored definitions and pypy.org;
 #   - regenerates the Linux parity goldens against the new pyenv;
 #   - runs cargo test, the differential cases and the upstream bats suite, and puts each
 #     result, pass or fail, in the pull request;
@@ -45,15 +46,25 @@ jobs:
           echo "SHA=$sha" >> "$GITHUB_ENV"
           echo "OLD_SHA=$old" >> "$GITHUB_ENV"
       - name: Update the vendored copy and the parity pin
+        run: python3 ci/sync_python_build.py --upstream "$RUNNER_TEMP/pyenv-$SHA" --commit "$SHA" --write
+      # M7a design §4.1, §5.1: the PyPy tables, rebuilt every week even when pyenv hasn't
+      # changed (a new PyPy release reaches the Windows table this way). The definitions run
+      # in a container with no network; any failure stops the job before a pull request.
+      - name: Rebuild the PyPy tables
+        run: |
+          mkdir -p "$RUNNER_TEMP/pypy-pages"
+          curl -fsSL -o "$RUNNER_TEMP/pypy-pages/versions.json" https://downloads.python.org/pypy/versions.json
+          curl -fsSL -o "$RUNNER_TEMP/pypy-pages/checksums.html" https://www.pypy.org/checksums.html
+          python3 ci/pypy_tables.py --share crates/pyenv/python-build/share --pages "$RUNNER_TEMP/pypy-pages" --engine docker --write
+      - name: Anything to propose?
         id: update
         run: |
-          python3 ci/sync_python_build.py --upstream "$RUNNER_TEMP/pyenv-$SHA" --commit "$SHA" --write
-          if [ -z "$(git status --porcelain crates/pyenv/python-build)" ]; then
-            echo "up to date with $TAG"
+          if [ -z "$(git status --porcelain crates/pyenv/python-build crates/pyenv/pypy)" ]; then
+            echo "up to date with $TAG and pypy.org"
             echo "changed=false" >> "$GITHUB_OUTPUT"
-            exit 0
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
-          echo "changed=true" >> "$GITHUB_OUTPUT"
       - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, 2026-10-02
         if: steps.update.outputs.changed == 'true'
         with:
@@ -102,13 +113,14 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -b "$branch"
-          git add crates/pyenv/python-build parity/golden
+          git add crates/pyenv/python-build crates/pyenv/pypy parity/golden
           git commit -m "Sync python-build definitions with pyenv $TAG"
           git push -f origin "$branch"
           body="$RUNNER_TEMP/pr-body.md"
           {
             echo "Automated: crates/pyenv/python-build updated from pyenv $TAG ($SHA) by ci/sync_python_build.py,"
             echo "the parity pin in \`UPSTREAM\` bumped with it, and the Linux parity goldens regenerated. Review the golden diff."
+            echo "The PyPy tables in \`crates/pyenv/pypy/\` were rebuilt by ci/pypy_tables.py from the vendored definitions and pypy.org's pages; review their diff."
             echo
             echo "Checks run by the workflow:"
             echo

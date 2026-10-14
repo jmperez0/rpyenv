@@ -1,0 +1,9 @@
+VERSION='7.3.18'
+PYVER='3.10'
+
+sha=e90335a7776c7e5f3f2a4f4d52848e447716b814
+
+### end of manual settings - following lines same for every download
+
+require_openssl3
+install_git "pypy${PYVER}-v${VERSION}-src" https://github.com/pypy/pypy "release-pypy${PYVER}-v${VERSION}:$sha" pypy_builder "verify_py${PYVER//./}" ensurepip
