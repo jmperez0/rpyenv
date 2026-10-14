@@ -21,6 +21,18 @@ fn run(f: &Fixture, base: &str, args: &[&str]) -> common::Run {
 }
 
 fn fake(root: Reply, page_2_7: Reply) -> Server {
+    fake_pypy(
+        root,
+        page_2_7,
+        &[
+            "pypy3.11-v7.3.99-win64.zip",
+            "pypy3.10-v7.3.99-win64.zip",
+            "pypy3.11-v7.3.99-linux64.tar.bz2",
+        ],
+    )
+}
+
+fn fake_pypy(root: Reply, page_2_7: Reply, pypy_files: &[&str]) -> Server {
     start_with(|host| {
         let base = format!("{host}/ftp/python");
         vec![
@@ -51,11 +63,7 @@ fn fake(root: Reply, page_2_7: Reply) -> Server {
             (
                 "/pypy/versions.json".into(),
                 vec![Reply::Body(pypy_versions_json(
-                    &[
-                        "pypy3.11-v7.3.99-win64.zip",
-                        "pypy3.10-v7.3.99-win64.zip",
-                        "pypy3.11-v7.3.99-linux64.tar.bz2",
-                    ],
+                    pypy_files,
                     &format!("{host}/pypy"),
                 ))],
             ),
@@ -147,7 +155,7 @@ fn a_failed_pypy_listing_keeps_the_cached_pypy_rows_and_saves_cpython() {
         "{}",
         r.stdout
     );
-    assert!(r.stdout.contains(":: [Warning] :: PyPy's list couldn't be read; kept the 0 PyPy versions already listed.\r\n"), "{}", r.stdout);
+    assert!(r.stdout.contains(":: [Warning] :: PyPy's list couldn't be read, and no earlier list could be read either; no PyPy versions are listed.\r\n"), "{}", r.stdout);
     assert!(codes(&f).contains(&"3.13.0".to_string()));
     assert!(!codes(&f).iter().any(|c| c.starts_with("pypy")));
     // A good update, then an outage: the PyPy rows survive, CPython is refreshed.
@@ -173,6 +181,28 @@ fn a_failed_pypy_listing_keeps_the_cached_pypy_rows_and_saves_cpython() {
         2,
         "{c:?}"
     );
+}
+
+/// A versions.json that parses but gives no win64 zip (pypy.org reshaped it) is a failed read,
+/// not an empty list: the cached PyPy rows stay, with a warning (ruling R3).
+#[test]
+fn a_versions_json_without_win64_zips_keeps_the_cached_pypy_rows() {
+    let f = Fixture::new();
+    let good = fake(ok_listing(), ok_27());
+    assert_eq!(run(&f, &good.url("/ftp/python"), &["update"]).code, 0);
+    let before = codes(&f);
+    assert_eq!(before.iter().filter(|c| c.starts_with("pypy")).count(), 2);
+    let reshaped = fake_pypy(ok_listing(), ok_27(), &["pypy3.11-v7.3.99-linux64.tar.bz2"]);
+    let r = run(&f, &reshaped.url("/ftp/python"), &["update"]);
+    assert_eq!(r.code, 0, "{}", r.stdout);
+    assert!(
+        r.stdout.contains(
+            ":: [Warning] :: PyPy's list couldn't be read; kept the 2 PyPy versions already listed.\r\n"
+        ),
+        "{}",
+        r.stdout
+    );
+    assert_eq!(codes(&f), before);
 }
 
 /// Review focus 5: pyenv-win's banner names only the mirror, so PyPy isn't read.
