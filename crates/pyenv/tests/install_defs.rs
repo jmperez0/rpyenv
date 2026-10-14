@@ -21,7 +21,8 @@ fn every_vendored_definition_parses() {
     // Mechanical: every vendored definition, counted from the folder itself so a sync
     // keeps the check, and a construct the interpreter misses fails here, by name.
     let root = Path::new("/nonexistent-root");
-    // CPython definitions only until M7a Task 4 teaches the interpreter the PyPy shapes.
+    // CPython definitions only, permanently: the interpreter never parses the vendored PyPy
+    // definitions; the PyPy table (install/pypy.rs) covers them (ruling R5b).
     let is_cpython = |n: &str| n.starts_with(|c: char| c.is_ascii_digit());
     let names: Vec<_> = defs::names(root, &no_env)
         .into_iter()

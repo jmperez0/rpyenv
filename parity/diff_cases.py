@@ -197,6 +197,7 @@ CASES = (
     Case("install --list --bare", ("install", "--list", "--bare"), os="Linux", allow=("D-55",)),
     # M7a: the vendored PyPy definitions make PyPy names resolve as upstream's do.
     Case("latest -k pypy3.10", ("latest", "-k", "pypy3.10"), os="Linux"),
+    Case("latest -k pypy3.11", ("latest", "-k", "pypy3.11"), os="Linux"),
     Case("latest -k pypy3", ("latest", "-k", "pypy3"), os="Linux"),
     Case("install --version", ("install", "--version"), os="Linux", allow=("D-66",)),
     Case("install X:latest with no match", ("install", "3.99:latest"), os="Linux", allow=("D-61",),
