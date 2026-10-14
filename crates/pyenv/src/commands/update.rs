@@ -103,23 +103,40 @@ pub fn update(ctx: &Ctx, args: &[&str]) -> Output {
             .get_text(&url)
             .map_err(|e| (e.status, e.message))
             .and_then(|t| pypy_rows(&t).map_err(|m| (None, m)))
-        {
+            .and_then(|r| {
+                // Parsed but no win64 zip: pypy.org reshaped the file; treat it as a failed read.
+                if r.is_empty() {
+                    Err((
+                        None,
+                        "versions.json lists no Windows PyPy zips: has its layout changed?"
+                            .to_string(),
+                    ))
+                } else {
+                    Ok(r)
+                }
+            }) {
             Ok(r) => {
                 pages += 1;
                 rows.extend(r);
             }
             Err((status, message)) => {
                 report(&mut o, "mirror", &url, &TextError { status, message });
-                let kept: Vec<_> = read_db(&ctx.root)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter(|r| pypy::win_code(&r.code).is_some())
-                    .collect();
-                o.out(format!(
-                    ":: [Warning] :: PyPy's list couldn't be read; kept the {} PyPy versions already listed.",
-                    kept.len()
-                ));
-                rows.extend(kept);
+                match read_db(&ctx.root) {
+                    Ok(old) => {
+                        let kept: Vec<_> = old
+                            .into_iter()
+                            .filter(|r| pypy::win_code(&r.code).is_some())
+                            .collect();
+                        o.out(format!(
+                            ":: [Warning] :: PyPy's list couldn't be read; kept the {} PyPy versions already listed.",
+                            kept.len()
+                        ));
+                        rows.extend(kept);
+                    }
+                    Err(_) => o.out(
+                        ":: [Warning] :: PyPy's list couldn't be read, and no earlier list could be read either; no PyPy versions are listed.",
+                    ),
+                }
             }
         }
     }
