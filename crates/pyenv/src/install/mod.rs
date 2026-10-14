@@ -13,6 +13,7 @@ pub mod msi;
 pub mod openpgp;
 #[cfg(unix)]
 pub mod preflight;
+pub mod pypy;
 mod reply;
 pub mod txn;
 #[cfg(unix)]
