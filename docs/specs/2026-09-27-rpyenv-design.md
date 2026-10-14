@@ -478,6 +478,7 @@ instructions, as upstream does.
       which has no `<file>.asc` for the file.
     - A `.asc` that is listed but can't be fetched, or that fails
       verification, stops the install. Neither ever downgrades to the warning.
+  PyPy (M7a) is the one exception to *fetched at install time*: PyPy's published hashes travel in tables CI builds and cross-checks against pypy.org (§15.1); only a Windows release newer than the table reads pypy.org's page at install time.
 - **MSI extraction** reads the MSI's tables and CAB streams in Rust and writes
   the files; `msiexec` is not run, so no product is registered. If the Rust
   reader can't decompress python.org's CABs, the first Windows installer task
@@ -522,6 +523,7 @@ instructions, as upstream does.
   rpyenv never publishes or computes the reference value itself, and MD5 is
   never accepted. The one exception is a file python.org publishes no
   signature or hash for: it installs with a warning (§9.1, *Unsigned files*).
+  PyPy (M7a) is the one exception to *fetched at install time*: PyPy's published hashes travel in tables CI builds and cross-checks against pypy.org (§15.1); only a Windows release newer than the table reads pypy.org's page at install time.
 - **`:latest` (M2).** `pyenv install 3.12:latest` installs the newest
   matching release. Candidates exclude `-dev`, `-src`, pre-releases
   (`a`/`b`/`rc`), and free-threaded builds (`t` suffix), and are sorted by
@@ -885,7 +887,7 @@ without `--source-ref`, a dry run's attestation from any branch would pass too).
 | `RPYENV_CONSOLE_HOLD` | rpyenv | Windows: after a failure, a window the shim opened stays until a key (default); `0` closes it at once; a positive whole number N closes it after N seconds |
 | `RPYENV_DEBUG_LOG` | rpyenv | File for diagnostics from shims and `pyenv exec` when there is no console |
 | `RPYENV_BATCH_FORWARD` | rpyenv | `;`-separated batch-target names that get a `.cmd` forwarder instead of an exe shim (Windows) |
-| `RPYENV_CATALOG_URL` | rpyenv (M7, only if kept) | Alternative location for the PyPy/conda listing, if M7 keeps one (§15.1); not used for CPython |
+| `RPYENV_CATALOG_URL` | rpyenv | Unused: M7a builds the PyPy tables in CI and publishes no catalog; M7b may revisit it for conda (§15.1) |
 | `RPYENV_SKIP_PREFLIGHT` | rpyenv | `1` skips the Linux build pre-flight check (§9.2), for headers in places the check doesn't look |
 | `RPYENV_BUILD_DEPS` | rpyenv (M8) | `system`, `install`, or `build`: how `pyenv install` resolves missing Linux build dependencies when there is no terminal to ask |
 
