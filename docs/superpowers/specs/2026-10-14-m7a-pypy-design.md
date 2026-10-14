@@ -150,7 +150,7 @@ Each names the version, exits 1, and leaves nothing in `versions/`.
 
 | Case | Message |
 |---|---|
-| `-src`, a nightly (`*-c-jit-latest`), `pypy-dev` | `PyPy source and nightly builds are not supported` |
+| `-src`, a nightly (`*-c-jit-latest`), `pypy-dev`, a distribution-specific definition (`require_distro`: 15 of PyPy 7.2.0 and older, which pick PyPy's build on an old Ubuntu and a third-party portable build elsewhere) | `PyPy source, nightly and distribution-specific builds are not supported` |
 | No binary for this architecture (Linux) | upstream's text: `The binary distribution of PyPy is not available for <arch>.` |
 | Hash mismatch | the existing checksum error |
 | Windows code not in the table, fallback fails | `<code> is newer than this rpyenv's PyPy table and pypy.org's checksum page couldn't be read: update rpyenv` |
