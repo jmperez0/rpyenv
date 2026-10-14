@@ -121,7 +121,11 @@ New step `pypy` (upstream's `build_package_pypy`):
 - `pyenv update` adds PyPy rows from `versions.json` to `.versions_cache.xml`, in
   pyenv-win's format and order (CPython rows first, then the others in pyenv-win's
   order, as `wincatalog.rs` already sorts them). The cache holds names only, as for
-  CPython (parent §9.1).
+  CPython (parent §9.1). With `PYTHON_BUILD_MIRROR_URL` set, PyPy is not read (pyenv-win's
+  banner then names only the mirror).
+- **A failed PyPy read never blocks the python.org list** (user's decision, 2026-10-14):
+  `update` saves the fresh CPython rows, keeps the PyPy rows already in the cache, prints
+  the HTTP error and a warning, and exits 0.
 
 ### 5.2 The install
 
