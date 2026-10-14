@@ -339,10 +339,89 @@ pub fn catalog(mut rows: Vec<Row>, zips: &[IndexZip]) -> Vec<Row> {
     rows
 }
 
+/// pyenv-win's PyPy rows from PyPy's `versions.json` (`pyenv-install-lib.vbs` regexJsonUrl):
+/// each `pypy<X.Y>-v<version>-win64.zip`, once, as an x64 zip whose root folder is the code,
+/// sorted by Python version, then PyPy version. Names only: `install` gets the hash elsewhere
+/// (M7a design §5.1).
+pub fn pypy_rows(json: &str) -> Result<Vec<Row>, String> {
+    let v: serde_json::Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
+    let releases = v.as_array().ok_or("versions.json is not a list")?;
+    type Key = ([u64; 2], Vec<u64>);
+    let mut rows: Vec<(Key, Row)> = Vec::new();
+    for f in releases
+        .iter()
+        .filter_map(|r| r.get("files").and_then(|f| f.as_array()))
+        .flatten()
+    {
+        let (Some(file), Some(url)) = (
+            f.get("filename").and_then(|x| x.as_str()),
+            f.get("download_url").and_then(|x| x.as_str()),
+        ) else {
+            continue;
+        };
+        let Some(code) = file.strip_suffix(".zip") else {
+            continue;
+        };
+        let Some(key) = super::pypy::win_code(code) else {
+            continue;
+        };
+        if rows.iter().any(|(_, r)| r.code == code) {
+            continue;
+        }
+        rows.push((
+            key,
+            Row {
+                code: code.to_string(),
+                file: file.to_string(),
+                url: url.to_string(),
+                x64: true,
+                web_install: false,
+                msi: false,
+                zip_root_dir: Some(code.to_string()),
+            },
+        ));
+    }
+    rows.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(rows.into_iter().map(|(_, r)| r).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::install::wincatalog::Arch;
+
+    /// pyenv-win's PyPy rows (allowlist D-79's PyPy half): win64 zips only, code = file name
+    /// without `.zip`, sorted by Python version then PyPy version, as its fixture shows.
+    #[test]
+    fn pypy_rows_follow_pyenv_wins_pattern_and_order() {
+        let json = r#"[
+          {"files":[{"filename":"pypy3.11-v7.3.10-win64.zip","download_url":"https://downloads.python.org/pypy/pypy3.11-v7.3.10-win64.zip"},
+                    {"filename":"pypy3.11-v7.3.10-linux64.tar.bz2","download_url":"https://downloads.python.org/pypy/pypy3.11-v7.3.10-linux64.tar.bz2"}]},
+          {"files":[{"filename":"pypy3.11-v7.3.9-win64.zip","download_url":"https://downloads.python.org/pypy/pypy3.11-v7.3.9-win64.zip"},
+                    {"filename":"pypy-c-jit-latest-win64.zip","download_url":"https://downloads.python.org/pypy/pypy-c-jit-latest-win64.zip"}]},
+          {"files":[{"filename":"pypy3.10-v7.3.19-win64.zip","download_url":"https://downloads.python.org/pypy/pypy3.10-v7.3.19-win64.zip"},
+                    {"filename":"pypy3.10-v7.3.19-win64.zip","download_url":"https://downloads.python.org/pypy/pypy3.10-v7.3.19-win64.zip"}]}
+        ]"#;
+        let rows = super::pypy_rows(json).unwrap();
+        let codes: Vec<&str> = rows.iter().map(|r| r.code.as_str()).collect();
+        assert_eq!(
+            codes,
+            [
+                "pypy3.10-v7.3.19-win64",
+                "pypy3.11-v7.3.9-win64",
+                "pypy3.11-v7.3.10-win64"
+            ]
+        );
+        let r = &rows[0];
+        assert_eq!(r.file, "pypy3.10-v7.3.19-win64.zip");
+        assert_eq!(
+            r.url,
+            "https://downloads.python.org/pypy/pypy3.10-v7.3.19-win64.zip"
+        );
+        assert!(r.x64 && !r.msi && !r.web_install);
+        assert_eq!(r.zip_root_dir.as_deref(), Some("pypy3.10-v7.3.19-win64"));
+        assert!(super::pypy_rows("{").is_err());
+    }
 
     const NGINX: &str = "<html><body><h1>Index of /ftp/python/3.10.0/</h1><hr><pre><a href=\"../\">../</a>\n<a href=\"amd64/\">amd64/</a>   01-Oct-2021 15:16    -\n<a href=\"amd64rc2/\">amd64rc2/</a>\n<a href=\"win32/\">win32/</a>\n<a href=\"win32rc2/\">win32rc2/</a>\n<a href=\"respun/\">respun/</a>\n<a href=\"?C=M;O=A\">sort</a>\n<a href=\"python-3.10.0-amd64.exe\">python-3.10.0-amd64.exe</a>\n</pre></body></html>";
 

@@ -3,9 +3,11 @@
 //! plan M2b Decision 3).
 
 use crate::install::fetch::{Fetcher, TextError};
-use crate::install::wincatalog::write_db;
+use crate::install::pypy;
+use crate::install::wincatalog::{read_db, write_db};
 use crate::install::winsource::{
-    banner, base, catalog, folder_rows, index_zips, listing_names, mirror, version_folders,
+    banner, base, catalog, folder_rows, index_zips, listing_names, mirror, pypy_rows,
+    version_folders,
 };
 use crate::output::Output;
 use rpyenv_core::ctx::Ctx;
@@ -90,6 +92,35 @@ pub fn update(ctx: &Ctx, args: &[&str]) -> Output {
         Err((url, e)) => {
             report(&mut o, "mirror", &url, &e);
             return o.with_code(if ignore { 0 } else { 1 });
+        }
+    }
+    // PyPy's list, as pyenv-win reads it, unless a mirror replaces python.org (pyenv-win's
+    // banner then names only the mirror). M7a design §5.1. A failed read never blocks the
+    // python.org list (ruling R3): the PyPy rows already in the cache are kept, with a warning.
+    if mirror().is_none() {
+        let url = format!("{}/versions.json", pypy::urls().0);
+        match f
+            .get_text(&url)
+            .map_err(|e| (e.status, e.message))
+            .and_then(|t| pypy_rows(&t).map_err(|m| (None, m)))
+        {
+            Ok(r) => {
+                pages += 1;
+                rows.extend(r);
+            }
+            Err((status, message)) => {
+                report(&mut o, "mirror", &url, &TextError { status, message });
+                let kept: Vec<_> = read_db(&ctx.root)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|r| pypy::win_code(&r.code).is_some())
+                    .collect();
+                o.out(format!(
+                    ":: [Warning] :: PyPy's list couldn't be read; kept the {} PyPy versions already listed.",
+                    kept.len()
+                ));
+                rows.extend(kept);
+            }
         }
     }
     if let Err(e) = write_db(&ctx.root, &rows) {
