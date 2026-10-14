@@ -52,6 +52,7 @@ the child's exit code, and leaves your console as it found it.
   - Windows: python.org's official packages, extracted directly, with no
     installer run and no registry writes.
   - Linux: compiled from source, as pyenv does.
+- **Official PyPy builds.** PyPy installs from PyPy's official binaries: on Linux (x64, aarch64) under upstream's names (`pyenv install pypy3.11`), on Windows (x64) under pyenv-win's codes after `pyenv update` (`pyenv install pypy3.11-v7.3.20-win64`). Each download is checked against the SHA-256 PyPy publishes. PyPy source builds and nightlies are not supported.
 - **Built in instead of plugins:**
   - virtualenvs (replaces `pyenv-virtualenv`, and works natively on Windows
     too)

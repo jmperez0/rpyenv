@@ -186,6 +186,7 @@ fn a_vendored_name_installs_from_its_table_row_without_a_compiler() {
     );
 }
 
+// allowlist D-106
 #[test]
 fn source_builds_and_missing_binaries_are_refused_by_name() {
     let f = Fixture::new();
