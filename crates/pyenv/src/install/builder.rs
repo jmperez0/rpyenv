@@ -448,7 +448,13 @@ fn verify(job: &Job, plan: &Plan, step: &str, python: &Path, say: &mut dyn FnMut
     let (xy, checks) = verify_plan(step)
         .ok_or_else(|| InstallError::Message(format!("rpyenv cannot run build step `{step}'")))?;
     symlink_version_suffix(&plan.prefix, plan);
-    let exe = plan.prefix.join("bin").join(format!("python{xy}"));
+    // python-build checks PYTHON_BIN: `bin/python<X.Y>` for a CPython name, `bin/python` for a
+    // name it gets no X.Y from (PyPy, M7a design §4.3).
+    let exe = if plan.xy.is_some() {
+        plan.prefix.join("bin").join(format!("python{xy}"))
+    } else {
+        python.to_path_buf()
+    };
     if std::fs::metadata(&exe)
         .map(|m| m.permissions().mode() & 0o111 == 0)
         .unwrap_or(true)
@@ -504,6 +510,57 @@ fn verify(job: &Job, plan: &Plan, step: &str, python: &Path, say: &mut dyn FnMut
             c.module,
             c.lib
         ));
+    }
+    Ok(())
+}
+
+/// `cp -fR src/. dst`: directories, regular files with their modes, and links as links.
+fn copy_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for e in std::fs::read_dir(src)? {
+        let e = e?;
+        let (from, to) = (e.path(), dst.join(e.file_name()));
+        let t = e.file_type()?;
+        if t.is_symlink() {
+            std::os::unix::fs::symlink(std::fs::read_link(&from)?, &to)?;
+        } else if t.is_dir() {
+            copy_tree(&from, &to)?;
+            std::fs::set_permissions(&to, std::fs::metadata(&from)?.permissions())?;
+        } else {
+            std::fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
+}
+
+/// The links `build_package_pypy` adds: for each regular, executable, non-link file in `bin/`,
+/// in name order, `libpypy*` gets `lib/<name>` → `../bin/<name>` and `pypy*` becomes the target
+/// of `bin/python` (the last one wins, as with `ln -fs` in a glob loop).
+fn link_pypy(prefix: &Path) -> std::io::Result<()> {
+    let (bin, lib) = (prefix.join("bin"), prefix.join("lib"));
+    std::fs::create_dir_all(&bin)?;
+    std::fs::create_dir_all(&lib)?;
+    let mut names: Vec<String> = std::fs::read_dir(&bin)?
+        .filter_map(Result::ok)
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    let replace = |at: &Path, target: &str| -> std::io::Result<()> {
+        if at.symlink_metadata().is_ok_and(|m| !m.is_dir()) {
+            std::fs::remove_file(at)?;
+        }
+        std::os::unix::fs::symlink(target, at)
+    };
+    for n in names {
+        let m = std::fs::symlink_metadata(bin.join(&n))?;
+        if !m.file_type().is_file() || m.permissions().mode() & 0o111 == 0 {
+            continue;
+        }
+        if n.starts_with("libpypy") {
+            replace(&lib.join(&n), &format!("../bin/{n}"))?;
+        } else if n.starts_with("pypy") {
+            replace(&bin.join("python"), &n)?;
+        }
     }
     Ok(())
 }
@@ -860,6 +917,29 @@ fn run_step(
                 })?;
             }
             Ok(())
+        }
+        // python-build's `build_package_pypy` (M7a design §4.3): the binary tree is copied as it
+        // is, then `bin/python` and the `lib/libpypy*` links are added, and the whole is placed.
+        "pypy" => {
+            let staged = txn.stage_dir().join("pypy");
+            copy_tree(src, &staged)
+                .and_then(|_| link_pypy(&staged))
+                .map_err(|e| {
+                    InstallError::Message(format!(
+                        "pyenv: cannot copy {} into {}: {e}",
+                        src.display(),
+                        staged.display()
+                    ))
+                })?;
+            if interrupted() {
+                return Err(InstallError::Interrupted);
+            }
+            txn.place(&staged).map_err(|e| {
+                InstallError::Message(format!(
+                    "pyenv: cannot move the build into {}: {e}",
+                    plan.prefix.display()
+                ))
+            })
         }
         s if s.starts_with("verify_py") => verify(job, plan, s, python, say),
         "ensurepip" | "ensurepip_lt21" => {
