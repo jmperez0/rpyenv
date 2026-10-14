@@ -5,7 +5,9 @@ name: sync-python-build
 #   - updates the vendored copy (ci/sync_python_build.py), including python-build/UPSTREAM,
 #     which pins the pyenv commit parity.yml compares against. The pin is not in a workflow
 #     file because GITHUB_TOKEN may not push workflow changes (the 2026-10-12 run failed so);
-#   - rebuilds the PyPy tables (ci/pypy_tables.py) from the vendored definitions and pypy.org;
+#   - rebuilds the PyPy tables (ci/pypy_tables.py) from the vendored definitions and pypy.org
+#     (a failure there is reported in the pull request and fails the run, but doesn't stop
+#     the CPython sync);
 #   - regenerates the Linux parity goldens against the new pyenv;
 #   - runs cargo test, the differential cases and the upstream bats suite, and puts each
 #     result, pass or fail, in the pull request;
@@ -49,13 +51,26 @@ jobs:
         run: python3 ci/sync_python_build.py --upstream "$RUNNER_TEMP/pyenv-$SHA" --commit "$SHA" --write
       # M7a design §4.1, §5.1: the PyPy tables, rebuilt every week even when pyenv hasn't
       # changed (a new PyPy release reaches the Windows table this way). The definitions run
-      # in a container with no network; any failure stops the job before a pull request.
+      # in a container with no network. A failure here (pypy.org down or reshaped) doesn't
+      # hold back the CPython sync: the tables stay as they were, the pull request reports
+      # the failure, and the last step fails the job. A vendored PyPy name with no table row
+      # is refused as "not available", never downloaded, until a later run succeeds.
       - name: Rebuild the PyPy tables
+        id: pypy
+        continue-on-error: true
         run: |
-          mkdir -p "$RUNNER_TEMP/pypy-pages"
-          curl -fsSL -o "$RUNNER_TEMP/pypy-pages/versions.json" https://downloads.python.org/pypy/versions.json
-          curl -fsSL -o "$RUNNER_TEMP/pypy-pages/checksums.html" https://www.pypy.org/checksums.html
-          python3 ci/pypy_tables.py --share crates/pyenv/python-build/share --pages "$RUNNER_TEMP/pypy-pages" --engine docker --write
+          set -o pipefail
+          log="$RUNNER_TEMP/pypy.log"
+          if ! {
+            mkdir -p "$RUNNER_TEMP/pypy-pages" &&
+            curl -fsSL -o "$RUNNER_TEMP/pypy-pages/versions.json" https://downloads.python.org/pypy/versions.json &&
+            curl -fsSL -o "$RUNNER_TEMP/pypy-pages/checksums.html" https://www.pypy.org/checksums.html &&
+            python3 ci/pypy_tables.py --share crates/pyenv/python-build/share --pages "$RUNNER_TEMP/pypy-pages" --engine docker --write
+          } 2>&1 | tee "$log"; then
+            git checkout -- crates/pyenv/pypy
+            git clean -fdq -- crates/pyenv/pypy
+            exit 1
+          fi
       - name: Anything to propose?
         id: update
         run: |
@@ -80,6 +95,7 @@ jobs:
         if: steps.update.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          PYPY: ${{ steps.pypy.outcome }}
         run: |
           r="$RUNNER_TEMP/results.md"
           up="$RUNNER_TEMP/pyenv-$SHA"
@@ -93,6 +109,11 @@ jobs:
             fi
           }
           : > "$r"
+          if [ "$PYPY" = "success" ]; then echo "- **PyPy tables (ci/pypy_tables.py)**: pass" >> "$r"
+          else
+            { echo "- **PyPy tables (ci/pypy_tables.py)**: FAIL; the tables in \`crates/pyenv/pypy/\` were left as they were"
+              echo '  ```'; tail -n 30 "$RUNNER_TEMP/pypy.log" | sed 's/^/  /'; echo '  ```'; } >> "$r"
+          fi
           check "cargo test --workspace" cargo test --workspace
           check "differential cases (parity/diff.py)" python3 parity/diff.py --rpyenv target/debug --upstream "$up"
           curl -fsSL "https://github.com/bats-core/bats-core/archive/refs/tags/v${BATS_VERSION}.tar.gz" | tar -xz -C "$RUNNER_TEMP"
@@ -116,6 +137,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PYTHON_BUILD: ${{ steps.update.outputs.python_build }}
+          PYPY: ${{ steps.pypy.outcome }}
         run: |
           branch="sync-python-build-$TAG"
           git config user.name "github-actions[bot]"
@@ -134,7 +156,11 @@ jobs:
             if [ "$PYTHON_BUILD" = "true" ]; then
               echo "Automated: crates/pyenv/python-build updated from pyenv $TAG ($SHA) by ci/sync_python_build.py,"
               echo "the parity pin in \`UPSTREAM\` bumped with it, and the Linux parity goldens regenerated. Review the golden diff."
-              echo "The PyPy tables in \`crates/pyenv/pypy/\` were rebuilt by ci/pypy_tables.py from the vendored definitions and pypy.org's pages; review their diff."
+              if [ "$PYPY" = "success" ]; then
+                echo "The PyPy tables in \`crates/pyenv/pypy/\` were rebuilt by ci/pypy_tables.py from the vendored definitions and pypy.org's pages; review their diff."
+              else
+                echo "The PyPy tables in \`crates/pyenv/pypy/\` could NOT be rebuilt (see the checks below) and are unchanged: a PyPy version new in this sync is refused as \"not available\" until a later run rebuilds them."
+              fi
             else
               echo "Automated: only the PyPy tables in \`crates/pyenv/pypy/\` changed. ci/pypy_tables.py rebuilt them from the vendored definitions and pypy.org's pages; review their diff."
               echo "crates/pyenv/python-build and the parity pin are unchanged (still pyenv $OLD_SHA)."
@@ -154,3 +180,10 @@ jobs:
           else
             gh pr edit "$branch" --title "$title" --body-file "$body"
           fi
+      # The PyPy step's failure, let through above so the CPython sync could still open its
+      # pull request, still fails the run (a scheduled run's failure notifies the owner).
+      - name: Fail when the PyPy tables couldn't be rebuilt
+        if: steps.pypy.outcome == 'failure'
+        run: |
+          echo "::error::ci/pypy_tables.py failed; crates/pyenv/pypy was left unchanged. The step 'Rebuild the PyPy tables' has the log."
+          exit 1

@@ -31,6 +31,7 @@ Success means:
 | D6 | Windows file without a published hash | Not installable (no table row; the fallback refuses), never a warning. |
 | D7 | Windows ARM64 hosts | As pyenv-win: x64 PyPy rows are listed and installable (they run under emulation). |
 | D8 | Third-party builds on Linux | Refused (user's decision, 2026-10-14; ruling R7). 44 vendored definitions of PyPy 7.1.x and older download squeaky-pl's portable builds, not PyPy's; the Linux table marks any `ok` verdict whose URL is not under `https://downloads.python.org/pypy/` as `unsupported third-party build`, and rpyenv refuses to read an `ok` row outside that folder. |
+| D9 | A PyPy table failure in the weekly sync | Doesn't block the CPython sync (user's decision, 2026-10-14, after a side-agent note): the tables stay unchanged, the pull request reports the failure, and the run fails. Same rule as `pyenv update` on Windows (§5): a pypy.org problem never holds back CPython. |
 
 ## 3. Measurements this design rests on (2026-10-14)
 
@@ -74,8 +75,11 @@ repeats the evaluation and cross-check on the pinned copy.
    the page must carry the same SHA-256, or the job fails. A row whose file is not on
    the page must be listed in `crates/pyenv/pypy/linux-unpublished.txt`
    (created from the first run: the 63 rows of §3), or the job fails.
-5. Any failure stops the job before a pull request is opened, so a changed definition
-   shape, stub gap or page layout fails in CI, never on a user's machine.
+5. A failure of this step (D9) leaves `crates/pyenv/pypy/` as it was and fails the run,
+   so a changed definition shape, stub gap or page layout fails in CI, never on a user's
+   machine. The CPython sync still opens its pull request, which reports the failure; a
+   vendored PyPy name with no table row is refused as "not available" until a later run
+   rebuilds the tables.
 
 ### 4.2 How rpyenv uses it
 
