@@ -56,7 +56,11 @@ elif [ "$pkgs" -eq 1 ] && [ "$rc" -eq 0 ]; then
   case "$step" in anaconda|miniconda) ;; *) echo "unsupported step $step"; exit 0 ;; esac
   case "$verify" in verify_py*) ;; *) echo "unsupported verify step $verify"; exit 0 ;; esac
   if [ "$hash" != "$url" ] && { [ ${#hash} -ne 64 ] || [ -n "${hash//[0-9a-f]/}" ]; }; then
-    echo "unsupported malformed sha256 in $url"
+    if [ ${#hash} -eq 32 ] && [ -z "${hash//[0-9a-f]/}" ]; then
+      echo "unsupported md5 checksum only"
+    else
+      echo "unsupported malformed sha256 in $url"
+    fi
   else
     echo "ok $pkg $url $step $verify${*:+ $*}"
   fi
