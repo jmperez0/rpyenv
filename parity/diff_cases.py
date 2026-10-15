@@ -199,6 +199,10 @@ CASES = (
     Case("latest -k pypy3.10", ("latest", "-k", "pypy3.10"), os="Linux"),
     Case("latest -k pypy3.11", ("latest", "-k", "pypy3.11"), os="Linux"),
     Case("latest -k pypy3", ("latest", "-k", "pypy3"), os="Linux"),
+    # M7b: the vendored conda definitions make conda names resolve as upstream's do.
+    Case("latest -k anaconda3", ("latest", "-k", "anaconda3"), os="Linux"),
+    Case("latest -k miniconda3", ("latest", "-k", "miniconda3"), os="Linux"),
+    Case("latest -k miniforge3", ("latest", "-k", "miniforge3"), os="Linux"),
     Case("install --version", ("install", "--version"), os="Linux", allow=("D-66",)),
     Case("install X:latest with no match", ("install", "3.99:latest"), os="Linux", allow=("D-61",),
          files=(PRERELEASE_ONLY,)),
