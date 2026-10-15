@@ -23,6 +23,7 @@
   - User definition bash can't evaluate: `python-build: {name}: rpyenv cannot read this conda definition ({reason})`
   - `-latest` hash unreadable: `python-build: {name}: the publisher's SHA-256 for {file} couldn't be read from {source}, so rpyenv won't install it`
   - No binary: three stderr lines, as upstream's definition prints them: an empty line, `ERROR: The binary distribution of {what} is not available for {arch}.`, an empty line.
+  - Conda reinstall, base packages not carried (stderr; spec D7, §4.3 step 8): `rpyenv: the previous {name}'s base packages weren't carried over (only envs/ was); to reinstall them: conda install {conda names}; pip install {pip names}`. Names sorted and space-separated; a part with no names is left out together with its `; `; no line at all when both are empty.
 - rpyenv is never the hash authority: every download is checked against a SHA-256 from upstream's definition or, for the three `-latest` names, from the publisher at install time. Nothing installs unchecked.
 - Debug-only test overrides (ignored by release builds): `RPYENV_TEST_CONDA_TABLES` (a folder holding `linux.tsv`), `RPYENV_TEST_CONDA` (the fake publisher base URL). With `RPYENV_TEST_PYTHON_ORG` set and `RPYENV_TEST_CONDA` unset, the publisher sources point at the closed port `http://127.0.0.1:9`.
 - Repo conventions: one-line commit messages via `-m`, or `-F C:\tmp\cm_<random>.txt`; **no Co-Authored-By, Claude-Session or any attribution line**; never `git push`. Python: `python` on Windows, `python3` in WSL, `encoding='utf-8'` on every `open()`.
@@ -33,7 +34,7 @@
 ## Review Focus
 
 1. **An install killed with SIGKILL mid-installer** leaves `versions/<name>` with `.rpyenv-incomplete`. The next `pyenv install <name>` (without `-f`) must install, not say "already installed", and leave no marker. Test in Task 4 (`a_folder_left_with_the_marker_is_reinstalled_without_f`).
-2. **`pyenv install -f` over a conda version with an env** keeps `envs/<env>` (users' conda environments are expensive to recreate). Test in Task 4 (`force_reinstall_keeps_conda_envs`).
+2. **`pyenv install -f` over a conda version with an env and base packages** keeps `envs/<env>` (expensive to recreate), carries nothing else (no half-packages, spec D7), and names the base packages left behind. Test in Task 4 (`force_reinstall_keeps_conda_envs_only_and_names_what_it_left`).
 3. **A user's own conda definition with no hash** is refused with the "cannot read" message and nothing is downloaded. Test in Task 5 (`a_user_definition_without_a_hash_is_refused`).
 4. **Conda present only inside an env** (`versions/x/envs/y/bin/conda`), or in a dot folder (upstream's glob uses `dotglob`), still triggers the shim list. Tests in Task 6 (`conda_in_an_env_or_a_dot_folder_triggers_the_list`).
 5. **The Miniconda listing lacks this arch's `-latest` row**: refused before any installer download, naming the listing as the source. Test in Task 5 (`latest_without_a_listing_row_is_refused_before_downloading`).
@@ -684,7 +685,8 @@ pub fn latest_source(name: &str, i: &Install, arch: &str, f: &Fetcher) -> Result
 - Consumes: nothing from Task 3 (this task installs from a one-line user definition file; Task 5 routes conda names here).
 - Produces:
   - `defs::Fetch::Script { url: String, fragment: Option<String> }`: `install_script "<pkg>" "<url>[#sha]" <steps…>`, steps as for `install_package`.
-  - `Txn::place_empty(&mut self) -> std::io::Result<()>`: sets any existing version aside as `.old-<name>` and leaves an empty `versions/<name>` holding `.rpyenv-incomplete` (`placed()` is then true; `commit` and rollback work as for `place`).
+  - `Txn::place_empty(&mut self) -> std::io::Result<()>`: sets any existing version aside as `.old-<name>` and leaves an empty `versions/<name>` holding `.rpyenv-incomplete` (`placed()` is then true; rollback works as for `place`). It also marks the transaction as conda, so `commit` carries over only `envs/` (spec D7) and, before deleting `.old-<name>`, prints the not-carried line of Global Constraints when there is anything to list.
+  - `txn::not_carried(old: &Path, new: &Path) -> (Vec<String>, Vec<String>)`: (conda names, pip names), each sorted. Conda: `old/conda-meta/*.json` file names parsed as `<name>-<version>-<build>.json` (the name is everything before the second-to-last `-`), minus the names parsed the same way from `new/conda-meta`. Pip: `old/lib/python*/site-packages/*.dist-info` whose `INSTALLER` file, trimmed, is `pip`; the project is the folder name before its first `-`; minus projects with any `.dist-info` in `new/lib/python*/site-packages`.
   - Builder steps `anaconda` (`bash <pkg>.sh -f -b -p <prefix>`) and `miniconda` (the same, then `<prefix>/bin/conda install --yes pip conda=<v>`), each with the definition's variables (`job.definition.vars`) in the child's environment.
   - `common::fakeconda::installer(py: &str) -> String`: the text of a fake `.sh` installer for Python `py` (e.g. `"3.12"`).
 
@@ -833,19 +835,48 @@ fn a_failed_verify_leaves_nothing() {
     assert!(left_in_versions(&f).is_empty());
 }
 
-/// Review focus 2.
+/// Review focus 2; spec D7: only `envs/` is carried over, and the base packages left behind
+/// are named with ready commands.
 #[test]
-fn force_reinstall_keeps_conda_envs() {
+fn force_reinstall_keeps_conda_envs_only_and_names_what_it_left() {
     let f = Fixture::new();
     let (s, sha) = serve(&installer("3.12"));
     let def = def_file(&f, &s, &sha, "miniconda3-t", "miniconda", "");
     assert_eq!(run(&f, &["install", &def], &[]).code, 0);
-    let env = f.root.join("versions/miniconda3-t/envs/work");
+    let v = f.root.join("versions/miniconda3-t");
+    let env = v.join("envs/work");
     std::fs::create_dir_all(env.join("conda-meta")).unwrap();
+    // A conda-installed numpy (record, library, package) and a pip-installed requests.
+    f.file(&v.join("conda-meta/numpy-1.26.4-py312h1_0.json"), "{}");
+    f.file(&v.join("lib/libnumpyfoo.so"), "");
+    let sp = v.join("lib/python3.12/site-packages");
+    f.file(&sp.join("numpy/__init__.py"), "");
+    f.file(&sp.join("numpy-1.26.4.dist-info/INSTALLER"), "conda\n");
+    f.file(&sp.join("requests/__init__.py"), "");
+    f.file(&sp.join("requests-2.32.3.dist-info/INSTALLER"), "pip\n");
+    f.file(&v.join("bin/my-tool"), "");
     let r = run(&f, &["install", "-f", &def], &[]);
     assert_eq!(r.code, 0, "{}", r.stderr);
     assert!(env.join("conda-meta").is_dir(), "the env was carried over");
+    for gone in ["lib/libnumpyfoo.so", "lib/python3.12/site-packages/numpy", "lib/python3.12/site-packages/requests", "bin/my-tool", "conda-meta/numpy-1.26.4-py312h1_0.json"] {
+        assert!(!v.join(gone).exists(), "{gone} was carried over");
+    }
+    assert!(
+        r.stderr.contains("rpyenv: the previous miniconda3-t's base packages weren't carried over (only envs/ was); to reinstall them: conda install numpy; pip install requests\n"),
+        "{}", r.stderr
+    );
     assert_eq!(left_in_versions(&f), ["miniconda3-t"]);
+}
+
+#[test]
+fn a_reinstall_over_a_bare_base_prints_no_list() {
+    let f = Fixture::new();
+    let (s, sha) = serve(&installer("3.12"));
+    let def = def_file(&f, &s, &sha, "miniconda3-t", "miniconda", "");
+    assert_eq!(run(&f, &["install", &def], &[]).code, 0);
+    let r = run(&f, &["install", "-f", &def], &[]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert!(!r.stderr.contains("weren't carried over"), "{}", r.stderr);
 }
 
 /// Review focus 1.
@@ -879,9 +910,73 @@ If `failed_verify`'s `.replace` doesn't match the generated text exactly, give `
     pub fn place_empty(&mut self) -> std::io::Result<()> {
         let empty = self.stage.join("prefix");
         std::fs::create_dir_all(&empty)?;
+        self.conda = true;
         self.place(&empty)
     }
 ```
+
+  Add the field `conda: bool` (false in `begin_for`). In `commit`, for a non-link `old`: when `self.conda`, first compute `not_carried(&old, &self.target())` and, if either list is non-empty, write the Global Constraints line with `rpyenv_core::textout::write(true, …)` (stderr, as `kept_message` is written for the Linux flavor); then carry over only `envs/` (the first `if` of `carry_over`, factored into `fn carry_envs(old, new)` that `carry_over` also calls); else `carry_over` as now. The `.old-<name>` removal and the kept-message path stay as they are.
+
+```rust
+/// Spec D7: the base packages of a conda version's previous copy that a reinstall doesn't
+/// carry over. (conda names, pip names), each sorted.
+pub fn not_carried(old: &Path, new: &Path) -> (Vec<String>, Vec<String>) {
+    use std::collections::BTreeSet;
+    // `numpy-1.26.4-py312h1_0.json`: the name is what comes before the version and the build.
+    let records = |base: &Path| -> BTreeSet<String> {
+        std::fs::read_dir(base.join("conda-meta"))
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+            .filter_map(|e| {
+                let f = e.file_name().to_string_lossy().into_owned();
+                let stem = f.strip_suffix(".json")?;
+                let mut parts = stem.rsplitn(3, '-');
+                let (_build, _version, name) = (parts.next()?, parts.next()?, parts.next()?);
+                Some(name.to_string())
+            })
+            .collect()
+    };
+    // `requests-2.32.3.dist-info`: the project is what comes before the first `-`.
+    let dist_infos = |base: &Path, pip_only: bool| -> BTreeSet<String> {
+        let mut out = BTreeSet::new();
+        for lib in std::fs::read_dir(base.join("lib")).into_iter().flatten().filter_map(Result::ok) {
+            if !lib.file_name().to_string_lossy().starts_with("python") {
+                continue;
+            }
+            for e in std::fs::read_dir(lib.path().join("site-packages")).into_iter().flatten().filter_map(Result::ok) {
+                let f = e.file_name().to_string_lossy().into_owned();
+                let Some(stem) = f.strip_suffix(".dist-info") else { continue };
+                let installer = std::fs::read_to_string(e.path().join("INSTALLER")).unwrap_or_default();
+                if pip_only && installer.trim() != "pip" {
+                    continue;
+                }
+                out.insert(stem.split('-').next().unwrap_or(stem).to_string());
+            }
+        }
+        out
+    };
+    let conda = records(old).difference(&records(new)).cloned().collect();
+    let pip = dist_infos(old, true).difference(&dist_infos(new, false)).cloned().collect();
+    (conda, pip)
+}
+
+/// The line spec D7 prints, or `None` when nothing was left behind.
+pub fn not_carried_line(name: &str, conda: &[String], pip: &[String]) -> Option<String> {
+    let mut parts = Vec::new();
+    if !conda.is_empty() {
+        parts.push(format!("conda install {}", conda.join(" ")));
+    }
+    if !pip.is_empty() {
+        parts.push(format!("pip install {}", pip.join(" ")));
+    }
+    (!parts.is_empty()).then(|| {
+        format!("rpyenv: the previous {name}'s base packages weren't carried over (only envs/ was); to reinstall them: {}", parts.join("; "))
+    })
+}
+```
+
+  Unit tests in `txn.rs`'s test module: `not_carried` parses `python-dateutil-2.9.0-pyhd8ed1ab_0.json` as `python-dateutil`; a record present in both bases is not listed; a `.dist-info` with `INSTALLER` `conda` is not a pip name; `not_carried_line("m", &[], &[])` is `None`; with only pip names the line has no `conda install` part and no `; `.
 
   - `builder.rs` `fetch_package`: a `Fetch::Script` arm: `sha256_of_fragment` as for `Tarball`; `FetchRequest { file_name: format!("{}.sh", pkg.name), url, check: Check::Sha256(sha), dest_dir: build_path }`; return the fetched file's path (no extraction).
   - `builder.rs` `run_step`, a new arm before `verify_py*`:
@@ -1328,7 +1423,7 @@ pub fn conda_exists(versions_dir: &Path) -> bool {
 - Consumes: everything above.
 - Produces: `python parity/coverage.py` passes with every row covered.
 
-- [ ] **Step 1: Allowlist.** Delete the D-44 row. Amend D-58's rpyenv cell: add "Conda installs (M7b) run in the final folder, which holds `.rpyenv-incomplete` until they finish; a failure or Ctrl+C deletes it and restores the previous version". Add:
+- [ ] **Step 1: Allowlist.** Delete the D-44 row. Amend D-58's rpyenv cell: add "Conda installs (M7b) run in the final folder, which holds `.rpyenv-incomplete` until they finish; a failure or Ctrl+C deletes it and restores the previous version. A conda reinstall carries over only `envs/` and names, with ready `conda install` / `pip install` commands, the base packages it left behind (conda packages span `lib/`, `site-packages` and `conda-meta/`, so carrying part of them would break them; M7b design D7)". Cite D-58 in a `// allowlist D-58` comment above Task 4's `force_reinstall_keeps_conda_envs_only_and_names_what_it_left`. Add:
 
 | ID | OS | Command | Upstream | rpyenv | Reason |
 |---|---|---|---|---|---|

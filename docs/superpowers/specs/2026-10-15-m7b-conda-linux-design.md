@@ -34,6 +34,7 @@ conda envs) is **M7c**, with its own spec.
 | D4 | Which conda executables get shims | Upstream's `conda.d/default.list`, exactly (§5). The parent spec's package-ownership rule stays a Windows design (M7c). |
 | D5 | How rpyenv reads the definitions | M7a's pattern: CI evaluates the vendored definitions with stubs in a no-network container into an embedded table; a user's own definition is evaluated with `bash` at install time. Chosen over a Rust reader for the `case … install_script … esac` shape and over evaluating every definition with `bash` on the user's machine. |
 | D6 | How safe `-latest` is (after a side-agent note) | Said in this spec and the README, without a runtime warning: a `-latest` hash comes from the download's own publisher, so it catches a broken download, not a compromised publisher; a numbered version carries upstream's reviewed hash. Windows CPython's hashes already come from python.org itself. |
+| D7 | What `install -f` carries over into a reinstalled conda version (after a side-agent note, 2026-10-15) | Only `envs/`. A conda package spans `lib/`, `site-packages` and `conda-meta/`, so the CPython rule (extra `bin/` and `site-packages` entries, D-58) would carry half-packages. Before the old copy is deleted, rpyenv prints the base packages it didn't carry (conda ones by `conda-meta/` record, pip ones by `INSTALLER`), with ready `conda install` / `pip install` commands. Chosen over the CPython rule, upstream's install over the old folder (no rollback), and carrying whole conda packages (breaks across releases). |
 
 ## 3. Measurements this design rests on (2026-10-14)
 
@@ -125,9 +126,15 @@ how many rows are `ok`, `ok-latest`, `no-binary` and `unsupported`.
      read from `<prefix>/bin/conda --version`.
 7. **Verify** through the existing verify code: `verify_pyXY` checks `bin/pythonX.Y`,
    `verify_py3_latest` checks `bin/python3`.
-8. **Commit:** the marker goes, and an old version's `envs/` is carried over, as now. A
-   conda env's files name its own final path (`versions/<name>/envs/<env>`), which is the
-   same after the carry-over.
+8. **Commit:** the marker goes, and an old version's `envs/` is carried over, and nothing
+   else (D7). A conda env's files name its own final path (`versions/<name>/envs/<env>`),
+   which is the same after the carry-over. When the old base had packages the new one
+   lacks, rpyenv prints, on stderr, before deleting the old copy:
+   `rpyenv: the previous {name}'s base packages weren't carried over (only envs/ was); to reinstall them: conda install {conda names}; pip install {pip names}`
+   (sorted names; a part with no names is left out, with its `; `). Conda names: records in
+   the old `conda-meta/` (`<name>-<version>-<build>.json`) with no record of that name in
+   the new one. Pip names: old `site-packages/*.dist-info` whose `INSTALLER` file reads
+   `pip`, with no `.dist-info` of that project in the new base.
 9. **Failure or Ctrl+C at any step:** the transaction's rollback deletes the
    half-installed folder and renames `.old-<name>` back. A folder that still has the
    marker is already not a version to `versions`, shims or `install`'s "already
