@@ -16,7 +16,7 @@ pub const PREFIXES: [&str; 5] = [
     "https://repo.anaconda.com/archive/",
     "https://repo.continuum.io/miniconda/",
     "https://repo.continuum.io/archive/",
-    "https://github.com/conda-forge/",
+    "https://github.com/conda-forge/miniforge/",
 ];
 /// The definitions whose installer has no version in its name (`ok-latest` rows).
 pub const LATEST: [&str; 4] = [
@@ -245,7 +245,12 @@ pub fn listing_sha(html: &str, file: &str) -> Option<String> {
         if w != file {
             continue;
         }
-        if let Some(h) = words[i + 1..].iter().take(8).find(|x| is_sha256(x)) {
+        // Stop at the next listed file (or the next row of this one): a row without a hash
+        // cell must not take its neighbour's.
+        let row = words[i + 1..].iter().take(8).take_while(|x| {
+            *x != file && !(x.ends_with(".sh") || x.ends_with(".exe") || x.ends_with(".pkg"))
+        });
+        if let Some(h) = row.into_iter().find(|x| is_sha256(x)) {
             match found {
                 Some(prev) if prev != h => return None,
                 _ => found = Some(h),
@@ -443,6 +448,16 @@ mod tests {
     }
 
     #[test]
+    fn a_hashless_row_does_not_take_the_next_rows_hash() {
+        let html = format!(
+            "<tr><td>A.sh</td><td>1M</td><td>2026-01-01</td><td>10:00:00</td></tr>
+<tr><td>B.sh</td><td>1M</td><td>2026-01-01</td><td>10:00:00</td><td>{SHA}</td></tr>"
+        );
+        assert_eq!(listing_sha(&html, "A.sh"), None);
+        assert_eq!(listing_sha(&html, "B.sh"), Some(SHA.to_string()));
+    }
+
+    #[test]
     fn a_sha256_file_is_its_first_word() {
         assert_eq!(
             sha_file(&format!("{SHA}  Miniforge3-26.7.2-0-Linux-x86_64.sh\n")),
@@ -492,20 +507,14 @@ mod tests {
         let def = d.join("miniconda3-x");
         std::fs::write(
             &def,
-            format!(
-                "install_script P \"{URL}#{SHA}\" miniconda verify_py312
-"
-            ),
+            format!("install_script P \"{URL}#{SHA}\" miniconda verify_py312\n"),
         )
         .unwrap();
         assert!(matches!(evaluate(&def, "Linux-x86_64"), Ok(Verdict::Ok(_))));
         let nohash = d.join("miniconda3-y");
         std::fs::write(
             &nohash,
-            format!(
-                "install_script P \"{URL}\" miniconda verify_py312
-"
-            ),
+            format!("install_script P \"{URL}\" miniconda verify_py312\n"),
         )
         .unwrap();
         assert_eq!(
