@@ -23,9 +23,10 @@ PREFIXES = ("https://repo.anaconda.com/miniconda/", "https://repo.anaconda.com/a
             "https://github.com/conda-forge/miniforge/")
 # The -latest names whose publisher publishes a hash rpyenv reads at install time (design D2).
 LATEST = ("miniconda-latest", "miniconda2-latest", "miniconda3-latest", "miniforge3-latest")
-# Fewer `ok` rows than this means the definitions or the stubs changed shape (Task 2 sets it
-# just under the count measured on the pinned upstream).
-MIN_OK_ROWS = 0
+# Fewer `ok` rows than this means the definitions or the stubs changed shape. Measured on
+# pyenv 2.8.9 on 2026-10-15: 670 (388 Linux-x86_64 + 282 Linux-aarch64); 670 rounded down to a
+# multiple of 50 is 650, minus 50.
+MIN_OK_ROWS = 600
 # debian:trixie-slim as pulled on 2026-10-14, the digest ci/pypy_tables.py pins.
 IMAGE = "debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f"
 LOOP = ('for n in "$@"; do for a in Linux-x86_64 Linux-aarch64; do printf "%s\\t%s\\t" "$n" "$a"; '

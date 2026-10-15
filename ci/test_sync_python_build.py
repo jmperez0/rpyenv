@@ -25,6 +25,7 @@ class Sync(unittest.TestCase):
             "plugins/python-build/share/python-build/pypy3.10-7.3.12": "pypy\n",
             "plugins/python-build/share/python-build/patches/3.12.0/Python-3.12.0/0001.patch": "p\r\n",
             "plugins/python-build/share/python-build/patches/pypy3.10-7.3.12/x.patch": "no\n",
+            "pyenv.d/rehash/conda.d/default.list": "conda\n",
         }
         files.update(extra or {})
         tree(d, files)
@@ -42,6 +43,38 @@ class Sync(unittest.TestCase):
                 self.assertEqual(f.read(), "pyenv abc123 2.8.6\n")
             self.assertTrue(changes)
             self.assertEqual(s.sync(up, dest, "abc123", write=False), [], "a second run finds no change")
+
+    def conda_upstream(self, d):
+        share = "plugins/python-build/share/python-build/"
+        self.upstream(d, {
+            share + "miniforge3-1": "m\r\n",
+            share + "anaconda3-1": "a\n",
+            share + "mambaforge": "mf\n",
+            share + "miniconda3-1": "mc\n",
+            share + "ruby-1": "ruby\n",
+            "pyenv.d/rehash/conda.d/default.list": "conda\r\nmamba\n",
+        })
+
+    def test_copies_conda_family_definitions_and_the_rehash_list(self):
+        with tempfile.TemporaryDirectory() as up:
+            self.conda_upstream(up)
+            got = s.wanted(up)
+            self.assertEqual(got["share/miniforge3-1"], b"m\r\n")
+            self.assertEqual(got["share/anaconda3-1"], b"a\n")
+            self.assertEqual(got["share/mambaforge"], b"mf\n")
+            self.assertEqual(got["share/miniconda3-1"], b"mc\n")
+            self.assertEqual(got["rehash/conda.d/default.list"], b"conda\r\nmamba\n")
+            self.assertNotIn("share/ruby-1", got)
+
+    @unittest.skipUnless(hasattr(os, "symlink") and os.name != "nt", "needs symlinks (WSL/Linux)")
+    def test_refuses_a_symlinked_rehash_list(self):
+        with tempfile.TemporaryDirectory() as up:
+            self.conda_upstream(up)
+            lst = os.path.join(up, "pyenv.d", "rehash", "conda.d", "default.list")
+            os.remove(lst)
+            os.symlink("/etc/hostname", lst)
+            with self.assertRaises(s.Unsafe):
+                s.wanted(up)
 
     def test_reports_added_changed_and_removed_files(self):
         with tempfile.TemporaryDirectory() as up, tempfile.TemporaryDirectory() as dest:

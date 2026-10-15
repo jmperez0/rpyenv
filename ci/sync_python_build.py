@@ -4,7 +4,9 @@
 
 Copies the CPython definitions (file names starting with a digit), their
 `patches/<name>/` directories, and the PyPy definitions (`pypy*`, M7a design §4.1; their
-patches serve only source builds and are not copied) byte for byte, plus pyenv's LICENSE, and records the commit
+patches serve only source builds and are not copied) byte for byte, the conda-family definitions
+(anaconda*, miniconda*, miniforge*, mambaforge*; no patches, M7b) and
+`pyenv.d/rehash/conda.d/default.list`, plus pyenv's LICENSE, and records the commit
 and version in UPSTREAM. Without --write it only lists the differences and exits 1 if any.
 """
 import argparse
@@ -13,6 +15,7 @@ import re
 import shutil
 import sys
 
+FAMILIES = ("anaconda", "miniconda", "miniforge", "mambaforge")
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEST = os.path.join(REPO, "crates", "pyenv", "python-build")
 
@@ -42,7 +45,8 @@ def wanted(upstream):
     out = {}
     refuse_links(share, upstream)
     names = sorted(n for n in os.listdir(share)
-                   if (n[:1].isdigit() or n.startswith("pypy")) and os.path.isfile(os.path.join(share, n)))
+                   if (n[:1].isdigit() or n.startswith("pypy") or n.startswith(FAMILIES))
+                   and os.path.isfile(os.path.join(share, n)))
     for n in names:
         refuse_links(os.path.join(share, n), upstream)
         with open(os.path.join(share, n), "rb") as f:
@@ -73,6 +77,11 @@ def wanted(upstream):
     refuse_links(os.path.join(upstream, "LICENSE"), upstream)
     with open(os.path.join(upstream, "LICENSE"), "rb") as f:
         out["LICENSE"] = f.read()
+    # Upstream's conda rehash list (M7b design §5): rpyenv-core compiles it in.
+    lst = os.path.join(upstream, "pyenv.d", "rehash", "conda.d", "default.list")
+    refuse_links(lst, upstream)
+    with open(lst, "rb") as f:
+        out["rehash/conda.d/default.list"] = f.read()
     return out
 
 
