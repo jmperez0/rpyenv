@@ -70,6 +70,15 @@ class Evaluator(unittest.TestCase):
         v = self.eval("miniconda3-latest", "Linux-x86_64")
         self.assertTrue(v.startswith("ok ") and "#" not in v, v)
 
+    def test_md5_fragment_is_md5_only(self):
+        self.write("miniconda3-md5", CASE.format(sha="0123456789abcdef0123456789abcdef"))
+        self.assertEqual(self.eval("miniconda3-md5", "Linux-x86_64"), "unsupported md5 checksum only")
+
+    def test_malformed_fragment_is_malformed_sha256(self):
+        self.write("miniconda3-bad", CASE.format(sha="xyz"))
+        v = self.eval("miniconda3-bad", "Linux-x86_64")
+        self.assertTrue(v.startswith("unsupported malformed sha256 in "), v)
+
     def test_unknown_function_is_unsupported(self):
         self.write("anaconda3-x", "install_something_else foo\n")
         self.assertEqual(self.eval("anaconda3-x", "Linux-x86_64"), "unsupported calls install_something_else")

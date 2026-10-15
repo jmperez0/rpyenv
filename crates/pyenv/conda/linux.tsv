@@ -46,7 +46,7 @@ anaconda2-2019.03	Linux-x86_64	ok Anaconda2-2019.03-Linux-x86_64 https://repo.co
 anaconda2-2019.03	Linux-aarch64	no-binary Anaconda2
 anaconda2-2019.07	Linux-x86_64	ok Anaconda2-2019.07-Linux-x86_64 https://repo.continuum.io/archive/Anaconda2-2019.07-Linux-x86_64.sh#189e16e7adf9ba4b7b7d06ecdc10ce4ad4153e5e3505b9331f3d142243e18e97 anaconda verify_py27
 anaconda2-2019.07	Linux-aarch64	no-binary Anaconda3
-anaconda2-2019.10	Linux-x86_64	unsupported malformed sha256 in https://repo.anaconda.com/archive/Anaconda2-2019.10-Linux-x86_64.sh#69c64167b8cf3a8fc6b50d12d8476337
+anaconda2-2019.10	Linux-x86_64	unsupported md5 checksum only
 anaconda2-2019.10	Linux-aarch64	no-binary Anaconda
 anaconda2-4.0.0	Linux-x86_64	ok Anaconda2-4.0.0-Linux-x86_64 https://repo.continuum.io/archive/Anaconda2-4.0.0-Linux-x86_64.sh#ae312143952ca00e061a656c2080e0e4fd3532721282ba8e2978177cad71a5f0 anaconda verify_py27
 anaconda2-4.0.0	Linux-aarch64	no-binary Anaconda2
@@ -104,16 +104,16 @@ anaconda3-2020.07	Linux-x86_64	ok Anaconda3-2020.07-Linux-x86_64 https://repo.co
 anaconda3-2020.07	Linux-aarch64	no-binary Anaconda3
 anaconda3-2020.11	Linux-x86_64	ok Anaconda3-2020.11-Linux-x86_64 https://repo.continuum.io/archive/Anaconda3-2020.11-Linux-x86_64.sh#cf2ff493f11eaad5d09ce2b4feaa5ea90db5174303d5b3fe030e16d29aeef7de anaconda verify_py38
 anaconda3-2020.11	Linux-aarch64	no-binary Anaconda3
-anaconda3-2021.04	Linux-x86_64	unsupported malformed sha256 in https://repo.anaconda.com/archive/Anaconda3-2021.04-Linux-x86_64.sh#230f2c3c343ee58073bf41bd896dd76c
-anaconda3-2021.04	Linux-aarch64	unsupported malformed sha256 in https://repo.anaconda.com/archive/Anaconda3-2021.04-Linux-aarch64.sh#14f48f5d1310478b11940a3b96eec7b6
+anaconda3-2021.04	Linux-x86_64	unsupported md5 checksum only
+anaconda3-2021.04	Linux-aarch64	unsupported md5 checksum only
 anaconda3-2021.05	Linux-x86_64	ok Anaconda3-2021.05-Linux-x86_64 https://repo.continuum.io/archive/Anaconda3-2021.05-Linux-x86_64.sh#2751ab3d678ff0277ae80f9e8a74f218cfc70fe9a9cdc7bb1c137d7e47e33d53 anaconda verify_py38
 anaconda3-2021.05	Linux-aarch64	no-binary Anaconda3
 anaconda3-2021.11	Linux-x86_64	ok Anaconda3-2021.11-Linux-x86_64 https://repo.continuum.io/archive/Anaconda3-2021.11-Linux-x86_64.sh#fedf9e340039557f7b5e8a8a86affa9d299f5e9820144bd7b92ae9f7ee08ac60 anaconda verify_py39
 anaconda3-2021.11	Linux-aarch64	no-binary Anaconda3
-anaconda3-2022.05	Linux-x86_64	unsupported malformed sha256 in https://repo.anaconda.com/archive/Anaconda3-2022.05-Linux-x86_64.sh#a01150aff48fcb6fcd6472381652de04
-anaconda3-2022.05	Linux-aarch64	unsupported malformed sha256 in https://repo.anaconda.com/archive/Anaconda3-2022.05-Linux-aarch64.sh#7e822f5622fa306c0aa42430ba884454
-anaconda3-2022.10	Linux-x86_64	unsupported malformed sha256 in https://repo.anaconda.com/archive/Anaconda3-2022.10-Linux-x86_64.sh#80256bd7a55509665c4179fd61516745
-anaconda3-2022.10	Linux-aarch64	unsupported malformed sha256 in https://repo.anaconda.com/archive/Anaconda3-2022.10-Linux-aarch64.sh#dac187c9fa6cae4ad663937f0ef79c8f
+anaconda3-2022.05	Linux-x86_64	unsupported md5 checksum only
+anaconda3-2022.05	Linux-aarch64	unsupported md5 checksum only
+anaconda3-2022.10	Linux-x86_64	unsupported md5 checksum only
+anaconda3-2022.10	Linux-aarch64	unsupported md5 checksum only
 anaconda3-2023.03	Linux-x86_64	ok Anaconda3-2023.03-Linux-x86_64 https://repo.anaconda.com/archive/Anaconda3-2023.03-Linux-x86_64.sh#19737d5c27b23a1d8740c5cb2414bf6253184ce745d0a912bb235a212a15e075 anaconda verify_py310
 anaconda3-2023.03	Linux-aarch64	ok Anaconda3-2023.03-Linux-aarch64 https://repo.anaconda.com/archive/Anaconda3-2023.03-Linux-aarch64.sh#613797154d9383355677f7dfee10db32b2c327cbedabddcb303598f242c79883 anaconda verify_py310
 anaconda3-2023.03-0	Linux-x86_64	ok Anaconda3-2023.03-0-Linux-x86_64 https://repo.anaconda.com/archive/Anaconda3-2023.03-0-Linux-x86_64.sh#19737d5c27b23a1d8740c5cb2414bf6253184ce745d0a912bb235a212a15e075 anaconda verify_py39
@@ -306,7 +306,7 @@ miniconda-3.9.1	Linux-x86_64	ok Miniconda-3.9.1-Linux-x86_64 https://repo.contin
 miniconda-3.9.1	Linux-aarch64	no-binary Miniconda
 miniconda-latest	Linux-x86_64	ok-latest Miniconda2-latest-Linux-x86_64 https://repo.continuum.io/miniconda/Miniconda2-latest-Linux-x86_64.sh miniconda verify_py27
 miniconda-latest	Linux-aarch64	no-binary Miniconda2
-miniconda2-2.7-4.8.3	Linux-x86_64	unsupported malformed sha256 in https://repo.anaconda.com/miniconda/Miniconda2-py27_4.8.3-Linux-x86_64.sh#19ce7d0039ab349914d928e7f32b1c1b
+miniconda2-2.7-4.8.3	Linux-x86_64	unsupported md5 checksum only
 miniconda2-2.7-4.8.3	Linux-aarch64	no-binary Miniconda
 miniconda2-3.18.3	Linux-x86_64	ok Miniconda2-3.18.3-Linux-x86_64 https://repo.continuum.io/miniconda/Miniconda2-3.18.3-Linux-x86_64.sh#dd16e093aec2346af4e8f383a9dedb9a3d6c1a0cb7637b180e1e0790dfa55e81 miniconda verify_py27
 miniconda2-3.18.3	Linux-aarch64	no-binary Miniconda2
@@ -324,23 +324,23 @@ miniconda2-4.3.27	Linux-x86_64	ok Miniconda2-4.3.27.1-Linux-x86_64 https://repo.
 miniconda2-4.3.27	Linux-aarch64	no-binary Miniconda
 miniconda2-4.3.30	Linux-x86_64	ok Miniconda2-4.3.30-Linux-x86_64 https://repo.continuum.io/miniconda/Miniconda2-4.3.30-Linux-x86_64.sh#0891000ca28359e63aa77e613c01f7a88855dedfc0ddc8be31829f3139318cf3 miniconda verify_py27
 miniconda2-4.3.30	Linux-aarch64	no-binary Miniconda
-miniconda2-4.3.31	Linux-x86_64	unsupported malformed sha256 in https://repo.anaconda.com/miniconda/Miniconda2-4.3.31-Linux-x86_64.sh#da2dd466d26e33a2b1f72fdb853a8ff0
+miniconda2-4.3.31	Linux-x86_64	unsupported md5 checksum only
 miniconda2-4.3.31	Linux-aarch64	no-binary Miniconda
-miniconda2-4.4.10	Linux-x86_64	unsupported malformed sha256 in https://repo.anaconda.com/miniconda/Miniconda2-4.4.10-Linux-x86_64.sh#dd54b344661560b861f86cc5ccff044b
+miniconda2-4.4.10	Linux-x86_64	unsupported md5 checksum only
 miniconda2-4.4.10	Linux-aarch64	no-binary Miniconda
-miniconda2-4.5.1	Linux-x86_64	unsupported malformed sha256 in https://repo.anaconda.com/miniconda/Miniconda2-4.5.1-Linux-x86_64.sh#332aeff0bb6b45bbf7e220dec17ba867
+miniconda2-4.5.1	Linux-x86_64	unsupported md5 checksum only
 miniconda2-4.5.1	Linux-aarch64	no-binary Miniconda
-miniconda2-4.5.11	Linux-x86_64	unsupported malformed sha256 in https://repo.anaconda.com/miniconda/Miniconda2-4.5.11-Linux-x86_64.sh#458324438b7b0e5afcc272b63d44195d
+miniconda2-4.5.11	Linux-x86_64	unsupported md5 checksum only
 miniconda2-4.5.11	Linux-aarch64	no-binary Miniconda
-miniconda2-4.5.12	Linux-x86_64	unsupported malformed sha256 in https://repo.anaconda.com/miniconda/Miniconda2-4.5.12-Linux-x86_64.sh#4be03f925e992a8eda03758b72a77298
+miniconda2-4.5.12	Linux-x86_64	unsupported md5 checksum only
 miniconda2-4.5.12	Linux-aarch64	no-binary Miniconda
-miniconda2-4.5.4	Linux-x86_64	unsupported malformed sha256 in https://repo.anaconda.com/miniconda/Miniconda2-4.5.4-Linux-x86_64.sh#8a1c02f6941d8778f8afad7328265cf5
+miniconda2-4.5.4	Linux-x86_64	unsupported md5 checksum only
 miniconda2-4.5.4	Linux-aarch64	no-binary Miniconda
-miniconda2-4.6.14	Linux-x86_64	unsupported malformed sha256 in https://repo.anaconda.com/miniconda/Miniconda2-4.6.14-Linux-x86_64.sh#faa7cb0b0c8986ac3cacdbbd00fe4168
+miniconda2-4.6.14	Linux-x86_64	unsupported md5 checksum only
 miniconda2-4.6.14	Linux-aarch64	no-binary Miniconda
-miniconda2-4.7.10	Linux-x86_64	unsupported malformed sha256 in https://repo.anaconda.com/miniconda/Miniconda2-4.7.10-Linux-x86_64.sh#3bc6ffc6cda8efa467926dfd92a30bca
+miniconda2-4.7.10	Linux-x86_64	unsupported md5 checksum only
 miniconda2-4.7.10	Linux-aarch64	no-binary Miniconda
-miniconda2-4.7.12	Linux-x86_64	unsupported malformed sha256 in https://repo.anaconda.com/miniconda/Miniconda2-4.7.12-Linux-x86_64.sh#5a218d9dce3a77905d17ae87ac72a1e8
+miniconda2-4.7.12	Linux-x86_64	unsupported md5 checksum only
 miniconda2-4.7.12	Linux-aarch64	no-binary Miniconda
 miniconda2-latest	Linux-x86_64	ok-latest Miniconda2-latest-Linux-x86_64 https://repo.continuum.io/miniconda/Miniconda2-latest-Linux-x86_64.sh miniconda verify_py27
 miniconda2-latest	Linux-aarch64	no-binary Miniconda2
@@ -575,19 +575,19 @@ miniconda3-3.7-22.11.1-1	Linux-aarch64	ok Miniconda3-py37_22.11.1-1-Linux-aarch6
 miniconda3-3.7-23.1.0-1	Linux-x86_64	ok Miniconda3-py37_23.1.0-1-Linux-x86_64 https://repo.anaconda.com/miniconda/Miniconda3-py37_23.1.0-1-Linux-x86_64.sh#fc96109ea96493e31f70abbc5cae58e80634480c0686ab46924549ac41176812 miniconda verify_py37
 miniconda3-3.7-23.1.0-1	Linux-aarch64	ok Miniconda3-py37_23.1.0-1-Linux-aarch64 https://repo.anaconda.com/miniconda/Miniconda3-py37_23.1.0-1-Linux-aarch64.sh#31c1d635fae931b7c0687018cc87e918e8098ed5dd5e76a658e10c57e00ef864 miniconda verify_py37
 miniconda3-3.7-4.10.1	Linux-x86_64	no-binary Miniconda
-miniconda3-3.7-4.10.1	Linux-aarch64	unsupported malformed sha256 in https://repo.anaconda.com/miniconda/Miniconda3-py37_4.10.1-Linux-aarch64.sh#bcb84cfe1f5ccf477fa73fc87d2f4125
-miniconda3-3.7-4.10.3	Linux-x86_64	unsupported malformed sha256 in https://repo.anaconda.com/miniconda/Miniconda3-py37_4.10.3-Linux-x86_64.sh#9f186c1d86c266acc47dbc1603f0e2ed
-miniconda3-3.7-4.10.3	Linux-aarch64	unsupported malformed sha256 in https://repo.anaconda.com/miniconda/Miniconda3-py37_4.10.3-Linux-aarch64.sh#19815e497b045246307f9317bcb4fb93
-miniconda3-3.7-4.11.0	Linux-x86_64	unsupported malformed sha256 in https://repo.anaconda.com/miniconda/Miniconda3-py37_4.11.0-Linux-x86_64.sh#7675bd23411179956bcc4692f16ef27d
-miniconda3-3.7-4.11.0	Linux-aarch64	unsupported malformed sha256 in https://repo.anaconda.com/miniconda/Miniconda3-py37_4.11.0-Linux-aarch64.sh#07e8dfaf467e5432d402a79b11085783
-miniconda3-3.7-4.12.0	Linux-x86_64	unsupported malformed sha256 in https://repo.anaconda.com/miniconda/Miniconda3-py37_4.12.0-Linux-x86_64.sh#770bac2587bc7380198b4f0741115b11
-miniconda3-3.7-4.12.0	Linux-aarch64	unsupported malformed sha256 in https://repo.anaconda.com/miniconda/Miniconda3-py37_4.12.0-Linux-aarch64.sh#dbac5ea2d2a1dfcf864f5ad0ac775647
-miniconda3-3.7-4.8.2	Linux-x86_64	unsupported malformed sha256 in https://repo.anaconda.com/miniconda/Miniconda3-py37_4.8.2-Linux-x86_64.sh#87e77f097f6ebb5127c77662dfc3165e
+miniconda3-3.7-4.10.1	Linux-aarch64	unsupported md5 checksum only
+miniconda3-3.7-4.10.3	Linux-x86_64	unsupported md5 checksum only
+miniconda3-3.7-4.10.3	Linux-aarch64	unsupported md5 checksum only
+miniconda3-3.7-4.11.0	Linux-x86_64	unsupported md5 checksum only
+miniconda3-3.7-4.11.0	Linux-aarch64	unsupported md5 checksum only
+miniconda3-3.7-4.12.0	Linux-x86_64	unsupported md5 checksum only
+miniconda3-3.7-4.12.0	Linux-aarch64	unsupported md5 checksum only
+miniconda3-3.7-4.8.2	Linux-x86_64	unsupported md5 checksum only
 miniconda3-3.7-4.8.2	Linux-aarch64	no-binary Miniconda
-miniconda3-3.7-4.8.3	Linux-x86_64	unsupported malformed sha256 in https://repo.anaconda.com/miniconda/Miniconda3-py37_4.8.3-Linux-x86_64.sh#751786b92c00b1aeae3f017b781018df
+miniconda3-3.7-4.8.3	Linux-x86_64	unsupported md5 checksum only
 miniconda3-3.7-4.8.3	Linux-aarch64	no-binary Miniconda
-miniconda3-3.7-4.9.2	Linux-x86_64	unsupported malformed sha256 in https://repo.anaconda.com/miniconda/Miniconda3-py37_4.9.2-Linux-x86_64.sh#3143b1116f2d466d9325c206b7de88f7
-miniconda3-3.7-4.9.2	Linux-aarch64	unsupported malformed sha256 in https://repo.anaconda.com/miniconda/Miniconda3-py37_4.9.2-Linux-aarch64.sh#eb76394f962a84fb6af4ed8bf115b904
+miniconda3-3.7-4.9.2	Linux-x86_64	unsupported md5 checksum only
+miniconda3-3.7-4.9.2	Linux-aarch64	unsupported md5 checksum only
 miniconda3-3.7.0	Linux-x86_64	ok Miniconda3-3.7.0-Linux-x86_64 https://repo.continuum.io/miniconda/Miniconda3-3.7.0-Linux-x86_64.sh#dba631db9938216af83ca9793605a73fae8b8e5ef966c15b9e89c09bf405de26 miniconda verify_py34
 miniconda3-3.7.0	Linux-aarch64	no-binary Miniconda
 miniconda3-3.8-22.11.1-1	Linux-x86_64	ok Miniconda3-py38_22.11.1-1-Linux-x86_64 https://repo.anaconda.com/miniconda/Miniconda3-py38_22.11.1-1-Linux-x86_64.sh#473e5ecc8e078e9ef89355fbca21f8eefa5f9081544befca99867c7beac3150d miniconda verify_py38
@@ -611,19 +611,19 @@ miniconda3-3.8-23.5.2-0	Linux-aarch64	ok Miniconda3-py38_23.5.2-0-Linux-aarch64 
 miniconda3-3.8-23.9.0-0	Linux-x86_64	ok Miniconda3-py38_23.9.0-0-Linux-x86_64 https://repo.anaconda.com/miniconda/Miniconda3-py38_23.9.0-0-Linux-x86_64.sh#3c684c1c22d3a0e6bd5ab28186fd7b068b5c552f0937ee927ad117f35a5573fc miniconda verify_py38
 miniconda3-3.8-23.9.0-0	Linux-aarch64	ok Miniconda3-py38_23.9.0-0-Linux-aarch64 https://repo.anaconda.com/miniconda/Miniconda3-py38_23.9.0-0-Linux-aarch64.sh#c59fbb2565812573f39b88425ef48607de70d1feadc522204811555e58bb972c miniconda verify_py38
 miniconda3-3.8-4.10.1	Linux-x86_64	no-binary Miniconda
-miniconda3-3.8-4.10.1	Linux-aarch64	unsupported malformed sha256 in https://repo.anaconda.com/miniconda/Miniconda3-py38_4.10.1-Linux-aarch64.sh#34aba2af867e5411eff7fddd80982aa9
-miniconda3-3.8-4.10.3	Linux-x86_64	unsupported malformed sha256 in https://repo.anaconda.com/miniconda/Miniconda3-py38_4.10.3-Linux-x86_64.sh#14da4a9a44b337f7ccb8363537f65b9c
-miniconda3-3.8-4.10.3	Linux-aarch64	unsupported malformed sha256 in https://repo.anaconda.com/miniconda/Miniconda3-py38_4.10.3-Linux-aarch64.sh#1b84ae526853a0301d0c04b68b718ea8
-miniconda3-3.8-4.11.0	Linux-x86_64	unsupported malformed sha256 in https://repo.anaconda.com/miniconda/Miniconda3-py38_4.11.0-Linux-x86_64.sh#252d3b0c863333639f99fbc465ee1d61
-miniconda3-3.8-4.11.0	Linux-aarch64	unsupported malformed sha256 in https://repo.anaconda.com/miniconda/Miniconda3-py38_4.11.0-Linux-aarch64.sh#18344281ba44bdd1e38c8ae0f05a8758
-miniconda3-3.8-4.12.0	Linux-x86_64	unsupported malformed sha256 in https://repo.anaconda.com/miniconda/Miniconda3-py38_4.12.0-Linux-x86_64.sh#9986028a26f489f99af4398eac966d36
-miniconda3-3.8-4.12.0	Linux-aarch64	unsupported malformed sha256 in https://repo.anaconda.com/miniconda/Miniconda3-py38_4.12.0-Linux-aarch64.sh#72cb127e8f455b692e3c8a9009b34f7c
-miniconda3-3.8-4.8.2	Linux-x86_64	unsupported malformed sha256 in https://repo.anaconda.com/miniconda/Miniconda3-py38_4.8.2-Linux-x86_64.sh#cbda751e713b5a95f187ae70b509403f
+miniconda3-3.8-4.10.1	Linux-aarch64	unsupported md5 checksum only
+miniconda3-3.8-4.10.3	Linux-x86_64	unsupported md5 checksum only
+miniconda3-3.8-4.10.3	Linux-aarch64	unsupported md5 checksum only
+miniconda3-3.8-4.11.0	Linux-x86_64	unsupported md5 checksum only
+miniconda3-3.8-4.11.0	Linux-aarch64	unsupported md5 checksum only
+miniconda3-3.8-4.12.0	Linux-x86_64	unsupported md5 checksum only
+miniconda3-3.8-4.12.0	Linux-aarch64	unsupported md5 checksum only
+miniconda3-3.8-4.8.2	Linux-x86_64	unsupported md5 checksum only
 miniconda3-3.8-4.8.2	Linux-aarch64	no-binary Miniconda
-miniconda3-3.8-4.8.3	Linux-x86_64	unsupported malformed sha256 in https://repo.anaconda.com/miniconda/Miniconda3-py38_4.8.3-Linux-x86_64.sh#d63adf39f2c220950a063e0529d4ff74
+miniconda3-3.8-4.8.3	Linux-x86_64	unsupported md5 checksum only
 miniconda3-3.8-4.8.3	Linux-aarch64	no-binary Miniconda
-miniconda3-3.8-4.9.2	Linux-x86_64	unsupported malformed sha256 in https://repo.anaconda.com/miniconda/Miniconda3-py38_4.9.2-Linux-x86_64.sh#122c8c9beb51e124ab32a0fa6426c656
-miniconda3-3.8-4.9.2	Linux-aarch64	unsupported malformed sha256 in https://repo.anaconda.com/miniconda/Miniconda3-py38_4.9.2-Linux-aarch64.sh#2359284ff562247fc2da4b68334ccac7
+miniconda3-3.8-4.9.2	Linux-x86_64	unsupported md5 checksum only
+miniconda3-3.8-4.9.2	Linux-aarch64	unsupported md5 checksum only
 miniconda3-3.8.3	Linux-x86_64	ok Miniconda3-3.8.3-Linux-x86_64 https://repo.continuum.io/miniconda/Miniconda3-3.8.3-Linux-x86_64.sh#26483a27b56d3567596b866076cb6de75c4b7e376fe359720ec27fca2c05ceec miniconda verify_py34
 miniconda3-3.8.3	Linux-aarch64	no-binary Miniconda
 miniconda3-3.9-22.11.1-1	Linux-x86_64	ok Miniconda3-py39_22.11.1-1-Linux-x86_64 https://repo.anaconda.com/miniconda/Miniconda3-py39_22.11.1-1-Linux-x86_64.sh#e685005710679914a909bfb9c52183b3ccc56ad7bb84acc861d596fcbe5d28bb miniconda verify_py39
@@ -679,15 +679,15 @@ miniconda3-3.9-25.9.1-1	Linux-aarch64	ok Miniconda3-py39_25.9.1-1-Linux-aarch64 
 miniconda3-3.9-25.9.1-3	Linux-x86_64	ok Miniconda3-py39_25.9.1-3-Linux-x86_64 https://repo.anaconda.com/miniconda/Miniconda3-py39_25.9.1-3-Linux-x86_64.sh#0ac18f10d17ca918247b4606df82be38eba6e23380a7eddb25b47ef6ccdb920e miniconda verify_py39 CONDA_PLUGINS_AUTO_ACCEPT_TOS=true
 miniconda3-3.9-25.9.1-3	Linux-aarch64	ok Miniconda3-py39_25.9.1-3-Linux-aarch64 https://repo.anaconda.com/miniconda/Miniconda3-py39_25.9.1-3-Linux-aarch64.sh#2cf395401906b6968cfd2bc5b522ad4dca40374987e790c4daa83f049d132841 miniconda verify_py39 CONDA_PLUGINS_AUTO_ACCEPT_TOS=true
 miniconda3-3.9-4.10.1	Linux-x86_64	no-binary Miniconda
-miniconda3-3.9-4.10.1	Linux-aarch64	unsupported malformed sha256 in https://repo.anaconda.com/miniconda/Miniconda3-py39_4.10.1-Linux-aarch64.sh#67fb85a56aa7fda6e2fc5cdeb2aafec0
-miniconda3-3.9-4.10.3	Linux-x86_64	unsupported malformed sha256 in https://repo.anaconda.com/miniconda/Miniconda3-py39_4.10.3-Linux-x86_64.sh#8c69f65a4ae27fb41df0fe552b4a8a3b
-miniconda3-3.9-4.10.3	Linux-aarch64	unsupported malformed sha256 in https://repo.anaconda.com/miniconda/Miniconda3-py39_4.10.3-Linux-aarch64.sh#d4e7afa2783cd85532d59d7ccb9ec268
-miniconda3-3.9-4.11.0	Linux-x86_64	unsupported malformed sha256 in https://repo.anaconda.com/miniconda/Miniconda3-py39_4.11.0-Linux-x86_64.sh#4e2f31e0b2598634c80daa12e4981647
-miniconda3-3.9-4.11.0	Linux-aarch64	unsupported malformed sha256 in https://repo.anaconda.com/miniconda/Miniconda3-py39_4.11.0-Linux-aarch64.sh#f25b8ff2dbebe0285360ef1b4c883da6
-miniconda3-3.9-4.12.0	Linux-x86_64	unsupported malformed sha256 in https://repo.anaconda.com/miniconda/Miniconda3-py39_4.12.0-Linux-x86_64.sh#7843dd7d0a2c53b0df37ca8189672992
-miniconda3-3.9-4.12.0	Linux-aarch64	unsupported malformed sha256 in https://repo.anaconda.com/miniconda/Miniconda3-py39_4.12.0-Linux-aarch64.sh#9baf936183f3479c97bff16fe62fb56c
-miniconda3-3.9-4.9.2	Linux-x86_64	unsupported malformed sha256 in https://repo.anaconda.com/miniconda/Miniconda3-py39_4.9.2-Linux-x86_64.sh#b4e46fcc8029e2cfa731b788f25b1d36
-miniconda3-3.9-4.9.2	Linux-aarch64	unsupported malformed sha256 in https://repo.anaconda.com/miniconda/Miniconda3-py39_4.9.2-Linux-aarch64.sh#af1c16d821569ebf1bdaf549fcba7d27
+miniconda3-3.9-4.10.1	Linux-aarch64	unsupported md5 checksum only
+miniconda3-3.9-4.10.3	Linux-x86_64	unsupported md5 checksum only
+miniconda3-3.9-4.10.3	Linux-aarch64	unsupported md5 checksum only
+miniconda3-3.9-4.11.0	Linux-x86_64	unsupported md5 checksum only
+miniconda3-3.9-4.11.0	Linux-aarch64	unsupported md5 checksum only
+miniconda3-3.9-4.12.0	Linux-x86_64	unsupported md5 checksum only
+miniconda3-3.9-4.12.0	Linux-aarch64	unsupported md5 checksum only
+miniconda3-3.9-4.9.2	Linux-x86_64	unsupported md5 checksum only
+miniconda3-3.9-4.9.2	Linux-aarch64	unsupported md5 checksum only
 miniconda3-3.9.1	Linux-x86_64	ok Miniconda3-3.9.1-Linux-x86_64 https://repo.continuum.io/miniconda/Miniconda3-3.9.1-Linux-x86_64.sh#6c6b44acdd0bc4229377ee10d52c8ac6160c336d9cdd669db7371aa9344e1ac3 miniconda verify_py34
 miniconda3-3.9.1	Linux-aarch64	no-binary Miniconda
 miniconda3-4.0.5	Linux-x86_64	ok Miniconda3-4.0.5-Linux-x86_64 https://repo.continuum.io/miniconda/Miniconda3-4.0.5-Linux-x86_64.sh#a7bcd0425d8b6688753946b59681572f63c2241aed77bf0ec6de4c5edc5ceeac miniconda verify_py35
@@ -706,23 +706,23 @@ miniconda3-4.3.27	Linux-x86_64	ok Miniconda3-4.3.27.1-Linux-x86_64 https://repo.
 miniconda3-4.3.27	Linux-aarch64	no-binary Miniconda
 miniconda3-4.3.30	Linux-x86_64	ok Miniconda3-4.3.30-Linux-x86_64 https://repo.continuum.io/miniconda/Miniconda3-4.3.30-Linux-x86_64.sh#66c822dfe76636b4cc2ae5604816e0e723aa01620f50087f06410ecf5bfdf38c miniconda verify_py36
 miniconda3-4.3.30	Linux-aarch64	no-binary Miniconda
-miniconda3-4.3.31	Linux-x86_64	unsupported malformed sha256 in https://repo.anaconda.com/miniconda/Miniconda3-4.3.31-Linux-x86_64.sh#7fe70b214bee1143e3e3f0467b71453c
+miniconda3-4.3.31	Linux-x86_64	unsupported md5 checksum only
 miniconda3-4.3.31	Linux-aarch64	no-binary Miniconda
-miniconda3-4.4.10	Linux-x86_64	unsupported malformed sha256 in https://repo.anaconda.com/miniconda/Miniconda3-4.4.10-Linux-x86_64.sh#bec6203dbb2f53011e974e9bf4d46e93
+miniconda3-4.4.10	Linux-x86_64	unsupported md5 checksum only
 miniconda3-4.4.10	Linux-aarch64	no-binary Miniconda
-miniconda3-4.5.1	Linux-x86_64	unsupported malformed sha256 in https://repo.anaconda.com/miniconda/Miniconda3-4.5.1-Linux-x86_64.sh#0c28787e3126238df24c5d4858bd0744
+miniconda3-4.5.1	Linux-x86_64	unsupported md5 checksum only
 miniconda3-4.5.1	Linux-aarch64	no-binary Miniconda
-miniconda3-4.5.11	Linux-x86_64	unsupported malformed sha256 in https://repo.anaconda.com/miniconda/Miniconda3-4.5.11-Linux-x86_64.sh#e1045ee415162f944b6aebfe560b8fee
+miniconda3-4.5.11	Linux-x86_64	unsupported md5 checksum only
 miniconda3-4.5.11	Linux-aarch64	no-binary Miniconda
-miniconda3-4.5.12	Linux-x86_64	unsupported malformed sha256 in https://repo.anaconda.com/miniconda/Miniconda3-4.5.12-Linux-x86_64.sh#866ae9dff53ad0874e1d1a60b1ad1ef8
+miniconda3-4.5.12	Linux-x86_64	unsupported md5 checksum only
 miniconda3-4.5.12	Linux-aarch64	no-binary Miniconda
-miniconda3-4.5.4	Linux-x86_64	unsupported malformed sha256 in https://repo.anaconda.com/miniconda/Miniconda3-4.5.4-Linux-x86_64.sh#a946ea1d0c4a642ddf0c3a26a18bb16d
+miniconda3-4.5.4	Linux-x86_64	unsupported md5 checksum only
 miniconda3-4.5.4	Linux-aarch64	no-binary Miniconda
-miniconda3-4.6.14	Linux-x86_64	unsupported malformed sha256 in https://repo.anaconda.com/miniconda/Miniconda3-4.6.14-Linux-x86_64.sh#718259965f234088d785cad1fbd7de03
+miniconda3-4.6.14	Linux-x86_64	unsupported md5 checksum only
 miniconda3-4.6.14	Linux-aarch64	no-binary Miniconda
-miniconda3-4.7.10	Linux-x86_64	unsupported malformed sha256 in https://repo.anaconda.com/miniconda/Miniconda3-4.7.10-Linux-x86_64.sh#1c945f2b3335c7b2b15130b1b2dc5cf4
+miniconda3-4.7.10	Linux-x86_64	unsupported md5 checksum only
 miniconda3-4.7.10	Linux-aarch64	no-binary Miniconda
-miniconda3-4.7.12	Linux-x86_64	unsupported malformed sha256 in https://repo.anaconda.com/miniconda/Miniconda3-4.7.12-Linux-x86_64.sh#0dba759b8ecfc8948f626fa18785e3d8
+miniconda3-4.7.12	Linux-x86_64	unsupported md5 checksum only
 miniconda3-4.7.12	Linux-aarch64	no-binary Miniconda
 miniconda3-latest	Linux-x86_64	ok-latest Miniconda3-latest-Linux-x86_64 https://repo.continuum.io/miniconda/Miniconda3-latest-Linux-x86_64.sh miniconda verify_py3_latest CONDA_PLUGINS_AUTO_ACCEPT_TOS=true
 miniconda3-latest	Linux-aarch64	ok-latest Miniconda3-latest-Linux-aarch64 https://repo.continuum.io/miniconda/Miniconda3-latest-Linux-aarch64.sh miniconda verify_py3_latest CONDA_PLUGINS_AUTO_ACCEPT_TOS=true
@@ -826,10 +826,10 @@ miniforge3-26.5.3-0	Linux-x86_64	ok Miniforge3-26.5.3-0-Linux-x86_64.sh https://
 miniforge3-26.5.3-0	Linux-aarch64	ok Miniforge3-26.5.3-0-Linux-aarch64.sh https://github.com/conda-forge/miniforge/releases/download/26.5.3-0/Miniforge3-26.5.3-0-Linux-aarch64.sh#0391e42075a7632e9665d6e728387ee6b905f6c3e704d3513e1c1133d0d69b89 miniconda verify_py314
 miniforge3-26.7.2-0	Linux-x86_64	ok Miniforge3-26.7.2-0-Linux-x86_64.sh https://github.com/conda-forge/miniforge/releases/download/26.7.2-0/Miniforge3-26.7.2-0-Linux-x86_64.sh#281b0ac7d550802efc81af633225a5e6116d29ae72f3ab4eae7168c3931a4c05 miniconda verify_py314
 miniforge3-26.7.2-0	Linux-aarch64	ok Miniforge3-26.7.2-0-Linux-aarch64.sh https://github.com/conda-forge/miniforge/releases/download/26.7.2-0/Miniforge3-26.7.2-0-Linux-aarch64.sh#89b786c8d2c8b0fda7553914c1314ae4ddaa094503802f279377b19ac4463cb2 miniconda verify_py314
-miniforge3-4.10	Linux-x86_64	unsupported malformed sha256 in https://github.com/conda-forge/miniforge/releases/download/4.10.0-0/Miniforge3-4.10.0-0-Linux-x86_64.sh#3db11e33e22a78e2d3371acc883625df
-miniforge3-4.10	Linux-aarch64	unsupported malformed sha256 in https://github.com/conda-forge/miniforge/releases/download/4.10.0-0/Miniforge3-4.10.0-0-Linux-aarch64.sh#64ec2e626c1c71332a73081fe482d08e
-miniforge3-4.10.1-1	Linux-x86_64	unsupported malformed sha256 in https://github.com/conda-forge/miniforge/releases/download/4.10.1-1/Miniforge3-4.10.1-1-Linux-x86_64.sh#e1f2f1f0fe54d3aab5585238e5517ac5
-miniforge3-4.10.1-1	Linux-aarch64	unsupported malformed sha256 in https://github.com/conda-forge/miniforge/releases/download/4.10.1-1/Miniforge3-4.10.1-1-Linux-aarch64.sh#64ec2e626c1c71332a73081fe482d08e
+miniforge3-4.10	Linux-x86_64	unsupported md5 checksum only
+miniforge3-4.10	Linux-aarch64	unsupported md5 checksum only
+miniforge3-4.10.1-1	Linux-x86_64	unsupported md5 checksum only
+miniforge3-4.10.1-1	Linux-aarch64	unsupported md5 checksum only
 miniforge3-4.10.1-3	Linux-x86_64	ok Miniforge3-4.10.1-3-Linux-x86_64 https://github.com/conda-forge/miniforge/releases/download/4.10.1-3/Miniforge3-4.10.1-3-Linux-x86_64.sh#0ab2d494557ce8dfb4344bd960eb98c92d02f25d174c77029a459b20884e0e26 miniconda verify_py38
 miniforge3-4.10.1-3	Linux-aarch64	ok Miniforge3-4.10.1-3-Linux-aarch64 https://github.com/conda-forge/miniforge/releases/download/4.10.1-3/Miniforge3-4.10.1-3-Linux-aarch64.sh#8bb5e5885c4b4e9bed0621740a40ceb428c4894b339050227b25690181da2794 miniconda verify_py38
 miniforge3-4.10.1-5	Linux-x86_64	ok Miniforge3-4.10.1-5-Linux-x86_64 https://github.com/conda-forge/miniforge/releases/download/4.10.1-5/Miniforge3-4.10.1-5-Linux-x86_64.sh#f47637e899258d4fa568aa866c37ecf19a2dacc50fa64a5ebc65443ccdf73243 miniconda verify_py38
@@ -886,7 +886,7 @@ miniforge3-4.14.0-1	Linux-x86_64	ok Miniforge3-4.14.0-1-Linux-x86_64.sh https://
 miniforge3-4.14.0-1	Linux-aarch64	ok Miniforge3-4.14.0-1-Linux-aarch64.sh https://github.com/conda-forge/miniforge/releases/download/4.14.0-1/Miniforge3-4.14.0-1-Linux-aarch64.sh#79bb1694aee2cd4bc7ee412f267f6b06ccd011cd7be6686970599bff9ab5ae0b miniconda verify_py310
 miniforge3-4.14.0-2	Linux-x86_64	ok Miniforge3-4.14.0-2-Linux-x86_64.sh https://github.com/conda-forge/miniforge/releases/download/4.14.0-2/Miniforge3-4.14.0-2-Linux-x86_64.sh#ff0b9f78a51a4d9851e8fd3cdb6ff0b233f4f49d82c0690a12560e57075690bd miniconda verify_py310
 miniforge3-4.14.0-2	Linux-aarch64	ok Miniforge3-4.14.0-2-Linux-aarch64.sh https://github.com/conda-forge/miniforge/releases/download/4.14.0-2/Miniforge3-4.14.0-2-Linux-aarch64.sh#52e44682aecbfb1c41e9f07b0f2f08ab22369e236893768be3c85ad6c039090f miniconda verify_py310
-miniforge3-4.9.2	Linux-x86_64	unsupported malformed sha256 in https://github.com/conda-forge/miniforge/releases/download/4.9.2-7/Miniforge3-4.9.2-7-Linux-x86_64.sh#d96baf1a0559a1f642528c0e38aad984
-miniforge3-4.9.2	Linux-aarch64	unsupported malformed sha256 in https://github.com/conda-forge/miniforge/releases/download/4.9.2-7/Miniforge3-4.9.2-7-Linux-aarch64.sh#c5bceb970dcff512f35f444397b5ce11
+miniforge3-4.9.2	Linux-x86_64	unsupported md5 checksum only
+miniforge3-4.9.2	Linux-aarch64	unsupported md5 checksum only
 miniforge3-latest	Linux-x86_64	ok-latest Miniforge3-Linux-x86_64 https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh miniconda verify_py3_latest
 miniforge3-latest	Linux-aarch64	ok-latest Miniforge3-Linux-aarch64 https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-aarch64.sh miniconda verify_py3_latest
