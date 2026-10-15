@@ -352,6 +352,34 @@ fn an_unsupported_row_is_refused_by_name() {
     );
 }
 
+// A bare `miniconda3` resolves, by upstream's sort, to the MD5-only 4.7.12; the refusal names
+// the newest release that installs.
+#[test]
+fn a_refusal_names_the_newest_installable_release_of_its_family() {
+    let f = Fixture::new();
+    let sha = "b".repeat(64);
+    let ok = format!("ok P https://repo.anaconda.com/miniconda/P.sh#{sha} miniconda verify_py3");
+    let t = table(
+        &f,
+        &[
+            ("miniconda3-4.7.12", "unsupported md5 checksum only".into()),
+            ("miniconda3-4.3.30", ok.clone()),
+            ("miniconda3-3.13-26.7.1-1", ok.clone()),
+            ("miniconda3-3.14-26.7.1-1", ok),
+        ],
+    );
+    let r = run(
+        &f,
+        &["install", "miniconda3"],
+        &[("RPYENV_TEST_CONDA_TABLES", &t)],
+    );
+    assert_eq!(r.code, 1);
+    assert_eq!(
+        r.stderr.trim_end(),
+        "python-build: miniconda3-4.7.12: rpyenv cannot install this conda definition (md5 checksum only); the newest miniconda3 rpyenv can install here is miniconda3-3.14-26.7.1-1"
+    );
+}
+
 #[test]
 fn a_no_binary_row_prints_upstreams_lines() {
     let f = Fixture::new();

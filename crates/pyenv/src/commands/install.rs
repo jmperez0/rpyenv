@@ -205,9 +205,21 @@ fn conda_text(
         conda::Verdict::NoBinary(what) => Err(format!(
             "\nERROR: The binary distribution of {what} is not available for {arch}.\n"
         )),
-        conda::Verdict::Unsupported(why) if builtin => Err(format!(
-            "python-build: {name}: rpyenv cannot install this conda definition ({why})"
-        )),
+        conda::Verdict::Unsupported(why) if builtin => {
+            let hint = conda::linux_table()
+                .ok()
+                .and_then(|rows| conda::newest_installable(&rows, name, arch))
+                .map(|n| {
+                    format!(
+                        "; the newest {} rpyenv can install here is {n}",
+                        conda::family(name)
+                    )
+                })
+                .unwrap_or_default();
+            Err(format!(
+                "python-build: {name}: rpyenv cannot install this conda definition ({why}){hint}"
+            ))
+        }
         conda::Verdict::Unsupported(why) => Err(format!(
             "python-build: {name}: rpyenv cannot read this conda definition ({why})"
         )),
