@@ -52,11 +52,12 @@ jobs:
         run: python3 ci/sync_python_build.py --upstream "$RUNNER_TEMP/pyenv-$SHA" --commit "$SHA" --write
       # M7a design §4.1, §5.1 and M7b design §4.1: the PyPy and conda tables, rebuilt every week even when pyenv hasn't
       # changed (a new PyPy release reaches the Windows table this way). The definitions run
-      # in a container with no network. A failure here (pypy.org down or reshaped) doesn't
-      # hold back the CPython sync: the tables stay as they were, the pull request reports
-      # the failure, and the last step fails the job. A vendored PyPy or conda name with no
-      # table row is refused as "not available", never downloaded, until a later run succeeds.
-      - name: Rebuild the PyPy and conda tables
+      # in a container with no network. Each table has its own step: a failure in one (pypy.org
+      # down or reshaped, or a conda definition the evaluator can't read) holds back neither the
+      # other table nor the CPython sync. That table stays as it was, the pull request reports the
+      # failure, and the last step fails the job. A vendored PyPy or conda name with no table row
+      # is refused as "not available", never downloaded, until a later run succeeds.
+      - name: Rebuild the PyPy tables
         id: pypy
         continue-on-error: true
         run: |
@@ -66,11 +67,21 @@ jobs:
             mkdir -p "$RUNNER_TEMP/pypy-pages" &&
             curl -fsSL -o "$RUNNER_TEMP/pypy-pages/versions.json" https://downloads.python.org/pypy/versions.json &&
             curl -fsSL -o "$RUNNER_TEMP/pypy-pages/checksums.html" https://www.pypy.org/checksums.html &&
-            python3 ci/pypy_tables.py --share crates/pyenv/python-build/share --pages "$RUNNER_TEMP/pypy-pages" --engine docker --write &&
-            python3 ci/conda_tables.py --share crates/pyenv/python-build/share --engine docker --write
+            python3 ci/pypy_tables.py --share crates/pyenv/python-build/share --pages "$RUNNER_TEMP/pypy-pages" --engine docker --write
           } 2>&1 | tee "$log"; then
-            git checkout -- crates/pyenv/pypy crates/pyenv/conda
-            git clean -fdq -- crates/pyenv/pypy crates/pyenv/conda
+            git checkout -- crates/pyenv/pypy
+            git clean -fdq -- crates/pyenv/pypy
+            exit 1
+          fi
+      - name: Rebuild the conda table
+        id: conda
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          log="$RUNNER_TEMP/conda.log"
+          if ! python3 ci/conda_tables.py --share crates/pyenv/python-build/share --engine docker --write 2>&1 | tee "$log"; then
+            git checkout -- crates/pyenv/conda
+            git clean -fdq -- crates/pyenv/conda
             exit 1
           fi
       - name: Anything to propose?
@@ -98,6 +109,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PYPY: ${{ steps.pypy.outcome }}
+          CONDA: ${{ steps.conda.outcome }}
         run: |
           r="$RUNNER_TEMP/results.md"
           up="$RUNNER_TEMP/pyenv-$SHA"
@@ -110,12 +122,16 @@ jobs:
               { echo "- **$title**: FAIL"; echo '  ```'; tail -n 30 "$RUNNER_TEMP/out.log" | sed 's/^/  /'; echo '  ```'; } >> "$r"
             fi
           }
+          table() { # <title> <outcome> <folder> <log>: the table step's result and, on failure, its log's tail
+            if [ "$2" = "success" ]; then echo "- **$1**: pass" >> "$r"
+            else
+              { echo "- **$1**: FAIL; \`$3\` was left as it was"
+                echo '  ```'; { tail -n 30 "$4" 2>/dev/null || true; } | sed 's/^/  /'; echo '  ```'; } >> "$r"
+            fi
+          }
           : > "$r"
-          if [ "$PYPY" = "success" ]; then echo "- **PyPy and conda tables (ci/pypy_tables.py, ci/conda_tables.py)**: pass" >> "$r"
-          else
-            { echo "- **PyPy and conda tables (ci/pypy_tables.py, ci/conda_tables.py)**: FAIL; the tables in \`crates/pyenv/pypy/\` and \`crates/pyenv/conda/\` were left as they were"
-              echo '  ```'; tail -n 30 "$RUNNER_TEMP/pypy.log" | sed 's/^/  /'; echo '  ```'; } >> "$r"
-          fi
+          table "PyPy tables (ci/pypy_tables.py)" "$PYPY" crates/pyenv/pypy/ "$RUNNER_TEMP/pypy.log"
+          table "conda table (ci/conda_tables.py)" "$CONDA" crates/pyenv/conda/ "$RUNNER_TEMP/conda.log"
           check "cargo test --workspace" cargo test --workspace
           check "differential cases (parity/diff.py)" python3 parity/diff.py --rpyenv target/debug --upstream "$up"
           curl -fsSL "https://github.com/bats-core/bats-core/archive/refs/tags/v${BATS_VERSION}.tar.gz" | tar -xz -C "$RUNNER_TEMP"
@@ -140,6 +156,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PYTHON_BUILD: ${{ steps.update.outputs.python_build }}
           PYPY: ${{ steps.pypy.outcome }}
+          CONDA: ${{ steps.conda.outcome }}
         run: |
           branch="sync-python-build-$TAG"
           git config user.name "github-actions[bot]"
@@ -159,12 +176,17 @@ jobs:
               echo "Automated: crates/pyenv/python-build updated from pyenv $TAG ($SHA) by ci/sync_python_build.py,"
               echo "the parity pin in \`UPSTREAM\` bumped with it, and the Linux parity goldens regenerated. Review the golden diff."
               if [ "$PYPY" = "success" ]; then
-                echo "The PyPy tables in \`crates/pyenv/pypy/\` and the conda table in \`crates/pyenv/conda/\` were rebuilt by ci/pypy_tables.py and ci/conda_tables.py from the vendored definitions (and pypy.org's pages); review their diff."
+                echo "The PyPy tables in \`crates/pyenv/pypy/\` were rebuilt by ci/pypy_tables.py from the vendored definitions and pypy.org's pages; review their diff."
               else
-                echo "The PyPy and conda tables (\`crates/pyenv/pypy/\`, \`crates/pyenv/conda/\`) could NOT be rebuilt (see the checks below) and are unchanged: a PyPy or conda version new in this sync is refused as \"not available\" until a later run rebuilds them."
+                echo "The PyPy tables (\`crates/pyenv/pypy/\`) could NOT be rebuilt (see the checks below) and are unchanged: a PyPy version new in this sync is refused as \"not available\" until a later run rebuilds them."
+              fi
+              if [ "$CONDA" = "success" ]; then
+                echo "The conda table in \`crates/pyenv/conda/\` was rebuilt by ci/conda_tables.py from the vendored definitions; review its diff."
+              else
+                echo "The conda table (\`crates/pyenv/conda/\`) could NOT be rebuilt (see the checks below) and is unchanged: a conda version new in this sync is refused as \"not available\" until a later run rebuilds it."
               fi
             else
-              echo "Automated: only the PyPy and conda tables in \`crates/pyenv/pypy/\` and \`crates/pyenv/conda/\` changed. ci/pypy_tables.py and ci/conda_tables.py rebuilt them from the vendored definitions and pypy.org's pages; review their diff."
+              echo "Automated: only the PyPy or conda tables (\`crates/pyenv/pypy/\`, \`crates/pyenv/conda/\`) changed, rebuilt by ci/pypy_tables.py and ci/conda_tables.py from the vendored definitions and pypy.org's pages; the checks below say which rebuild succeeded. Review their diff."
               echo "crates/pyenv/python-build and the parity pin are unchanged (still pyenv $OLD_SHA)."
             fi
             echo
@@ -182,10 +204,14 @@ jobs:
           else
             gh pr edit "$branch" --title "$title" --body-file "$body"
           fi
-      # The table step's failure, let through above so the CPython sync could still open its
+      # A table step's failure, let through above so the CPython sync could still open its
       # pull request, still fails the run (a scheduled run's failure notifies the owner).
-      - name: Fail when the PyPy or conda tables couldn't be rebuilt
-        if: steps.pypy.outcome == 'failure'
+      - name: Fail when a table couldn't be rebuilt
+        if: steps.pypy.outcome == 'failure' || steps.conda.outcome == 'failure'
+        env:
+          PYPY: ${{ steps.pypy.outcome }}
+          CONDA: ${{ steps.conda.outcome }}
         run: |
-          echo "::error::ci/pypy_tables.py or ci/conda_tables.py failed; crates/pyenv/pypy and crates/pyenv/conda were left unchanged. The step 'Rebuild the PyPy and conda tables' has the log."
+          [ "$PYPY" = "success" ] || echo "::error::ci/pypy_tables.py failed; crates/pyenv/pypy was left unchanged. The step 'Rebuild the PyPy tables' has the log."
+          [ "$CONDA" = "success" ] || echo "::error::ci/conda_tables.py failed; crates/pyenv/conda was left unchanged. The step 'Rebuild the conda table' has the log."
           exit 1
