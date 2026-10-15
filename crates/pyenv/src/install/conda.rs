@@ -193,6 +193,45 @@ pub fn linux_verdict<'a>(rows: &'a [LinuxRow], name: &str, arch: &str) -> Option
         .map(|r| &r.verdict)
 }
 
+/// The family of a conda name: everything before its first `-<digit>` (`miniconda3-4.7.12` →
+/// `miniconda3`; `mambaforge-pypy3` has no version, so it is its own family).
+pub fn family(name: &str) -> &str {
+    name.match_indices('-')
+        .find(|(i, _)| name[i + 1..].starts_with(|c: char| c.is_ascii_digit()))
+        .map_or(name, |(i, _)| &name[..i])
+}
+
+/// A conda name's release and Python as numbers, for ranking: `miniconda3-3.14-26.7.1-1` is
+/// release 26.7.1-1 for Python 3.14, `miniconda3-4.7.12` and `anaconda3-2026.07-1` name only a
+/// release. None for a name with a part that isn't a number.
+fn release_key(name: &str) -> Option<(Vec<u64>, Vec<u64>)> {
+    let rest = name.strip_prefix(family(name))?.strip_prefix('-')?;
+    let nums =
+        |s: &str| -> Option<Vec<u64>> { s.split(['.', '-']).map(|p| p.parse().ok()).collect() };
+    match rest.split_once('-') {
+        Some((py, release))
+            if py.split_once('.').is_some_and(|(m, n)| {
+                matches!(m, "2" | "3") && !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())
+            }) =>
+        {
+            Some((nums(release)?, nums(py)?))
+        }
+        _ => Some((nums(rest)?, Vec::new())),
+    }
+}
+
+/// The newest name of `name`'s family that installs on `arch` (an `ok` row), for a refusal's
+/// hint. Ranked by the conda release, then the Python version: upstream's `latest` sort would
+/// rank `miniconda3-4.3.30` (2017) above `miniconda3-3.14-26.7.1-1`.
+pub fn newest_installable(rows: &[LinuxRow], name: &str, arch: &str) -> Option<String> {
+    let fam = family(name);
+    rows.iter()
+        .filter(|r| r.arch == arch && matches!(r.verdict, Verdict::Ok(_)) && family(&r.name) == fam)
+        .filter_map(|r| release_key(&r.name).map(|k| (k, &r.name)))
+        .max()
+        .map(|(_, n)| n.clone())
+}
+
 /// python-build's `anaconda_architecture` for the machine rpyenv was built for.
 pub fn host_arch() -> Option<&'static str> {
     match std::env::consts::ARCH {
@@ -374,6 +413,57 @@ mod tests {
     const SHA: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
     const URL: &str =
         "https://repo.anaconda.com/miniconda/Miniconda3-py312_25.1.1-0-Linux-x86_64.sh";
+
+    #[test]
+    fn families() {
+        assert_eq!(family("miniconda3-4.7.12"), "miniconda3");
+        assert_eq!(family("miniconda3-3.14-26.7.1-1"), "miniconda3");
+        assert_eq!(family("anaconda3-2026.07-1"), "anaconda3");
+        assert_eq!(family("mambaforge-pypy3"), "mambaforge-pypy3");
+        assert_eq!(family("mambaforge"), "mambaforge");
+    }
+
+    #[test]
+    fn the_newest_installable_ranks_by_release_not_upstreams_sort() {
+        let ok = || format!("ok P {URL}#{SHA} miniconda verify_py3");
+        let row = |name: &str, arch: &str, verdict: String| LinuxRow {
+            name: name.to_string(),
+            arch: arch.to_string(),
+            verdict: parse_verdict(&verdict).unwrap(),
+        };
+        let x = "Linux-x86_64";
+        let rows = vec![
+            row(
+                "miniconda3-4.7.12",
+                x,
+                "unsupported md5 checksum only".into(),
+            ),
+            row("miniconda3-4.3.30", x, ok()),
+            row("miniconda3-3.13-26.7.1-1", x, ok()),
+            row("miniconda3-3.14-26.7.1-1", x, ok()),
+            row("miniconda3-3.14-26.5.3-2", x, ok()),
+            row("miniconda3-3.14-26.9.0-0", "Linux-aarch64", ok()),
+            row("miniconda3-latest", x, ok()),
+            row("miniconda2-4.7.12", x, ok()),
+            row("anaconda3-5.3.1", x, ok()),
+            row("anaconda3-2026.07-1", x, ok()),
+            row("mambaforge", x, "unsupported no published hash".into()),
+        ];
+        let newest = |n: &str| newest_installable(&rows, n, x);
+        assert_eq!(
+            newest("miniconda3-4.7.12").as_deref(),
+            Some("miniconda3-3.14-26.7.1-1")
+        );
+        assert_eq!(
+            newest("anaconda3-2022.05").as_deref(),
+            Some("anaconda3-2026.07-1")
+        );
+        assert_eq!(newest("mambaforge"), None);
+        assert_eq!(
+            newest_installable(&rows, "miniconda3-4.7.12", "Linux-aarch64").as_deref(),
+            Some("miniconda3-3.14-26.9.0-0")
+        );
+    }
 
     #[test]
     fn verdict_lines() {
