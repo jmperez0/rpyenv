@@ -253,17 +253,12 @@ fn a_failing_f_reinstall_restores_the_previous_version() {
     assert_eq!(run(&f, &["install", &def], &[]).code, 0);
     let v = f.root.join("versions/miniconda3-t");
     std::fs::create_dir_all(v.join("envs/work")).unwrap();
-    f.file(
-        &v.join("conda-meta/history"),
-        "previous
-",
-    );
+    f.file(&v.join("conda-meta/history"), "previous\n");
     let r = run(&f, &["install", "-f", &def], &[("FAKECONDA_EXIT", "3")]);
     assert_ne!(r.code, 0);
     assert_eq!(
         std::fs::read_to_string(v.join("conda-meta/history")).unwrap(),
-        "previous
-"
+        "previous\n"
     );
     assert!(v.join("envs/work").is_dir());
     assert!(!v.join(".rpyenv-incomplete").exists());

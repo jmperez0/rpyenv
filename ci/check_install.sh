@@ -70,5 +70,12 @@ if [ "$conda" = 1 ]; then
   [ ! -e "$root/shims/curl" ] || { echo "::error::conda's curl got a shim"; exit 1; }
   PYENV_ROOT="$root" "$PYENV_BIN" virtualenv "$v" ci-env
   [ -d "$p/envs/ci-env/conda-meta" ] || { echo "::error::no conda env at $p/envs/ci-env"; exit 1; }
+  # `install -f` over a real installer's tree (which creates its own empty envs/) keeps the
+  # env: the final review's Critical. The download comes from $root/cache when it is there.
+  PYENV_ROOT="$root" "$PYENV_BIN" install -f "$v"
+  [ -d "$p/envs/ci-env/conda-meta" ] || { echo "::error::install -f lost the conda env at $p/envs/ci-env"; exit 1; }
+  left=$(find "$root/versions" -maxdepth 1 \( -name '.tmp-*' -o -name '.old-*' \))
+  [ -z "$left" ] || { echo "::error::staging left behind after install -f: $left"; exit 1; }
+  [ ! -e "$p/.rpyenv-incomplete" ] || { echo "::error::marker left in $p after install -f"; exit 1; }
 fi
 echo "install check ok: $v"

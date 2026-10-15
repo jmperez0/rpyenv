@@ -126,18 +126,22 @@ how many rows are `ok`, `ok-latest`, `no-binary` and `unsupported`.
 7. **Verify** runs the existing rule (`bin/python` for names without an X.Y, M7a ruling R6)
    plus the module checks of the `verify_pyXY` step.
 8. **Commit:** the marker goes, and an old version's `envs/` is carried over, and nothing
-   else (D7). A conda env's files name its own final path (`versions/<name>/envs/<env>`),
+   else (D7). A real installer creates an empty `envs/` itself, so the carry-over moves each
+   env of the old `envs/` that the new one lacks (the whole folder when the new tree has no
+   `envs/`); an env in both keeps the new one. A conda env's files name its own final path (`versions/<name>/envs/<env>`),
    which is the same after the carry-over. When the old base had packages the new one
-   lacks, rpyenv prints, on stderr, before deleting the old copy:
+   lacks, rpyenv prints, on stderr, once the carry-over has succeeded and before deleting the old copy (when it fails, only the kept-previous-installation message is printed):
    `rpyenv: the previous {name}'s base packages weren't carried over (only envs/ was); to reinstall them: conda install {conda names}; pip install {pip names}`
    (sorted names; a part with no names is left out, with its `; `). Conda names: records in
    the old `conda-meta/` (`<name>-<version>-<build>.json`) with no record of that name in
    the new one. Pip names: old `site-packages/*.dist-info` whose `INSTALLER` file reads
    `pip`, with no `.dist-info` of that project in the new base.
 9. **Failure or Ctrl+C at any step:** the transaction's rollback deletes the
-   half-installed folder and renames `.old-<name>` back. A folder that still has the
-   marker is already not a version to `versions`, shims or `install`'s "already
-   installed" test.
+   half-installed folder and renames `.old-<name>` back. Only `install`'s "already
+   installed" test treats a folder that still has the marker as not installed; `versions`,
+   shims, `global` and `which` see it, as upstream does with a partial folder. A failed or
+   interrupted install removes the folder, so the window is the installer's run or, after a
+   SIGKILL, until the next install of that name.
 
 ## 5. Shims (closes D-44)
 
