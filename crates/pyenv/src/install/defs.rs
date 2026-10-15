@@ -32,6 +32,11 @@ pub enum Fetch {
         url: String,
         fragment: Option<String>,
     },
+    /// `install_script`: a file that is run, not unpacked (conda installers, M7b).
+    Script {
+        url: String,
+        fragment: Option<String>,
+    },
     Git {
         url: String,
         reference: String,
@@ -457,7 +462,7 @@ fn run(
             | "prefer_openssl3_to_4"
             | "require_openssl3" => {}
             "require_gcc" => def.require_gcc = true,
-            "install_package" | "install_git" => {
+            "install_package" | "install_git" | "install_script" => {
                 let git = first == "install_git";
                 let fixed = if git { 4 } else { 3 };
                 if w.len() < fixed {
@@ -490,9 +495,11 @@ fn run(
                     }
                 } else {
                     let (u, f) = super::checksum::split_url(&w[2]);
-                    Fetch::Tarball {
-                        url: u.to_string(),
-                        fragment: f.map(str::to_string),
+                    let (url, fragment) = (u.to_string(), f.map(str::to_string));
+                    if first == "install_script" {
+                        Fetch::Script { url, fragment }
+                    } else {
+                        Fetch::Tarball { url, fragment }
                     }
                 };
                 if !super::is_plain_name(&w[1]) {

@@ -5,6 +5,8 @@
 pub mod buildharness;
 pub mod fakebuild;
 #[cfg(unix)]
+pub mod fakeconda;
+#[cfg(unix)]
 pub mod fakepypy;
 pub mod server;
 pub mod winfake;

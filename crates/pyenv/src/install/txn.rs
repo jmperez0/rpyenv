@@ -43,6 +43,7 @@ pub struct Txn {
     stage: PathBuf,
     old: Option<PathBuf>,
     placed: bool,
+    conda: bool,
     done: bool,
 }
 
@@ -121,6 +122,7 @@ impl Txn {
             stage,
             old: None,
             placed: false,
+            conda: false,
             done: false,
         })
     }
@@ -159,6 +161,16 @@ impl Txn {
         Ok(())
     }
 
+    /// M7b design §4.3 step 5: conda can't be moved after installing, so it installs into
+    /// `versions/<name>` itself. As `place` does, an existing version is set aside; the target
+    /// is then an empty folder holding the marker, before the installer runs.
+    pub fn place_empty(&mut self) -> std::io::Result<()> {
+        let empty = self.stage.join("prefix");
+        std::fs::create_dir_all(&empty)?;
+        self.conda = true;
+        self.place(&empty)
+    }
+
     /// Completes the install. The previous version's `envs/` and site-packages entries are
     /// carried over first; if that fails, the previous tree is kept at `.old-<name>`. A previous
     /// version that is a link is never followed: only the link is removed.
@@ -171,7 +183,22 @@ impl Txn {
                 // link goes.
                 let _ = remove_link(&old);
             } else {
-                match carry_over(&old, &self.target()) {
+                let carried = if self.conda {
+                    let (conda, pip) = not_carried(&old, &self.target());
+                    if let Some(line) = not_carried_line(&self.name, &conda, &pip) {
+                        rpyenv_core::textout::write(
+                            true,
+                            &format!(
+                                "{line}
+"
+                            ),
+                        );
+                    }
+                    carry_envs(&old, &self.target())
+                } else {
+                    carry_over(&old, &self.target())
+                };
+                match carried {
                     Ok(()) => {
                         let _ = std::fs::remove_dir_all(&old);
                     }
@@ -204,6 +231,15 @@ fn remove_link(p: &Path) -> std::io::Result<()> {
     }
 }
 
+/// `envs/` (pyenv-virtualenv) moves when `new` has none.
+fn carry_envs(old: &Path, new: &Path) -> std::io::Result<()> {
+    let envs = old.join("envs");
+    if envs.symlink_metadata().is_ok() && new.join("envs").symlink_metadata().is_err() {
+        std::fs::rename(&envs, new.join("envs"))?;
+    }
+    Ok(())
+}
+
 /// Moves what upstream's build over the old tree would have kept from `old` into the new
 /// tree `new`: `envs/` (pyenv-virtualenv) when `new` has none, and each entry that `new`
 /// lacks in `bin/` and `Scripts\` (scripts pip installed) and in site-packages (`lib/python*/site-packages`,
@@ -211,10 +247,7 @@ fn remove_link(p: &Path) -> std::io::Result<()> {
 /// by rename, which moves a symlink as a link, so a failure part way loses nothing: what has
 /// not moved is still in `old`.
 fn carry_over(old: &Path, new: &Path) -> std::io::Result<()> {
-    let envs = old.join("envs");
-    if envs.symlink_metadata().is_ok() && new.join("envs").symlink_metadata().is_err() {
-        std::fs::rename(&envs, new.join("envs"))?;
-    }
+    carry_envs(old, new)?;
     // `bin/` (pyenv) and `Scripts\` (pyenv-win): console scripts pip installed.
     let mut dirs: Vec<PathBuf> = vec![PathBuf::from("bin"), PathBuf::from("Scripts")];
     if let Ok(rd) = std::fs::read_dir(old.join("lib")) {
@@ -254,6 +287,80 @@ fn carry_over(old: &Path, new: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Spec D7: the base packages of a conda version's previous copy that a reinstall doesn't
+/// carry over. (conda names, pip names), each sorted.
+pub fn not_carried(old: &Path, new: &Path) -> (Vec<String>, Vec<String>) {
+    use std::collections::BTreeSet;
+    // `numpy-1.26.4-py312h1_0.json`: the name is what comes before the version and the build.
+    let records = |base: &Path| -> BTreeSet<String> {
+        std::fs::read_dir(base.join("conda-meta"))
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+            .filter_map(|e| {
+                let f = e.file_name().to_string_lossy().into_owned();
+                let stem = f.strip_suffix(".json")?;
+                let mut parts = stem.rsplitn(3, '-');
+                let (_build, _version, name) = (parts.next()?, parts.next()?, parts.next()?);
+                Some(name.to_string())
+            })
+            .collect()
+    };
+    // `requests-2.32.3.dist-info`: the project is what comes before the first `-`.
+    let dist_infos = |base: &Path, pip_only: bool| -> BTreeSet<String> {
+        let mut out = BTreeSet::new();
+        for lib in std::fs::read_dir(base.join("lib"))
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+        {
+            if !lib.file_name().to_string_lossy().starts_with("python") {
+                continue;
+            }
+            for e in std::fs::read_dir(lib.path().join("site-packages"))
+                .into_iter()
+                .flatten()
+                .filter_map(Result::ok)
+            {
+                let f = e.file_name().to_string_lossy().into_owned();
+                let Some(stem) = f.strip_suffix(".dist-info") else {
+                    continue;
+                };
+                let installer =
+                    std::fs::read_to_string(e.path().join("INSTALLER")).unwrap_or_default();
+                if pip_only && installer.trim() != "pip" {
+                    continue;
+                }
+                out.insert(stem.split('-').next().unwrap_or(stem).to_string());
+            }
+        }
+        out
+    };
+    let conda = records(old).difference(&records(new)).cloned().collect();
+    let pip = dist_infos(old, true)
+        .difference(&dist_infos(new, false))
+        .cloned()
+        .collect();
+    (conda, pip)
+}
+
+/// The line spec D7 prints, or `None` when nothing was left behind.
+pub fn not_carried_line(name: &str, conda: &[String], pip: &[String]) -> Option<String> {
+    let mut parts = Vec::new();
+    if !conda.is_empty() {
+        parts.push(format!("conda install {}", conda.join(" ")));
+    }
+    if !pip.is_empty() {
+        parts.push(format!("pip install {}", pip.join(" ")));
+    }
+    (!parts.is_empty()).then(|| {
+        format!(
+            "rpyenv: the previous {name}'s base packages weren't carried over (only envs/ was); to reinstall them: {}",
+            parts.join("; ")
+        )
+    })
+}
+
 impl Drop for Txn {
     fn drop(&mut self) {
         if self.done {
@@ -267,5 +374,79 @@ impl Drop for Txn {
             let _ = std::fs::rename(&old, &target);
         }
         let _ = std::fs::remove_dir_all(&self.stage);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn touch(p: &Path, text: &str) {
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, text).unwrap();
+    }
+
+    fn names(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn not_carried_parses_names_with_dashes_and_subtracts_the_new_base() {
+        let t = tempfile::tempdir().unwrap();
+        let (old, new) = (t.path().join("old"), t.path().join("new"));
+        touch(
+            &old.join("conda-meta/python-dateutil-2.9.0-pyhd8ed1ab_0.json"),
+            "{}",
+        );
+        touch(&old.join("conda-meta/numpy-1.26.4-py312h1_0.json"), "{}");
+        touch(&old.join("conda-meta/history"), "");
+        touch(&new.join("conda-meta/numpy-1.26.4-py312h1_0.json"), "{}");
+        let (conda, pip) = not_carried(&old, &new);
+        assert_eq!(conda, names(&["python-dateutil"]));
+        assert!(pip.is_empty());
+    }
+
+    #[test]
+    fn not_carried_lists_pip_projects_only() {
+        let t = tempfile::tempdir().unwrap();
+        let (old, new) = (t.path().join("old"), t.path().join("new"));
+        let sp = old.join("lib/python3.12/site-packages");
+        touch(
+            &sp.join("numpy-1.26.4.dist-info/INSTALLER"),
+            "conda
+",
+        );
+        touch(
+            &sp.join("requests-2.32.3.dist-info/INSTALLER"),
+            "pip
+",
+        );
+        touch(
+            &sp.join("six-1.16.0.dist-info/INSTALLER"),
+            "pip
+",
+        );
+        touch(
+            &new.join("lib/python3.12/site-packages/six-1.17.0.dist-info/INSTALLER"),
+            "conda
+",
+        );
+        let (conda, pip) = not_carried(&old, &new);
+        assert!(conda.is_empty());
+        assert_eq!(pip, names(&["requests"]));
+    }
+
+    #[test]
+    fn not_carried_line_shapes() {
+        assert_eq!(not_carried_line("m", &[], &[]), None);
+        let l = not_carried_line("m", &[], &names(&["requests"])).unwrap();
+        assert!(
+            l.ends_with("to reinstall them: pip install requests"),
+            "{l}"
+        );
+        let tail = l.split("to reinstall them: ").nth(1).unwrap();
+        assert!(!l.contains("conda install") && !tail.contains("; "), "{l}");
+        let l = not_carried_line("m", &names(&["a", "b"]), &names(&["c"])).unwrap();
+        assert!(l.ends_with("conda install a b; pip install c"), "{l}");
     }
 }
