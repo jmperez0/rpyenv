@@ -268,3 +268,234 @@ fn a_failing_f_reinstall_restores_the_previous_version() {
     assert!(!v.join(".rpyenv-incomplete").exists());
     assert_eq!(left_in_versions(&f), ["miniconda3-t"]);
 }
+
+fn table(f: &Fixture, rows: &[(&str, String)]) -> String {
+    let arch = pyenv::install::conda::host_arch().expect("tests run on x64 or aarch64");
+    let d = f.base.join("tables");
+    let text: String = rows
+        .iter()
+        .map(|(n, v)| format!("{n}\t{arch}\t{v}\n"))
+        .collect();
+    let file = d.join("linux.tsv");
+    f.file(&file, &text);
+    file.display().to_string()
+}
+
+#[test]
+fn a_vendored_name_installs_from_its_table_row_with_the_terms_notice() {
+    let f = Fixture::new();
+    let (s, sha) = serve(&installer("3.12"));
+    let row = format!(
+        "ok {PKG} {}#{sha} miniconda verify_py312 CONDA_PLUGINS_AUTO_ACCEPT_TOS=true",
+        s.url(&format!("/{PKG}.sh"))
+    );
+    let t = table(&f, &[("miniconda3-3.10-23.11.0-1", row)]);
+    let lp = f.base.join("fake.log").display().to_string();
+    let r = run(
+        &f,
+        &["install", "miniconda3-3.10-23.11.0-1"],
+        &[("RPYENV_TEST_CONDA_TABLES", &t), ("FAKECONDA_LOG", &lp)],
+    );
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert!(
+        r.stderr.contains(
+            "rpyenv: Miniconda's defaults channel is covered by Anaconda's terms of service"
+        ),
+        "{}",
+        r.stderr
+    );
+    assert!(log(&f).contains("tos: true"));
+}
+
+#[test]
+fn no_notice_without_the_variable() {
+    let f = Fixture::new();
+    let (s, sha) = serve(&installer("3.12"));
+    let t = table(
+        &f,
+        &[(
+            "miniforge3-25.1.1-0",
+            format!(
+                "ok {PKG} {}#{sha} miniconda verify_py312",
+                s.url(&format!("/{PKG}.sh"))
+            ),
+        )],
+    );
+    let r = run(
+        &f,
+        &["install", "miniforge3-25.1.1-0"],
+        &[("RPYENV_TEST_CONDA_TABLES", &t)],
+    );
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert!(!r.stderr.contains("terms of service"));
+}
+
+// allowlist D-109
+#[test]
+fn an_unsupported_row_is_refused_by_name() {
+    let f = Fixture::new();
+    let t = table(
+        &f,
+        &[("mambaforge", "unsupported no published hash".into())],
+    );
+    let r = run(
+        &f,
+        &["install", "mambaforge"],
+        &[("RPYENV_TEST_CONDA_TABLES", &t)],
+    );
+    assert_eq!(r.code, 1);
+    assert_eq!(
+        r.stderr.trim_end(),
+        "python-build: mambaforge: rpyenv cannot install this conda definition (no published hash)"
+    );
+}
+
+#[test]
+fn a_no_binary_row_prints_upstreams_lines() {
+    let f = Fixture::new();
+    let t = table(&f, &[("anaconda3-2025.12-2", "no-binary Anaconda".into())]);
+    let arch = pyenv::install::conda::host_arch().unwrap();
+    let r = run(
+        &f,
+        &["install", "anaconda3-2025.12-2"],
+        &[("RPYENV_TEST_CONDA_TABLES", &t)],
+    );
+    assert_eq!(r.code, 1);
+    assert!(
+        r.stderr.contains(&format!(
+            "\nERROR: The binary distribution of Anaconda is not available for {arch}.\n"
+        )),
+        "{:?}",
+        r.stderr
+    );
+}
+
+/// Review focus 3. allowlist D-109
+#[test]
+fn a_user_definition_without_a_hash_is_refused() {
+    let f = Fixture::new();
+    let (s, _) = serve(&installer("3.12"));
+    let p = f.base.join("defs").join("miniforge3-mine");
+    f.file(&p, &format!("case \"$(anaconda_architecture 2>/dev/null || true)\" in\n* )\n  install_script \"{PKG}\" \"{}\" \"miniconda\" verify_py312\n  ;;\nesac\n", s.url(&format!("/{PKG}.sh"))));
+    let r = run(&f, &["install", &p.display().to_string()], &[]);
+    assert_eq!(r.code, 1, "{}", r.stderr);
+    assert!(r.stderr.contains("python-build: miniforge3-mine: rpyenv cannot read this conda definition (no sha256 in "), "{}", r.stderr);
+    assert_eq!(s.hits(&format!("/{PKG}.sh")), 0, "nothing downloaded");
+}
+
+// allowlist D-108
+#[test]
+fn miniconda_latest_takes_its_hash_from_the_listing() {
+    let f = Fixture::new();
+    let arch = pyenv::install::conda::host_arch().unwrap();
+    let file = format!("Miniconda3-latest-{arch}.sh");
+    let body = installer("3.12");
+    let sha = sha256(body.as_bytes());
+    let listing = format!("<table><tr><td><a href=\"{file}\">{file}</a></td><td>1M</td><td>2026-08-28</td><td>{sha}</td></tr></table>");
+    let s = start(vec![
+        ("/miniconda/", vec![Reply::Body(listing.into_bytes())]),
+        (
+            &format!("/miniconda/{file}"),
+            vec![Reply::Body(body.into_bytes())],
+        ),
+    ]);
+    let t = table(
+        &f,
+        &[(
+            "miniconda3-latest",
+            format!(
+                "ok-latest {PKG} {} miniconda verify_py3_latest",
+                s.url(&format!("/miniconda/{file}"))
+            ),
+        )],
+    );
+    let base = s.url("");
+    let r = run(
+        &f,
+        &["install", "miniconda3-latest"],
+        &[
+            ("RPYENV_TEST_CONDA_TABLES", &t),
+            ("RPYENV_TEST_CONDA", &base),
+        ],
+    );
+    assert_eq!(r.code, 0, "{}", r.stderr);
+}
+
+/// Review focus 5.
+#[test]
+fn latest_without_a_listing_row_is_refused_before_downloading() {
+    let f = Fixture::new();
+    let arch = pyenv::install::conda::host_arch().unwrap();
+    let file = format!("Miniconda3-latest-{arch}.sh");
+    let s = start(vec![
+        (
+            "/miniconda/",
+            vec![Reply::Body(b"<table></table>".to_vec())],
+        ),
+        (
+            &format!("/miniconda/{file}"),
+            vec![Reply::Body(b"x".to_vec())],
+        ),
+    ]);
+    let t = table(
+        &f,
+        &[(
+            "miniconda3-latest",
+            format!(
+                "ok-latest {PKG} {} miniconda verify_py3_latest",
+                s.url(&format!("/miniconda/{file}"))
+            ),
+        )],
+    );
+    let base = s.url("");
+    let r = run(
+        &f,
+        &["install", "miniconda3-latest"],
+        &[
+            ("RPYENV_TEST_CONDA_TABLES", &t),
+            ("RPYENV_TEST_CONDA", &base),
+        ],
+    );
+    assert_eq!(r.code, 1);
+    assert_eq!(r.stderr.trim_end(), format!("python-build: miniconda3-latest: the publisher's SHA-256 for {file} couldn't be read from {base}/miniconda/, so rpyenv won't install it"));
+    assert_eq!(s.hits(&format!("/miniconda/{file}")), 0);
+}
+
+// allowlist D-108
+#[test]
+fn miniforge_latest_installs_the_versioned_twin_with_its_sha256_file() {
+    let f = Fixture::new();
+    let arch = pyenv::install::conda::host_arch().unwrap();
+    let file = format!("Miniforge3-26.7.2-0-{arch}.sh");
+    let body = installer("3.12");
+    let sha = sha256(body.as_bytes());
+    let s = start(vec![
+        (
+            "/miniforge/releases/latest",
+            vec![Reply::Redirect("/miniforge/releases/tag/26.7.2-0".into())],
+        ),
+        (
+            &format!("/miniforge/releases/download/26.7.2-0/{file}.sha256"),
+            vec![Reply::Body(format!("{sha}  {file}\n").into_bytes())],
+        ),
+        (
+            &format!("/miniforge/releases/download/26.7.2-0/{file}"),
+            vec![Reply::Body(body.into_bytes())],
+        ),
+    ]);
+    let t = table(&f, &[("miniforge3-latest", format!("ok-latest Miniforge3-{arch} https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-{arch}.sh miniconda verify_py3_latest"))]);
+    let base = s.url("");
+    let r = run(
+        &f,
+        &["install", "miniforge3-latest"],
+        &[
+            ("RPYENV_TEST_CONDA_TABLES", &t),
+            ("RPYENV_TEST_CONDA", &base),
+        ],
+    );
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert_eq!(
+        s.hits(&format!("/miniforge/releases/download/26.7.2-0/{file}")),
+        1
+    );
+}
