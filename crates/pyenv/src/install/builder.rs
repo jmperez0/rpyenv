@@ -765,6 +765,18 @@ fn fetch_package(
             }
             Ok(dir)
         }
+        Fetch::Script { url, fragment } => {
+            let sha =
+                sha256_of_fragment(url, fragment.as_deref()).map_err(InstallError::Message)?;
+            let req = FetchRequest {
+                file_name: format!("{}.sh", pkg.name),
+                url: url.clone(),
+                check: Check::Sha256(sha),
+                dest_dir: build_path.to_path_buf(),
+            };
+            let mut w: &BuildLog = log;
+            Ok(job.fetcher.fetch(&req, &mut w, say)?)
+        }
         Fetch::Git {
             url,
             reference,
@@ -940,6 +952,58 @@ fn run_step(
                     plan.prefix.display()
                 ))
             })
+        }
+        // python-build's `build_package_anaconda` and `build_package_miniconda` (M7b design §4.3):
+        // the installer writes straight into the final folder, which `place_empty` created with
+        // the marker; `-f` lets it use the existing folder.
+        "anaconda" | "miniconda" => {
+            if !txn.placed() {
+                txn.place_empty().map_err(|e| {
+                    InstallError::Message(format!(
+                        "pyenv: cannot create {}: {e}",
+                        plan.prefix.display()
+                    ))
+                })?;
+            }
+            let vars = &job.definition.vars;
+            let mut c = command("bash", &plan.env);
+            c.arg(src).args(["-f", "-b", "-p"]).arg(&plan.prefix);
+            for (k, v) in vars {
+                c.env(k, v);
+            }
+            logged(log, &mut c)?;
+            if step == "miniconda" {
+                // Upstream's workaround for pyenv issue #2070: pip, without upgrading conda.
+                let conda = plan.prefix.join("bin").join("conda");
+                let out = command(&conda, &plan.env)
+                    .arg("--version")
+                    .stdin(Stdio::null())
+                    .output();
+                if interrupted() {
+                    return Err(InstallError::Interrupted);
+                }
+                let v = out
+                    .ok()
+                    .and_then(|o| {
+                        String::from_utf8_lossy(&o.stdout)
+                            .split_whitespace()
+                            .nth(1)
+                            .map(str::to_string)
+                    })
+                    .ok_or_else(|| {
+                        InstallError::Message(format!(
+                            "pyenv: {} --version gave no version",
+                            conda.display()
+                        ))
+                    })?;
+                let mut c = command(&conda, &plan.env);
+                c.args(["install", "--yes", "pip", &format!("conda={v}")]);
+                for (k, val) in vars {
+                    c.env(k, val);
+                }
+                logged(log, &mut c)?;
+            }
+            Ok(())
         }
         s if s.starts_with("verify_py") => verify(job, plan, s, python, say),
         "ensurepip" | "ensurepip_lt21" => {
