@@ -190,23 +190,21 @@ impl Txn {
                 // link goes.
                 let _ = remove_link(&old);
             } else {
+                // The list is computed before the carry (it reads both trees as they are) and
+                // printed only when the carry succeeded.
+                let mut left = None;
                 let carried = if self.conda {
                     let (conda, pip) = not_carried(&old, &self.target());
-                    if let Some(line) = not_carried_line(&self.name, &conda, &pip) {
-                        rpyenv_core::textout::write(
-                            true,
-                            &format!(
-                                "{line}
-"
-                            ),
-                        );
-                    }
+                    left = not_carried_line(&self.name, &conda, &pip);
                     carry_envs(&old, &self.target())
                 } else {
                     carry_over(&old, &self.target())
                 };
                 match carried {
                     Ok(()) => {
+                        if let Some(line) = left {
+                            rpyenv_core::textout::write(true, &format!("{line}\n"));
+                        }
                         let _ = std::fs::remove_dir_all(&old);
                     }
                     Err(e) => rpyenv_core::textout::write(
@@ -238,17 +236,33 @@ fn remove_link(p: &Path) -> std::io::Result<()> {
     }
 }
 
-/// `envs/` (pyenv-virtualenv) moves when `new` has none.
+/// `envs/` (pyenv-virtualenv): the whole folder moves when `new` has none; when `new` has one
+/// (a real conda installer creates an empty `envs/`), each entry of `old/envs` that `new/envs`
+/// lacks moves in, and an entry in both keeps `new`'s. Rename only, so a failure loses nothing.
 fn carry_envs(old: &Path, new: &Path) -> std::io::Result<()> {
     let envs = old.join("envs");
-    if envs.symlink_metadata().is_ok() && new.join("envs").symlink_metadata().is_err() {
-        std::fs::rename(&envs, new.join("envs"))?;
+    if envs.symlink_metadata().is_err() {
+        return Ok(());
+    }
+    let to = new.join("envs");
+    match to.symlink_metadata() {
+        Err(_) => std::fs::rename(&envs, &to)?,
+        Ok(m) if m.file_type().is_dir() => {
+            for e in std::fs::read_dir(&envs)? {
+                let e = e?;
+                let dest = to.join(e.file_name());
+                if dest.symlink_metadata().is_err() {
+                    std::fs::rename(e.path(), dest)?;
+                }
+            }
+        }
+        Ok(_) => {}
     }
     Ok(())
 }
 
 /// Moves what upstream's build over the old tree would have kept from `old` into the new
-/// tree `new`: `envs/` (pyenv-virtualenv) when `new` has none, and each entry that `new`
+/// tree `new`: `envs/` (pyenv-virtualenv; see `carry_envs`), and each entry that `new`
 /// lacks in `bin/` and `Scripts\` (scripts pip installed) and in site-packages (`lib/python*/site-packages`,
 /// `lib/pypy*/site-packages`, and `Lib/site-packages` for Windows). Entries in both keep `new`'s copy. Everything moves
 /// by rename, which moves a symlink as a link, so a failure part way loses nothing: what has
@@ -418,25 +432,12 @@ mod tests {
         let t = tempfile::tempdir().unwrap();
         let (old, new) = (t.path().join("old"), t.path().join("new"));
         let sp = old.join("lib/python3.12/site-packages");
-        touch(
-            &sp.join("numpy-1.26.4.dist-info/INSTALLER"),
-            "conda
-",
-        );
-        touch(
-            &sp.join("requests-2.32.3.dist-info/INSTALLER"),
-            "pip
-",
-        );
-        touch(
-            &sp.join("six-1.16.0.dist-info/INSTALLER"),
-            "pip
-",
-        );
+        touch(&sp.join("numpy-1.26.4.dist-info/INSTALLER"), "conda\n");
+        touch(&sp.join("requests-2.32.3.dist-info/INSTALLER"), "pip\n");
+        touch(&sp.join("six-1.16.0.dist-info/INSTALLER"), "pip\n");
         touch(
             &new.join("lib/python3.12/site-packages/six-1.17.0.dist-info/INSTALLER"),
-            "conda
-",
+            "conda\n",
         );
         let (conda, pip) = not_carried(&old, &new);
         assert!(conda.is_empty());
@@ -464,6 +465,7 @@ mod tests {
         let (target, old) = (versions.join("m"), versions.join(".old-m"));
         touch(&target.join("conda-meta/history"), "");
         touch(&target.join("bin/python"), "");
+        std::fs::create_dir_all(target.join("envs")).unwrap();
         touch(&old.join("envs/work/conda-meta/history"), "");
         touch(&old.join("bin/my-tool"), "");
         touch(
@@ -476,5 +478,36 @@ mod tests {
         assert!(!target.join("bin/my-tool").exists());
         assert!(!target.join("lib/python3.12/site-packages/numpy").exists());
         assert!(!old.exists());
+    }
+
+    #[test]
+    fn carry_envs_moves_what_the_new_envs_lacks_and_keeps_the_new_copy() {
+        let t = tempfile::tempdir().unwrap();
+        let (old, new) = (t.path().join("old"), t.path().join("new"));
+        touch(&old.join("envs/a/from"), "old");
+        touch(&old.join("envs/b/from"), "old");
+        touch(&new.join("envs/a/from"), "new");
+        carry_envs(&old, &new).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(new.join("envs/b/from")).unwrap(),
+            "old"
+        );
+        assert_eq!(
+            std::fs::read_to_string(new.join("envs/a/from")).unwrap(),
+            "new"
+        );
+        assert!(old.join("envs/a/from").is_file());
+        assert!(!old.join("envs/b").exists());
+    }
+
+    #[test]
+    fn carry_envs_moves_the_whole_folder_when_the_new_tree_has_none() {
+        let t = tempfile::tempdir().unwrap();
+        let (old, new) = (t.path().join("old"), t.path().join("new"));
+        touch(&old.join("envs/b/from"), "old");
+        std::fs::create_dir_all(&new).unwrap();
+        carry_envs(&old, &new).unwrap();
+        assert!(new.join("envs/b/from").is_file());
+        assert!(!old.join("envs").exists());
     }
 }

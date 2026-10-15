@@ -3,7 +3,7 @@
 //! CONDA_PLUGINS_AUTO_ACCEPT_TOS into `$FAKECONDA_LOG` (when set), then writes `bin/python<X.Y>`
 //! (answers `-c …` with exit 0), `bin/python` (a link), `bin/conda` (`--version` prints
 //! `conda 25.1.1`; `install …` appends its arguments to the log and exits `$FAKECONDA_INSTALL_EXIT`,
-//! default 0) and `conda-meta/history`. It exits `$FAKECONDA_EXIT` (default 0) before writing
+//! default 0) and `conda-meta/history` and an empty `envs/` (as real installers do). It exits `$FAKECONDA_EXIT` (default 0) before writing
 //! anything when that is set. Unix only.
 
 pub fn installer(py: &str) -> String {
@@ -17,7 +17,7 @@ done
 {{ echo "args: -f -b -p $prefix"; [ -e "$prefix/.rpyenv-incomplete" ] && echo "marker: yes" || echo "marker: no"
    echo "tos: ${{CONDA_PLUGINS_AUTO_ACCEPT_TOS:-unset}}"; }} >> "$log"
 [ -n "${{FAKECONDA_EXIT:-}}" ] && exit "$FAKECONDA_EXIT"
-mkdir -p "$prefix/bin" "$prefix/conda-meta"
+mkdir -p "$prefix/bin" "$prefix/conda-meta" "$prefix/envs"
 printf '#!/bin/sh\nexit 0\n' > "$prefix/bin/python{py}"
 chmod 755 "$prefix/bin/python{py}"
 ln -sf "python{py}" "$prefix/bin/python"

@@ -164,6 +164,9 @@ jobs:
             esac
           fi
           echo "VERSION=$v" >> "$GITHUB_ENV"
+          # `$PYENV_ROOT/cache` is the download cache when it is a directory: the check's
+          # `install -f` then reuses the installer instead of fetching it again.
+          mkdir -p "$RUNNER_TEMP/root/cache"
           PYENV_ROOT="$RUNNER_TEMP/root" target/release/pyenv install "$v"
       - name: Check the install
         run: bash ci/check_install.sh "$RUNNER_TEMP/root" "$VERSION" target/release/pyenv
