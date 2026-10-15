@@ -59,9 +59,8 @@ how many rows are `ok`, `ok-latest`, `no-binary` and `unsupported`.
 1. **Vendoring.** `ci/sync_python_build.py` copies every upstream definition whose name
    starts with `anaconda`, `miniconda`, `miniforge` or `mambaforge` into
    `crates/pyenv/python-build/share/python-build`, unpatched, as it does for `pypy*`. It
-   also copies `pyenv.d/rehash/conda.d/default.list` to
-   `crates/pyenv/conda/default.list`, with an attribution header naming upstream's MIT
-   license.
+   also copies `pyenv.d/rehash/conda.d/default.list` byte for byte to
+   `crates/pyenv/python-build/rehash/conda.d/default.list`, with pyenv's `LICENSE` beside it.
 2. **Evaluation.** A stub evaluator (`crates/pyenv/src/install/conda_eval.sh`, the shape
    of `pypy_eval.sh`) sources each definition in a subshell, for `Linux-x86_64` and
    `Linux-aarch64`, with stub `anaconda_architecture`, `install_script` and `colorize`.
@@ -74,9 +73,9 @@ how many rows are `ok`, `ok-latest`, `no-binary` and `unsupported`.
    | Verdict | Rule |
    |---|---|
    | `ok` | The URL has a SHA-256 and starts with one of the five prefixes of §3. |
-   | `ok-latest` | No SHA-256, the name is `miniconda2-latest`, `miniconda3-latest` or `miniforge3-latest` (the names D2 gives a hash source), and the URL starts with one of the five prefixes. |
+   | `ok-latest` | No SHA-256, the name is `miniconda-latest`, `miniconda2-latest`, `miniconda3-latest` or `miniforge3-latest` (D2's `miniconda*-latest` and `miniforge3-latest`; the names D2 gives a hash source), and the URL starts with one of the five prefixes. |
    | `no-binary` | The definition took its own "not available for" branch. |
-   | `unsupported` | Anything else, with its reason: `no published hash` (an unhashed name without a hash source: `mambaforge`, `mambaforge-pypy3`, `miniforge-pypy3`), `unknown host`, or the stub gap that stopped it. |
+   | `unsupported` | Anything else, with its reason: `no published hash` (an unhashed name without a hash source: `mambaforge`, `mambaforge-pypy3`, `miniforge-pypy3`), `md5 checksum only` (an MD5-only legacy definition, refused as D-64 refuses an MD5), `unknown host`, or the stub gap that stopped it. |
 
 4. **Checks that fail the job:** the arch named in an `ok` row's file name matches the
    row's arch (`Linux-aarch64` / `Linux-x86_64`, as M7a's file check); every vendored
@@ -89,7 +88,7 @@ how many rows are `ok`, `ok-latest`, `no-binary` and `unsupported`.
 ### 4.2 How rpyenv uses it
 
 - `crates/pyenv/src/install/conda.rs` parses the embedded table (debug override:
-  `RPYENV_TEST_CONDA_TABLES`). Its trust rule refuses any `ok` or `ok-latest` row whose
+  `RPYENV_TEST_CONDA_TABLES`, which names a folder holding `linux.tsv`). Its trust rule refuses any `ok` or `ok-latest` row whose
   URL is outside the five prefixes, as `pypy::parse_linux` does.
 - `commands/install.rs` routes a definition whose name starts with `anaconda`,
   `miniconda`, `miniforge` or `mambaforge` as it routes `pypy*`: a vendored one through
@@ -124,8 +123,8 @@ how many rows are `ok`, `ok-latest`, `no-binary` and `unsupported`.
    - `anaconda`: `bash <package>.sh -f -b -p <prefix>`, its output in the build log.
    - `miniconda`: the same, then `<prefix>/bin/conda install --yes pip conda=<v>`, `<v>`
      read from `<prefix>/bin/conda --version`.
-7. **Verify** through the existing verify code: `verify_pyXY` checks `bin/pythonX.Y`,
-   `verify_py3_latest` checks `bin/python3`.
+7. **Verify** runs the existing rule (`bin/python` for names without an X.Y, M7a ruling R6)
+   plus the module checks of the `verify_pyXY` step.
 8. **Commit:** the marker goes, and an old version's `envs/` is carried over, and nothing
    else (D7). A conda env's files name its own final path (`versions/<name>/envs/<env>`),
    which is the same after the carry-over. When the old base had packages the new one
@@ -169,7 +168,7 @@ how many rows are `ok`, `ok-latest`, `no-binary` and `unsupported`.
 
 - **D-44** is removed (its test inverted: `curl` and `clear` lose their shims once
   `bin/conda` exists).
-- **New rows,** each cited by a test: the terms notice (an extra stdout line); the
+- **New rows,** each cited by a test: the terms notice (an extra stderr line); the
   `unsupported` refusals (upstream would try the download and fail on a 404 or install
   unchecked); `-latest` checked against the publisher (upstream installs it unchecked);
   the user-definition refusal.

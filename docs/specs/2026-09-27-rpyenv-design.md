@@ -919,7 +919,7 @@ Each milestone gets its own implementation plan.
    `pyenv setup`, and `pyenv migrate`; Linux tarball and install script;
    release workflow.
 
-7. **M7a PyPy** (spec docs/superpowers/specs/2026-10-14-m7a-pypy-design.md) and **M7b Anaconda, Miniconda, Miniforge** (a later release, see §15.1).
+7. **M7a PyPy** (spec docs/superpowers/specs/2026-10-14-m7a-pypy-design.md); **M7b Anaconda, Miniconda and Miniforge on Linux** (spec docs/superpowers/specs/2026-10-15-m7b-conda-linux-design.md); M7c the same on Windows (see §15.1).
 8. **M8 Missing Linux build dependencies** (a later release, see §15.2).
 9. **M9 Shared admin-managed versions** (only if needed, see §15.3).
 
@@ -959,7 +959,7 @@ each milestone.
      is written into the installed files. So conda installs straight into the
      final `versions/<name>` folder, writes a completion marker last, and
      deletes the folder on failure. A folder without the marker counts as not
-     installed.
+     installed. Implemented on Linux by M7b (§4.3 of its spec).
 5. **Catalog:** on Linux, upstream `python-build` already has PyPy, Anaconda,
    Miniconda, and Miniforge definitions with hashes. On Windows, where versions
    and hashes come from is decided when M7 is planned, under the same rule as
@@ -1046,6 +1046,9 @@ each milestone.
        resolution 1) compares the copy with upstream's file and opens a pull
        request when they differ. A copy that lags between rpyenv releases does
        no harm, since the ownership rule already excludes these tools.
+     - **Linux (M7b, 2026-10-15):** upstream's `conda.d/default.list` only, as
+       upstream's hook applies it; the ownership rule and its list are M7c's
+       (Windows).
    - **`conda` itself:** `Scripts\conda.exe` is owned by `conda`, so
      `conda install …` works through its shim. `conda activate` needs conda's
      own shell integration and isn't supported. Conda environments are

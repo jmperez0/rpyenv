@@ -181,6 +181,7 @@ fn a_failed_verify_leaves_nothing() {
 
 /// Review focus 2; spec D7: only `envs/` is carried over, and the base packages left behind
 /// are named with ready commands.
+// allowlist D-58
 #[test]
 fn force_reinstall_keeps_conda_envs_only_and_names_what_it_left() {
     let f = Fixture::new();
@@ -280,6 +281,7 @@ fn table(f: &Fixture, rows: &[(&str, String)]) -> String {
     d.display().to_string()
 }
 
+// allowlist D-107
 #[test]
 fn a_vendored_name_installs_from_its_table_row_with_the_terms_notice() {
     let f = Fixture::new();
