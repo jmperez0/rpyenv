@@ -98,7 +98,14 @@ impl Txn {
                     // A linked version set aside by `-f` (final review M2): never reached
                     // through, only the link goes.
                     let _ = remove_link(&old);
-                } else if carry_over(&old, &target).is_ok() {
+                } else if (if target.join("conda-meta").is_dir() {
+                    // A conda tree: only `envs/` is ever carried over (spec D7).
+                    carry_envs(&old, &target)
+                } else {
+                    carry_over(&old, &target)
+                })
+                .is_ok()
+                {
                     // Killed during or before the carry-over: finish it, and keep `.old` if
                     // it fails (`place` then refuses to overwrite it).
                     let _ = std::fs::remove_dir_all(&old);
@@ -448,5 +455,26 @@ mod tests {
         assert!(!l.contains("conda install") && !tail.contains("; "), "{l}");
         let l = not_carried_line("m", &names(&["a", "b"]), &names(&["c"])).unwrap();
         assert!(l.ends_with("conda install a b; pip install c"), "{l}");
+    }
+
+    #[test]
+    fn recovery_of_a_killed_conda_commit_carries_only_envs() {
+        let t = tempfile::tempdir().unwrap();
+        let versions = t.path().join("versions");
+        let (target, old) = (versions.join("m"), versions.join(".old-m"));
+        touch(&target.join("conda-meta/history"), "");
+        touch(&target.join("bin/python"), "");
+        touch(&old.join("envs/work/conda-meta/history"), "");
+        touch(&old.join("bin/my-tool"), "");
+        touch(
+            &old.join("lib/python3.12/site-packages/numpy/__init__.py"),
+            "",
+        );
+        let txn = Txn::begin(&versions, "m").unwrap();
+        drop(txn);
+        assert!(target.join("envs/work/conda-meta/history").is_file());
+        assert!(!target.join("bin/my-tool").exists());
+        assert!(!target.join("lib/python3.12/site-packages/numpy").exists());
+        assert!(!old.exists());
     }
 }

@@ -243,3 +243,28 @@ fn a_folder_left_with_the_marker_is_reinstalled_without_f() {
     assert!(!v.join(".rpyenv-incomplete").exists());
     assert!(v.join("conda-meta/history").is_file());
 }
+
+#[test]
+fn a_failing_f_reinstall_restores_the_previous_version() {
+    let f = Fixture::new();
+    let (s, sha) = serve(&installer("3.12"));
+    let def = def_file(&f, &s, &sha, "miniconda3-t", "miniconda", "");
+    assert_eq!(run(&f, &["install", &def], &[]).code, 0);
+    let v = f.root.join("versions/miniconda3-t");
+    std::fs::create_dir_all(v.join("envs/work")).unwrap();
+    f.file(
+        &v.join("conda-meta/history"),
+        "previous
+",
+    );
+    let r = run(&f, &["install", "-f", &def], &[("FAKECONDA_EXIT", "3")]);
+    assert_ne!(r.code, 0);
+    assert_eq!(
+        std::fs::read_to_string(v.join("conda-meta/history")).unwrap(),
+        "previous
+"
+    );
+    assert!(v.join("envs/work").is_dir());
+    assert!(!v.join(".rpyenv-incomplete").exists());
+    assert_eq!(left_in_versions(&f), ["miniconda3-t"]);
+}
