@@ -523,3 +523,25 @@ fn run(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The embedded archive must not record checkout times or build-host owners: they made two
+    // builds of one commit differ (v0.1.0 against its dry run: all 486 mtimes).
+    #[test]
+    fn the_embedded_patches_carry_no_checkout_metadata() {
+        let mut ar = tar::Archive::new(flate2::read::GzDecoder::new(PATCHES));
+        let mut n = 0;
+        for e in ar.entries().unwrap() {
+            let e = e.unwrap();
+            let h = e.header();
+            let path = e.path().unwrap().into_owned();
+            assert_eq!(h.mtime().unwrap(), tar::DETERMINISTIC_TIMESTAMP, "{path:?}");
+            assert_eq!((h.uid().unwrap(), h.gid().unwrap()), (0, 0), "{path:?}");
+            n += 1;
+        }
+        assert!(n > 400, "{n} entries");
+    }
+}
