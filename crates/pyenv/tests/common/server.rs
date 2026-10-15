@@ -12,6 +12,8 @@ pub enum Reply {
     Body(Vec<u8>),
     /// This status with an empty body.
     Status(u16),
+    /// `302 Found` with this `Location` and an empty body.
+    Redirect(String),
     /// 200 announcing the full length but sending only the first half, then closing.
     Truncated(Vec<u8>),
     /// 200 announcing the full length, sending the first half, then sleeping 30 s without closing.
@@ -106,6 +108,15 @@ fn serve(listener: TcpListener, routes: HashMap<String, Vec<Reply>>) -> Server {
                 Reply::Status(code) => write!(
                     stream,
                     "HTTP/1.1 {code} X\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                ),
+                Reply::Redirect(loc) => write!(
+                    stream,
+                    "HTTP/1.1 302 Found
+Location: {loc}
+Content-Length: 0
+Connection: close
+
+"
                 ),
                 Reply::Truncated(b) => {
                     let _ = write!(

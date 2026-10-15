@@ -184,6 +184,32 @@ impl Fetcher {
         Err(last)
     }
 
+    /// One GET with redirects off: the `Location` of a 3xx answer. Anything else is an error;
+    /// there are no retries (the caller reports the failure).
+    pub fn redirect_target(&self, url: &str) -> Result<String, TextError> {
+        let fail = |status: Option<u16>, message: String| TextError { status, message };
+        let r = self
+            .agent
+            .get(url)
+            .config()
+            .max_redirects(0)
+            .max_redirects_will_error(false)
+            .http_status_as_error(false)
+            .timeout_global(Some(self.text_timeout))
+            .build()
+            .call()
+            .map_err(|e| fail(None, e.to_string()))?;
+        let code = r.status().as_u16();
+        if !r.status().is_redirection() {
+            return Err(fail(Some(code), format!("HTTP {code}")));
+        }
+        r.headers()
+            .get("location")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+            .ok_or_else(|| fail(Some(code), format!("HTTP {code} without a Location")))
+    }
+
     /// The mirror URL for `url`, if any (reference "Download", step 1).
     pub fn mirror_url(&self, url: &str, sha256: &str) -> Option<String> {
         let m = self.mirror.as_ref()?;
