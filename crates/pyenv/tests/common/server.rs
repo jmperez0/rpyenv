@@ -111,12 +111,7 @@ fn serve(listener: TcpListener, routes: HashMap<String, Vec<Reply>>) -> Server {
                 ),
                 Reply::Redirect(loc) => write!(
                     stream,
-                    "HTTP/1.1 302 Found
-Location: {loc}
-Content-Length: 0
-Connection: close
-
-"
+                    "HTTP/1.1 302 Found\r\nLocation: {loc}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                 ),
                 Reply::Truncated(b) => {
                     let _ = write!(
