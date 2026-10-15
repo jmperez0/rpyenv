@@ -276,9 +276,8 @@ fn table(f: &Fixture, rows: &[(&str, String)]) -> String {
         .iter()
         .map(|(n, v)| format!("{n}\t{arch}\t{v}\n"))
         .collect();
-    let file = d.join("linux.tsv");
-    f.file(&file, &text);
-    file.display().to_string()
+    f.file(&d.join("linux.tsv"), &text);
+    d.display().to_string()
 }
 
 #[test]
@@ -297,11 +296,17 @@ fn a_vendored_name_installs_from_its_table_row_with_the_terms_notice() {
         &[("RPYENV_TEST_CONDA_TABLES", &t), ("FAKECONDA_LOG", &lp)],
     );
     assert_eq!(r.code, 0, "{}", r.stderr);
+    let notice = r
+        .stderr
+        .find("rpyenv: Miniconda's defaults channel is covered by Anaconda's terms of service")
+        .unwrap_or_else(|| panic!("no notice: {}", r.stderr));
+    let download = r
+        .stderr
+        .find("Downloading")
+        .unwrap_or_else(|| panic!("no download line: {}", r.stderr));
     assert!(
-        r.stderr.contains(
-            "rpyenv: Miniconda's defaults channel is covered by Anaconda's terms of service"
-        ),
-        "{}",
+        notice < download,
+        "notice must precede the download: {}",
         r.stderr
     );
     assert!(log(&f).contains("tos: true"));
@@ -361,12 +366,26 @@ fn a_no_binary_row_prints_upstreams_lines() {
         &[("RPYENV_TEST_CONDA_TABLES", &t)],
     );
     assert_eq!(r.code, 1);
-    assert!(
-        r.stderr.contains(&format!(
-            "\nERROR: The binary distribution of Anaconda is not available for {arch}.\n"
-        )),
-        "{:?}",
-        r.stderr
+    assert_eq!(
+        r.stderr,
+        format!("\nERROR: The binary distribution of Anaconda is not available for {arch}.\n\n")
+    );
+}
+
+#[test]
+fn a_name_missing_from_the_table_is_no_binary() {
+    let f = Fixture::new();
+    let t = table(&f, &[("miniforge3-25.1.1-0", "no-binary x".into())]);
+    let arch = pyenv::install::conda::host_arch().unwrap();
+    let r = run(
+        &f,
+        &["install", "anaconda3-2025.12-2"],
+        &[("RPYENV_TEST_CONDA_TABLES", &t)],
+    );
+    assert_eq!(r.code, 1);
+    assert_eq!(
+        r.stderr,
+        format!("\nERROR: The binary distribution of anaconda3-2025.12-2 is not available for {arch}.\n\n")
     );
 }
 

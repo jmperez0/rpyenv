@@ -168,12 +168,13 @@ fn parse_linux_with(text: &str, trusted_only: bool) -> Result<Vec<LinuxRow>, Str
         .collect()
 }
 
-/// Debug builds read the table from the file named by `RPYENV_TEST_CONDA_TABLES` when it is
+/// Debug builds read the table from `<folder>/linux.tsv`, the folder named by
+/// `RPYENV_TEST_CONDA_TABLES`, when it is
 /// set; release builds always use the embedded one.
 fn table_text(embedded: &'static str) -> Result<String, String> {
     #[cfg(debug_assertions)]
     if let Some(p) = std::env::var_os("RPYENV_TEST_CONDA_TABLES").filter(|v| !v.is_empty()) {
-        let p = std::path::PathBuf::from(p);
+        let p = std::path::PathBuf::from(p).join("linux.tsv");
         return std::fs::read_to_string(&p).map_err(|e| format!("{}: {e}", p.display()));
     }
     Ok(embedded.to_string())
