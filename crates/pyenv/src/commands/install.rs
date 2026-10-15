@@ -2,6 +2,7 @@
 
 use crate::commands::latest::resolve_known;
 use crate::install::builder::{self, patch_files, Job, Options};
+use crate::install::conda;
 use crate::install::defs::{self, Found, Origin};
 use crate::install::fetch::Fetcher;
 use crate::install::pypy::{self, Verdict};
@@ -155,6 +156,66 @@ fn pypy_text(found: &Found, interpretable: bool) -> Option<Result<String, String
         )),
     }))
 }
+/// M7b design §4.2-4.3: what a conda-family definition installs here, as a one-line definition
+/// the interpreter reads. The vendored copy uses the table's row; a user's own one that the
+/// interpreter can't read is evaluated with `bash`. `None` for every other definition.
+fn conda_text(
+    found: &Found,
+    interpretable: bool,
+    fetcher: &Fetcher,
+    say: &mut dyn FnMut(&str),
+) -> Option<Result<String, String>> {
+    let builtin = found.origin == Origin::Builtin;
+    if !conda::is_conda_name(&found.name) || (!builtin && interpretable) {
+        return None;
+    }
+    let name = &found.name;
+    let Some(arch) = conda::host_arch() else {
+        return Some(Err(format!(
+            "\nERROR: The binary distribution of {name} is not available for Linux-{}.\n",
+            std::env::consts::ARCH
+        )));
+    };
+    let verdict = match &found.origin {
+        Origin::Builtin => conda::linux_table().map(|rows| {
+            conda::linux_verdict(&rows, name, arch)
+                .cloned()
+                .unwrap_or(conda::Verdict::NoBinary(name.clone()))
+        }),
+        Origin::Dir(d) => conda::evaluate(&d.join(name), arch),
+        Origin::Path(p) => conda::evaluate(p, arch),
+    };
+    let notice = |i: &conda::Install, say: &mut dyn FnMut(&str)| {
+        if i.env
+            .iter()
+            .any(|(k, _)| k == "CONDA_PLUGINS_AUTO_ACCEPT_TOS")
+        {
+            say(TERMS_NOTICE);
+        }
+    };
+    Some(verdict.and_then(|v| match v {
+        conda::Verdict::Ok(i) => {
+            notice(&i, say);
+            Ok(conda::definition_text(&i))
+        }
+        conda::Verdict::OkLatest(i) => {
+            notice(&i, say);
+            conda::latest_source(name, &i, arch, fetcher).map(|i| conda::definition_text(&i))
+        }
+        conda::Verdict::NoBinary(what) => Err(format!(
+            "\nERROR: The binary distribution of {what} is not available for {arch}.\n"
+        )),
+        conda::Verdict::Unsupported(why) if builtin => Err(format!(
+            "python-build: {name}: rpyenv cannot install this conda definition ({why})"
+        )),
+        conda::Verdict::Unsupported(why) => Err(format!(
+            "python-build: {name}: rpyenv cannot read this conda definition ({why})"
+        )),
+    }))
+}
+
+const TERMS_NOTICE: &str = "rpyenv: Miniconda's defaults channel is covered by Anaconda's terms of service, which require a paid license for organizations of 200 or more people; this install accepts them, as upstream pyenv does. Miniforge (conda-forge) isn't covered.";
+
 pub fn install(ctx: &Ctx, args: &[&str]) -> Output {
     // The process environment, which every lookup and the build itself see.
     let base: Vec<(OsString, OsString)> = std::env::vars_os().collect();
@@ -238,6 +299,8 @@ pub fn install(ctx: &Ctx, args: &[&str]) -> Output {
     watch_interrupt();
     let mut status = 0;
     let mut stdin_patch: Option<Vec<u8>> = None;
+    // Reads the two small pages a conda `-latest` name needs; no cache.
+    let probe = Fetcher::from_env(&env, None);
     for arg in &wanted {
         // A Ctrl+C during the previous version's default packages or rehash.
         if interrupted() {
@@ -313,7 +376,9 @@ pub fn install(ctx: &Ctx, args: &[&str]) -> Output {
             None => defs::find(&root, n, &env),
         };
         let first = defs::parse(&found, &env, &sibling);
-        let (found, parsed) = match pypy_text(&found, first.is_ok()) {
+        let (found, parsed) = match pypy_text(&found, first.is_ok())
+            .or_else(|| conda_text(&found, first.is_ok(), &probe, &mut say))
+        {
             None => match first {
                 Ok(d) => (found, d),
                 Err(e) => {
