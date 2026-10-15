@@ -283,13 +283,21 @@ pub fn forwardable_name(name: &str) -> bool {
 /// forward list (Windows); the caller decides where it comes from (`rehash::batch_forward`).
 pub fn wanted(ctx: &Ctx, forward: &[String]) -> Vec<Wanted> {
     match ctx.flavor {
-        Flavor::Pyenv => executables_pyenv(&ctx.versions_dir())
-            .into_iter()
-            .map(|name| Wanted {
-                name,
-                kind: ShimKind::Console,
-            })
-            .collect(),
+        Flavor::Pyenv => {
+            // Upstream's conda.bash rehash hook: with any conda around, its bundled system
+            // tools get no shim.
+            let drop = crate::conda_list::conda_exists(&ctx.versions_dir());
+            executables_pyenv(&ctx.versions_dir())
+                .into_iter()
+                .filter(|name| {
+                    !(drop && crate::conda_list::names().contains(name.to_str().unwrap_or("")))
+                })
+                .map(|name| Wanted {
+                    name,
+                    kind: ShimKind::Console,
+                })
+                .collect()
+        }
         Flavor::PyenvWin => shims_win(&ctx.versions_dir(), forward),
     }
 }
