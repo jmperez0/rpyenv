@@ -317,24 +317,16 @@ fn which_win_with(ctx: &Ctx, command: &str, runnable_only: bool) -> Result<Found
             }
         }
         // M7c design §6.1: an env has no conda of its own; `conda` is its install's.
-        if conda_stem(program)
-            && dir.join("conda-meta").is_dir()
-            && !crate::venv::is_conda_win_install(&dir)
-        {
-            if let Some(base) = dir
-                .parent()
-                .filter(|e| e.file_name().is_some_and(|n| n == "envs"))
-                .and_then(Path::parent)
-            {
-                if let Some(path) = win_hits(base, program, &exts)
+        if conda_stem(program) {
+            if let Some(path) = crate::venv::conda_win_env_install(&dir).and_then(|base| {
+                win_hits(&base, program, &exts)
                     .into_iter()
                     .find(|h| !runnable_only || is_runnable_win(h))
-                {
-                    return Ok(Found {
-                        path,
-                        warnings: Vec::new(),
-                    });
-                }
+            }) {
+                return Ok(Found {
+                    path,
+                    warnings: Vec::new(),
+                });
             }
         }
     }
@@ -804,7 +796,8 @@ mod tests {
         assert_eq!(which_win(&ctx, "tool"), Err(NotFound::WinNotFound));
     }
 
-    /// Review focus 5. The env name's `/` is a separator only on Windows.
+    /// In an env, `conda` is its install's, while other tools stay the env's own. The env
+    /// name's `/` is a separator only on Windows.
     #[cfg(windows)]
     #[test]
     fn conda_in_an_env_runs_the_installs_conda() {
@@ -822,6 +815,21 @@ mod tests {
         assert_eq!(run("conda"), Ok(conda.clone()));
         assert_eq!(run("conda.exe"), Ok(conda));
         assert_eq!(run("pip"), Ok(e.join("Scripts").join("pip.exe")));
+    }
+
+    #[test]
+    fn whence_lists_a_conda_trees_library_bin_hit_after_the_others() {
+        let (_t, ctx) = win_root(&["miniforge3-x"]);
+        let v = ctx.versions_dir().join("miniforge3-x");
+        fs::create_dir_all(v.join("conda-meta")).unwrap();
+        touch(&v.join("Library/bin/tool.exe"));
+        touch(&v.join("Scripts/tool.exe"));
+        let want = [
+            v.join("Scripts").join("tool.exe"),
+            v.join("Library").join("bin").join("tool.exe"),
+        ]
+        .map(|p| p.display().to_string());
+        assert_eq!(whence_win(&ctx, "tool", true), want);
     }
 
     #[test]

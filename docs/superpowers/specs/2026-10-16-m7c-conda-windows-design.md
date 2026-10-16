@@ -242,7 +242,10 @@ reads CPython codes, so without this the most common spelling would fail (added
 <root>; <root>\Library\mingw-w64\bin; <root>\Library\usr\bin; <root>\Library\bin; <root>\Scripts; <root>\bin
 ```
 
-For installs and envs alike (each env has its own `Library\bin`). The child's
+For installs and envs alike (each env has its own `Library\bin`). For an env,
+`<install>\condabin` follows its six folders, because conda keeps the base's `condabin` on
+the PATH of an activated env; this keeps `pyenv exec conda` working there (not the
+install's `Scripts`, which would leak the base's tools). The child's
 environment only, never the caller's (parent §15.1 point 2).
 
 `pyenv activate <install>/envs/<name>` sets `PYENV_VERSION`, `VIRTUAL_ENV` and

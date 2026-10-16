@@ -153,6 +153,17 @@ fn venv_works(p: &Path) -> bool {
         .is_ok_and(|s| s.success())
 }
 
+/// A file in a conda tree's `Libraryin` (DLLs and tools): never an interpreter (M7c task 6).
+fn in_library_bin(p: &Path) -> bool {
+    let name = |p: Option<&Path>| {
+        p.and_then(Path::file_name)
+            .map(|n| n.to_string_lossy().to_ascii_lowercase())
+    };
+    let dir = p.parent();
+    name(dir).as_deref() == Some("bin")
+        && name(dir.and_then(Path::parent)).as_deref() == Some("library")
+}
+
 /// The interpreter that runs `-m venv` (Decision 2, allowlist D-96).
 fn interpreter(ctx: &Ctx, base: &str, wanted: Option<&str>) -> Result<PathBuf, Output> {
     let mut c = ctx.clone();
@@ -180,8 +191,9 @@ fn interpreter(ctx: &Ctx, base: &str, wanted: Option<&str>) -> Result<PathBuf, O
         let last = match ctx.flavor {
             Flavor::Pyenv => lookup::whence_pyenv(ctx, &name).pop().map(|(_, p)| p),
             Flavor::PyenvWin => lookup::whence_win(ctx, &name, true)
-                .pop()
-                .map(PathBuf::from),
+                .into_iter()
+                .map(PathBuf::from)
+                .rfind(|p| !in_library_bin(p)),
         };
         return last.ok_or_else(|| not_installed(&name));
     }
@@ -988,4 +1000,23 @@ fn links_to(ctx: &Ctx, env: &Path) -> Option<PathBuf> {
         .into_iter()
         .find(|t| t.link.as_deref() == Some(env))
         .map(|t| t.path)
+}
+
+#[cfg(test)]
+mod library_bin_tests {
+    use super::*;
+
+    #[test]
+    fn only_a_library_bin_file_is_skipped() {
+        assert!(in_library_bin(
+            &Path::new("v")
+                .join("mf")
+                .join("Library")
+                .join("bin")
+                .join("python.exe")
+        ));
+        assert!(in_library_bin(Path::new("v/mf/library/bin/python.exe")));
+        assert!(!in_library_bin(Path::new("v/mf/python.exe")));
+        assert!(!in_library_bin(Path::new("v/3.12/bin/python.exe")));
+    }
 }
