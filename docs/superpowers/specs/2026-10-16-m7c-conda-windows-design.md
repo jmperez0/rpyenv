@@ -52,6 +52,11 @@ an rpyenv extension, recorded in the parity allowlist.
 | Names the publishers have that Linux lacks | Same script | 120, mostly older Miniforge builds (`miniforge3-4.9.2-1` … `-7`), and one non-release, `miniforge3-uninstaller-patch`. |
 | ToS rule for names `update` adds | Python over `linux.tsv`'s x86_64 rows: `miniconda3`, conda release 25 or later, or `miniconda3-latest`, against rows carrying `CONDA_PLUGINS_AUTO_ACCEPT_TOS=true` | 75 and 75, no name in one set only. |
 | Where the MSI installs | `installer/rpyenv.wxs` | `[ProgramFiles6432Folder]\rpyenv\` with `bin\` and `completions\`; the pyenv root (versions, `.versions_cache.xml`) is elsewhere. |
+| What a silent install registers | `installer/sandbox/conda-probe.ps1` in Windows Sandbox (Windows 11, build 26300, 2026-10-16): `reg export` of HKCU and `HKLM\SOFTWARE`, user and machine `PATH`, both Start-menu trees and the profile's top-level folders, before and after each of the three installers run with §5 step 4's flags (Miniforge3-26.7.2-0, Miniconda3-py313_26.7.1-1, Anaconda3-2026.07-1) | No `Uninstall` key (27 under HKLM before and after, none under HKCU), no key or value naming the install, user and machine `PATH` unchanged, Start menus unchanged. The raw diff is not empty: the Sandbox's first shell activity (Explorer, IdentityCRL, MuiCache) shows up in the first run, and Windows' MuiCache records the installer's own file name. The one trace outside the install is the profile folder `~\.conda`, created by the first run (Anaconda; the other two found it there). `uninstall` stays "delete the folder". |
+| Does `/S` block | Same probe: `Start-Process -PassThru`, `WaitForExit`, then `python.exe` present and no process left under the target | Yes for all three: at exit `python.exe` existed and no process ran from the target (Miniforge 205 s, Miniconda 145 s, Anaconda 1024 s), exit code 0. |
+| Characters the installers refuse in `/D=` | Same script, one install per character into `C:\probe\c<code>-a<char>b`: Miniforge and Miniconda for 27 characters, Anaconda for those either refused (and `)`, `]`, `}`, Cyrillic) | Refused by all three (exit code 2 and no folder left behind; 1 to 3 s for Miniforge and Miniconda, 13 to 78 s for Anaconda): `^ % ! = & ( ) ; , ' # $ @ ~ [ ] { }` and characters outside Latin-1 (`Ж`, `中`). Refused by Miniforge only: space. Accepted by all that were tried: letters, digits, `_ - . +` and Latin-1 letters (`é`, `ü`). Anaconda was not tried with `_ - . + é ü`. |
+| `import ssl` after install | `python.exe -c "import sys, ssl"` on each tree | Exit 0 for all three (Anaconda: Python 3.14.6, OpenSSL 3.5.7; Miniconda: 3.13.15, 3.5.7; Miniforge: 3.14.7, 3.6.4). |
+| Shim counts by §6.3's rule | `C:\tmp\m7c_shims_ref.py`, written from §6.3's text alone, over each install's file tree and `conda-meta` | Miniforge 18 shimmed, 56 skipped; Miniconda 30 and 36; Anaconda 196 and 191. Miniforge's 18 are the fixture `miniforge3-expected-shims.txt`. |
 
 The probe joins by backwards naming only; §4.2's URL swap recovers the twins and
 re-releases, so plan Task 2 reports the final per-family counts from the real builder.
@@ -173,8 +178,8 @@ Called where `winpkg::install_pypy` is, for names `conda::is_conda_name` accepts
    with Linux's texts and its newest-installable hint (`conda::newest_installable`, over
    the Windows rows). `ok-latest` reads its hash now (D6).
 2. **Check the target** `<root>\versions\<name>`: refuse, naming the character, paths
-   the installers reject. The character set per family is measured in plan Task 1 (§8),
-   not guessed.
+   the installers reject (§3, measured): `^ % ! = & ( ) ; , ' # $ @ ~ [ ] { }`, any
+   character outside Latin-1, and, for Miniforge only, space.
 3. **Download** into the cache and check the SHA-256; a mismatch is refused as for every
    other download.
 4. **Run the installer in place:**

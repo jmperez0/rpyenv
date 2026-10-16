@@ -1,0 +1,1 @@
+{"name": "bzip2", "version": "1.0.8", "files": ["Library/bin/libbz2.dll", "Library/include/bzlib.h", "Library/lib/bzip2.lib", "Library/lib/bzip2_static.lib", "Library/lib/libbz2.lib", "Library/lib/libbz2_static.lib"]}
