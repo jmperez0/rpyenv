@@ -49,40 +49,17 @@ the child's exit code, and leaves your console as it found it.
 - **Full pyenv command parity**, including `install`, `shell`, and
   `init`. The test suites of pyenv and pyenv-win, plus side-by-side runs
   against the real tools, check this.
-- **Official CPython builds.**
-  - Windows: python.org's official packages, extracted directly, with no
-    installer run and no registry writes.
-  - Linux: compiled from source, as pyenv does.
-- **Official PyPy builds.** PyPy installs from PyPy's official binaries: on Linux (x64, aarch64) under upstream's names (`pyenv install pypy3.11`), on Windows (x64) under pyenv-win's codes after `pyenv update` (`pyenv install pypy3.11-v7.3.20-win64`). Each download is checked against the SHA-256 PyPy publishes. PyPy source builds, nightlies, distribution-specific definitions and third-party builds (older definitions that download someone else's portable PyPy) are not supported.
-- **Conda distributions.** Anaconda, Miniconda and Miniforge install on Linux (x64, aarch64) under upstream's names (`pyenv install miniforge3-<release>`), each installer checked against its published SHA-256. Miniconda 25.x prints a note that its defaults channel is under Anaconda's terms (Miniforge isn't). `-latest` names are checked against a hash read from the same publisher at install time, which catches a broken download but not a compromised publisher, so pick a numbered version for a hash upstream pyenv reviewed. `pyenv install miniconda3` on its own resolves through upstream's `latest` sort to an old MD5-only release (e.g. `miniconda3-4.7.12`) that rpyenv refuses; the refusal names the newest release that installs (e.g. `miniconda3-3.14-26.7.1-1`). Conda's bundled system tools get no shims, as with upstream. Windows is below.
-  - **Conda on Windows (x64; ARM64 runs the x64 installers under emulation; after v0.1.0).** The names are the ones Linux uses
-    (`pyenv install miniforge3-26.7.2-0`, `miniconda3-3.13-25.9.1-3`, `anaconda3-2026.07-1`). A bare family
-    (`pyenv install miniforge3`) installs its newest installable release. rpyenv runs the official installer
-    silently, into `versions\<name>`, with no registry entries, no shortcuts and no `PATH` change. Each download is
-    checked against its publisher's SHA-256. Each install writes its output to `install_cache\<name>.log`, and a
-    failure names that file. Ctrl+C ends the installer and all its children. `pyenv install -f` keeps `envs\`.
-  - **The version table.** The MSI ships a reviewed table, so `pyenv install <conda name>`, `pyenv install --list` and
-    `pyenv latest -k` work right after install. `pyenv update` rebuilds a newer one from the publishers and prints
-    `conda: <n> installable versions (<k> new)`. It adds new releases only. If a publisher has changed the hash of an
-    installer rpyenv already pinned, `update` keeps the pinned hash and warns; that name won't install until an rpyenv
-    release carries the reviewed hash. If a conda site can't be read, `update` warns, keeps the previous table and exits 0.
-  - **What the hashes mean.** A hash added by `pyenv update` comes from the publisher's page at that moment, so it
-    catches a broken download but not a compromised publisher. A hash shipped with rpyenv was pinned when its pull
-    request was reviewed. `-latest` names work like `update`: the hash is read at install time.
-  - **Path characters.** The installers refuse some characters in the target folder, so rpyenv refuses them before
-    downloading: `^ % ! = & ( ) ; , ' # $ @ ~ [ ] { }` for all installers, and characters outside Latin-1
-    (inferred from two measured characters). Miniforge also refuses a space. For that, use a `miniconda3` version, or
-    set `PYENV_ROOT`, `PYENV` and `PYENV_HOME` to a folder without spaces.
-  - **Shims and `PATH`.** Shims follow conda package ownership: `python`, `pip`, `conda` and other Python tools get
-    one; `curl`, `cygpath` and conda's other system tools don't. Commands run through a shim or `pyenv exec` see conda's
-    own `PATH` order (`Library\bin` and the rest), and an env keeps its install's `condabin`, so `pyenv exec conda`
-    works there. Run `conda create -n <env>` through the shim, then `pyenv shell <install>/envs/<env>` or
-    `pyenv activate <install>/envs/<env>`.
-  - **Terms.** Miniconda 25 and later accepts Anaconda's terms only during the install, as upstream does, and rpyenv
-    prints a note first. Later use of the defaults channel asks you once.
-  - **Not supported on Windows.** `conda activate` (it needs conda's shell hook), `activate.d` scripts (some
-    packages, e.g. GDAL, set variables there), and `conda install` from a selected env: without `-n` it targets the
-    base, as upstream, which sets no `CONDA_PREFIX`.
+- **Official builds only.** rpyenv installs three kinds of Python:
+  - **CPython:** python.org's packages on Windows, extracted with no installer and no
+    registry writes; compiled from source on Linux, as pyenv does.
+  - **PyPy:** PyPy's official binaries, on Linux (x64, aarch64) and Windows (x64),
+    each checked against the SHA-256 PyPy publishes.
+  - **Anaconda, Miniconda and Miniforge:** the publishers' installers, on Linux (x64,
+    aarch64) and, after v0.1.0, on Windows (x64), each checked against its
+    publisher's SHA-256.
+
+  Names, hashes, limits and what isn't supported:
+  [docs/distributions.md](docs/distributions.md).
 - **Built in instead of plugins:**
   - virtualenvs (replaces `pyenv-virtualenv`, and works natively on Windows
     too)
@@ -193,66 +170,24 @@ list is in the design spec (§13).
 
 ## Installing
 
-Releases: https://github.com/jmperez0/rpyenv/releases. v0.1.0 is **unsigned**: Windows
-SmartScreen warns before running the MSI ("More info", then "Run anyway"), and on a PC
-with Smart App Control turned on, Windows blocks unsigned programs, rpyenv's shims
-included.
+Releases: https://github.com/jmperez0/rpyenv/releases. v0.1.0 is **unsigned**, so Windows
+SmartScreen warns before running the MSI ("More info", then "Run anyway").
 
 ### Windows
 
-Run `rpyenv-<version>-x64.msi` (or `-arm64.msi`). The Options page asks:
+1. Run `rpyenv-<version>-x64.msi` (or `-arm64.msi`).
+2. Choose **Just for me** (no administrator rights) or **For all users**.
+3. Open a new terminal. For all users, each user's setup runs at their next sign-in or
+   on their first `pyenv` command. `python`, `pip` and the other shims then work in
+   every shell, cmd included.
 
-- **Just for me** (no administrator rights) or **For all users** (Windows asks for
-  administrator rights). Just for me installs to `%LOCALAPPDATA%\Programs\rpyenv`; for
-  all users, to `%ProgramFiles%\rpyenv`. Each user's Python versions stay in their own
-  `PYENV_ROOT` either way.
-- **Enable live rehash** (off by default): new scripts get shims while a program runs.
-- **Move pyenv-win aside** (just for me, shown when pyenv-win is installed): runs
-  `pyenv migrate`.
-- **Let Windows PowerShell run local scripts for me if it blocks them** (just for me,
-  checked): runs `pyenv setup --allow-scripts`, below.
+Silent install, just for me: `msiexec /i rpyenv-<version>-x64.msi /qn`.
 
-Just for me also runs `pyenv setup`, which puts the shims first on your PATH and adds
-the PowerShell line to your profiles. For all users, Windows sets each user up at their
-next sign-in (Active Setup), or rpyenv does on their first `pyenv` command.
+Uninstall from Settings, Apps. Your Python versions stay.
 
-`python`, `pip` and the other shims work in every shell, cmd included, whatever
-PowerShell's execution policy. Only `pyenv shell`, `pyenv activate` and `pyenv
-deactivate` need the profile line, and Windows PowerShell 5.1 runs a profile only where
-its execution policy allows local scripts: client Windows' default, `Restricted`,
-doesn't. So setup leaves Windows PowerShell's profile alone there and says how to allow
-scripts; with the checkbox (or `pyenv setup --allow-scripts`), it sets your own
-(CurrentUser) policy to `RemoteSigned` first, unless Group Policy, an administrator
-(LocalMachine) or you already chose one. `pyenv setup --undo`, which uninstalling runs,
-puts it back. By hand:
-`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`, then `pyenv init --install pwsh`.
-PowerShell 7 runs profiles by default.
-
-Silent installs:
-
-```powershell
-msiexec /i rpyenv-<version>-x64.msi /qn                                       # just for me
-sudo msiexec /i rpyenv-<version>-x64.msi /qn ALLUSERS=1 MSIINSTALLPERUSER=""  # all users, elevated
-# options: LIVEREHASH=1, MIGRATEPYENVWIN=1 and ALLOWSCRIPTS=1 (just for me)
-```
-
-A silent install changes no execution policy unless given `ALLOWSCRIPTS=1`. On Windows
-Server, Windows Installer may be turned off for non-administrators (the `DisableMSI`
-policy; GitHub's windows-2025 image has it on, error 1625): install as an administrator
-there.
-
-Uninstall from Settings, Apps. It runs `pyenv migrate --restore` (if pyenv-win was moved
-aside) and `pyenv setup --undo` for you. Your Python versions stay. Other users of an
-all-users install can run `pyenv setup --undo` themselves first; if they don't, their
-PowerShell profiles keep the pyenv line, which then fails in every new PowerShell window
-("pyenv is not recognized"): delete the line with `pyenv init` from the files `$PROFILE`
-names in Windows PowerShell and in PowerShell 7.
-
-If the checkbox set your execution policy, uninstalling puts it back (to `Undefined`, if
-it's still `RemoteSigned`), and Windows PowerShell blocks local scripts again. The policy
-covers every script, not only rpyenv's: if another tool's profile or scripts have come
-to rely on it, run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` after
-uninstalling.
+The MSI's other options, PowerShell's execution policy (which `pyenv shell` needs),
+all-users and silent installs, Smart App Control, and uninstall details:
+[docs/windows-install.md](docs/windows-install.md).
 
 ### Linux
 
@@ -265,9 +200,9 @@ download against `SHA256SUMS`, and offers to add pyenv to your shell's startup f
 Options go after `sh -s --`: `--version vX.Y.Z`, `--init` or `--no-init`, `--uninstall`.
 
 If an upstream pyenv is installed in `~/.pyenv`, the script offers to move it aside to
-`~/.pyenv/.upstream-pyenv` (your Python versions, `version` file, `default-packages` and
-plugins stay), or
-does it with `--take-over`. `--restore-upstream` puts it back.
+`~/.pyenv/.upstream-pyenv`; `--take-over` does it without asking, and
+`--restore-upstream` puts it back. Your Python versions, `version` file,
+`default-packages` and plugins stay.
 
 ### Verifying a download
 
