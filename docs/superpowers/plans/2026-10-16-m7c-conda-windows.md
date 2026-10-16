@@ -26,7 +26,7 @@
 
 ## Review Focus
 
-1. **A pyenv root path with a space or a non-ASCII letter** (`C:\Users\José Pérez\.pyenv`): the install must refuse before downloading, naming the character and the path, not fail inside the installer. Pinned in Task 8 (`a_root_with_a_refused_character_is_refused_before_download`).
+1. **A pyenv root path with a refused character** (`C:\Users\Jo Smith\.pyenv` for Miniforge; `C:\Users\Иван\.pyenv` for every family): the install must refuse before downloading, naming the character and the path, not fail inside the installer; a space under Miniforge names the ways out (spec D10). `é` is accepted (ruling R7). Pinned in Task 8 (`a_root_with_a_refused_character_is_refused_before_download`).
 2. **`pyenv install miniforge3`** (bare family): installs the family's newest installable release. Pinned in Task 8 (`a_bare_family_installs_its_newest_installable_release`) and `latest -k` in Task 8.
 3. **`pyenv update` offline or rate-limited by GitHub (HTTP 403):** the CPython cache is still written, the previous conda table is kept whole with a warning, exit 0 (spec D9, as for PyPy). Pinned in Task 5 (`a_failed_conda_read_keeps_the_previous_table`).
 4. **An MSI upgrade carrying a corrected hash, on a machine whose root copy is newer:** the shipped (reviewed) row wins for that name, the root copy still contributes newer names, and a truncated root copy is ignored with a warning. Pinned in Task 2 (`shipped_rows_win_and_the_root_copy_adds_names`, `an_unreadable_copy_is_ignored_with_a_warning`).
@@ -1367,7 +1367,7 @@ git commit -m "M7c task 7: Windows conda shims by package ownership, upstream's 
 - Produces:
   - `pub struct CondaJob<'a> { pub root: &'a Path, pub name: &'a str, pub force: bool, pub fetcher: &'a Fetcher, pub table: &'a WinTable }`
   - `pub fn install_conda(job: &CondaJob, say: &mut dyn FnMut(&str)) -> Result<Done, InstallError>`
-  - `pub fn refused_char(path: &Path) -> Option<char>`
+  - `pub fn refused_char(path: &Path, family: &str) -> Option<char>`
   - `pub fn resolve_name(rows: &[LinuxRow], wanted: &str) -> String`
   - `pub fn installer_args(target: &Path) -> Vec<String>`
 
@@ -1467,7 +1467,7 @@ doc = false
 #[test] fn a_failed_import_check_deletes_the_folder() {}         // FAKECONDA_PYTHON_EXIT=1
 #[test] fn force_reinstall_keeps_envs() {}                       // envs\e1\x before, -f, still there
 #[test] fn an_unsupported_row_is_refused_with_the_newest_hint() {}
-#[test] fn a_root_with_a_refused_character_is_refused_before_download() {} // Review focus 1: root under "<tmp>\a b"; server hit count for the installer is 0; message names ' ' and the path
+#[test] fn a_root_with_a_refused_character_is_refused_before_download() {} // Review focus 1: miniforge3 with root under "<tmp>\a b"; server hit count for the installer is 0; message names the path, "Miniforge's installer refuses a path with a space" and "Install a miniconda3 version instead" (spec D10); a miniconda3 row under the same root is NOT refused by this check; a root under "<tmp>\a^b" refuses miniconda3 naming '^'
 #[test] fn a_bare_family_installs_its_newest_installable_release() {}       // Review focus 2: `install miniforge3` with 26.7.2-0 and 4.9.2-7 rows → 26.7.2-0
 #[test] fn install_list_shows_installable_conda_names_after_cpython() {}
 #[test] fn latest_known_resolves_a_conda_family() {}            // `latest -k miniconda3` → newest by release
@@ -1494,13 +1494,18 @@ use rpyenv_core::flavor::Flavor;
 use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};
 
-/// Characters the installers refuse in `/D=` (M7c Task 1, spec §5 step 2).
-const REFUSED: &[char] = &[/* Task 1's measured set, e.g. ' ', '^', '%', '!', '=' */];
+/// Characters every conda installer refuses in `/D=` (M7c design §3, §5 step 2).
+const REFUSED: &[char] = &[
+    '^', '%', '!', '=', '&', '(', ')', ';', ',', '\'', '#', '$', '@', '~', '[', ']', '{', '}',
+];
 
-/// The first character of `path` an installer refuses: anything outside ASCII, or one of
-/// `REFUSED` (per Task 1's measurement).
-pub fn refused_char(path: &Path) -> Option<char> {
-    path.to_string_lossy().chars().find(|c| !c.is_ascii() || REFUSED.contains(c))
+/// The first character of `path` `family`'s installer refuses: one of `REFUSED`, anything
+/// outside Latin-1 (inferred, ruling R7), or, for Miniforge only, a space (§3).
+pub fn refused_char(path: &Path, family: &str) -> Option<char> {
+    let space = family.starts_with("miniforge");
+    path.to_string_lossy()
+        .chars()
+        .find(|&c| (c as u32) > 0xFF || REFUSED.contains(&c) || (space && c == ' '))
 }
 
 pub fn installer_args(target: &Path) -> Vec<String> {
@@ -1583,8 +1588,11 @@ fn install_one(job: &CondaJob, say: &mut dyn FnMut(&str)) -> Result<Done, Instal
     };
     let versions = job.root.join("versions");
     let target = versions.join(name);
-    if let Some(c) = refused_char(&target) {
-        return Err(msg(format!("conda's installer can't install into {} (it refuses the character {c:?}); set PYENV_ROOT to a path without it", target.display())));
+    // Spec §5 step 2, D10: refuse before downloading, naming the way out.
+    match refused_char(&target, conda::family(name)) {
+        Some(' ') => return Err(msg(format!("python-build: {name}: Miniforge's installer refuses a path with a space, and rpyenv would install it into {}. Install a miniconda3 version instead (its installer accepts spaces), or set PYENV_ROOT, PYENV and PYENV_HOME to a folder without spaces.", target.display()))),
+        Some(c) => return Err(msg(format!("python-build: {name}: conda's installer refuses the character {c:?} in {}; set PYENV_ROOT, PYENV and PYENV_HOME to a folder without it.", target.display()))),
+        None => {}
     }
     if super::txn::is_complete_for(&target, Flavor::PyenvWin) && !job.force {
         return Ok(Done::Skipped);
@@ -1670,9 +1678,13 @@ mod tests {
         assert_eq!(a[0], "/S");
     }
     #[test]
-    fn refused_char_finds_non_ascii() {
-        assert_eq!(refused_char(Path::new("C:\\Users\\José\\x")), Some('é'));
-        assert_eq!(refused_char(Path::new("C:\\Users\\jm\\x")), None);
+    fn refused_char_follows_each_installers_rules() {
+        assert_eq!(refused_char(Path::new("C:\\Users\\José\\x"), "miniforge3"), None);
+        assert_eq!(refused_char(Path::new("C:\\Users\\Иван\\x"), "miniconda3"), Some('И'));
+        assert_eq!(refused_char(Path::new("C:\\Users\\Jo Smith\\x"), "miniforge3"), Some(' '));
+        assert_eq!(refused_char(Path::new("C:\\Users\\Jo Smith\\x"), "miniconda3"), None);
+        assert_eq!(refused_char(Path::new("C:\\Users\\a~b\\x"), "anaconda3"), Some('~'));
+        assert_eq!(refused_char(Path::new("C:\\Users\\jm\\x"), "miniforge3"), None);
     }
     #[test]
     fn wait_or_kill_ends_a_child_when_asked() {
