@@ -7,7 +7,7 @@ use super::fetch::Fetcher;
 #[cfg(unix)]
 use std::path::Path;
 
-static LINUX_TSV: &str = include_str!("../../conda/linux.tsv");
+pub(crate) static LINUX_TSV: &str = include_str!("../../conda/linux.tsv");
 /// The stub evaluator ci/conda_tables.py runs over the vendored definitions.
 pub const EVAL_SCRIPT: &str = include_str!("conda_eval.sh");
 /// The only places an `ok` or `ok-latest` row's installer may come from (design D1).
@@ -185,6 +185,114 @@ pub fn linux_table() -> Result<Vec<LinuxRow>, String> {
     let overridden = cfg!(debug_assertions)
         && std::env::var_os("RPYENV_TEST_CONDA_TABLES").is_some_and(|v| !v.is_empty());
     parse_linux_with(&table_text(LINUX_TSV)?, !overridden)
+}
+
+/// M7c design §4.1: the Windows table's arch, file names and download folders.
+pub const WIN_ARCH: &str = "Windows-x86_64";
+pub const WIN_TABLE: &str = ".conda_versions.tsv";
+pub const WIN_PREFIXES: [&str; 3] = [
+    "https://repo.anaconda.com/miniconda/",
+    "https://repo.anaconda.com/archive/",
+    "https://github.com/conda-forge/miniforge/",
+];
+
+/// `# generated <YYYY-MM-DDTHH:MM:SSZ> by <who>` on the first line: (time, who).
+pub fn generated(text: &str) -> Option<(String, String)> {
+    let line = text.lines().next()?.strip_prefix("# generated ")?;
+    let (time, by) = line.split_once(" by ")?;
+    let b = time.as_bytes();
+    let shape = b.len() == 20
+        && b[4] == b'-'
+        && b[7] == b'-'
+        && b[10] == b'T'
+        && b[13] == b':'
+        && b[16] == b':'
+        && b[19] == b'Z'
+        && b.iter()
+            .enumerate()
+            .all(|(i, c)| [4, 7, 10, 13, 16, 19].contains(&i) || c.is_ascii_digit());
+    (shape && !by.is_empty()).then(|| (time.to_string(), by.to_string()))
+}
+
+/// A Windows table (§4.1): `linux.tsv`'s grammar, every row `Windows-x86_64`, and, when
+/// `trusted_only`, every installer from one of `WIN_PREFIXES`.
+pub fn parse_windows(text: &str, trusted_only: bool) -> Result<Vec<LinuxRow>, String> {
+    let rows = parse_linux_with(text, false)?;
+    for r in &rows {
+        if r.arch != WIN_ARCH {
+            return Err(format!("{}: arch {} in a Windows table", r.name, r.arch));
+        }
+        if let Verdict::Ok(i) | Verdict::OkLatest(i) = &r.verdict {
+            if trusted_only && !WIN_PREFIXES.iter().any(|p| i.url.starts_with(p)) {
+                return Err(format!(
+                    "{}: {} is outside the three conda download folders",
+                    r.name, i.url
+                ));
+            }
+        }
+    }
+    Ok(rows)
+}
+
+#[derive(Debug)]
+pub struct WinTable {
+    pub rows: Vec<LinuxRow>,
+    /// Copies that exist but couldn't be read, one line each.
+    pub warnings: Vec<String>,
+}
+
+/// The shipped copy (§4.4): `<exe dir>\..\share\conda\windows.tsv`. Debug builds take
+/// `<RPYENV_TEST_CONDA_TABLES>\windows.tsv` when that is set.
+pub fn shipped_table_path() -> Option<std::path::PathBuf> {
+    #[cfg(debug_assertions)]
+    if let Some(p) = std::env::var_os("RPYENV_TEST_CONDA_TABLES").filter(|v| !v.is_empty()) {
+        return Some(std::path::PathBuf::from(p).join("windows.tsv"));
+    }
+    let exe = std::env::current_exe().ok()?;
+    Some(
+        exe.parent()?
+            .parent()?
+            .join("share")
+            .join("conda")
+            .join("windows.tsv"),
+    )
+}
+
+/// Both copies merged by name (§4.4, D8): every shipped row; the root copy's rows for names
+/// the shipped copy lacks, or whose shipped row isn't installable. A reviewed row is never
+/// replaced by one `pyenv update` read.
+pub fn windows_table(root: &std::path::Path) -> Result<WinTable, String> {
+    let overridden = cfg!(debug_assertions)
+        && std::env::var_os("RPYENV_TEST_CONDA_TABLES").is_some_and(|v| !v.is_empty());
+    let mut warnings = Vec::new();
+    let mut read = |path: Option<std::path::PathBuf>| -> Option<Vec<LinuxRow>> {
+        let path = path?;
+        let text = std::fs::read_to_string(&path).ok()?;
+        match generated(&text)
+            .ok_or_else(|| "no `# generated` line".to_string())
+            .and_then(|_| parse_windows(&text, !overridden))
+        {
+            Ok(rows) => Some(rows),
+            Err(e) => {
+                warnings.push(format!("rpyenv: ignored {}: {e}", path.display()));
+                None
+            }
+        }
+    };
+    let shipped = read(shipped_table_path());
+    let updated = read(Some(root.join(WIN_TABLE)));
+    if shipped.is_none() && updated.is_none() {
+        return Err("rpyenv has no conda version table; run pyenv update".to_string());
+    }
+    let mut rows = shipped.unwrap_or_default();
+    for r in updated.unwrap_or_default() {
+        match rows.iter_mut().find(|s| s.name == r.name) {
+            Some(s) if matches!(s.verdict, Verdict::Ok(_) | Verdict::OkLatest(_)) => {}
+            Some(s) => *s = r,
+            None => rows.push(r),
+        }
+    }
+    Ok(WinTable { rows, warnings })
 }
 
 pub fn linux_verdict<'a>(rows: &'a [LinuxRow], name: &str, arch: &str) -> Option<&'a Verdict> {
