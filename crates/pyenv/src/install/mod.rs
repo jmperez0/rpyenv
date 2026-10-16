@@ -21,6 +21,7 @@ pub mod txn;
 #[cfg(unix)]
 pub mod verify;
 pub mod wincatalog;
+pub mod winconda;
 pub mod winpkg;
 pub mod winsource;
 pub mod zipx;

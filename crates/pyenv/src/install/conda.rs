@@ -28,6 +28,9 @@ pub const LATEST: [&str; 4] = [
 pub const MINICONDA_LISTING: &str = "https://repo.anaconda.com/miniconda/";
 pub const MINIFORGE: &str = "https://github.com/conda-forge/miniforge";
 
+/// The one-line terms notice for rows that export `CONDA_PLUGINS_AUTO_ACCEPT_TOS` (M7b §4.3, M7c §5 step 4).
+pub const TERMS_NOTICE: &str = "rpyenv: Miniconda's defaults channel is covered by Anaconda's terms of service, which require a paid license for organizations of 200 or more people; this install accepts them, as upstream pyenv does. Miniforge (conda-forge) isn't covered.";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Install {
     pub package: String,
