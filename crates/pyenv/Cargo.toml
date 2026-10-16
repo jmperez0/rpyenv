@@ -60,6 +60,6 @@ test = false
 doc = false
 
 [target.'cfg(windows)'.dependencies]
-# The fake installer reads its raw command line as NSIS does (GetCommandLineW); rpyenv-core
-# already builds this crate.
-windows-sys = { version = "0.61", features = ["Win32_System_Environment"] }
+# The fake installer reads its raw command line as NSIS does (GetCommandLineW); winconda expands
+# 8.3 short names (GetLongPathNameW). rpyenv-core already builds this crate.
+windows-sys = { version = "0.61", features = ["Win32_System_Environment", "Win32_Storage_FileSystem"] }
