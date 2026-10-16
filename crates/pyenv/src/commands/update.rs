@@ -9,6 +9,7 @@ use crate::install::winsource::{
     banner, base, catalog, folder_rows, index_zips, listing_names, mirror, pypy_rows,
     version_folders,
 };
+use crate::install::{conda, condacatalog};
 use crate::output::Output;
 use rpyenv_core::ctx::Ctx;
 
@@ -146,6 +147,64 @@ pub fn update(ctx: &Ctx, args: &[&str]) -> Output {
             ctx.root.join(crate::install::wincatalog::DB_NAME).display()
         ));
         return o.with_code(1);
+    }
+    // M7c design §4.3: the conda table, rebuilt from the publishers. A failed read keeps the
+    // previous table whole and warns (D9); a changed hash is kept pinned and warns (D8).
+    // Neither fails the command: the user can't act on them. `update` is pyenv-win only
+    // (commands/mod.rs WIN_ONLY), so the Linux flavor never reaches this (D7). Unlike PyPy,
+    // a python.org mirror doesn't skip it: pyenv-win has no conda banner to match.
+    match condacatalog::read_published(&f, &condacatalog::sources()) {
+        Err(e) => o.out(format!(
+            ":: [Warning] :: conda: {e}; kept the previous table"
+        )),
+        Ok(p) => {
+            // D8: the merged table (reviewed rows win) is both the base and the pin baseline.
+            let (base, previous) = match conda::windows_table(&ctx.root) {
+                Ok(t) => {
+                    for w in &t.warnings {
+                        o.out(format!(":: [Warning] :: conda: {w}"));
+                    }
+                    (condacatalog::refresh(&t.rows, &p), t.rows)
+                }
+                Err(_) => match conda::linux_table() {
+                    Ok(l) => (condacatalog::from_linux(&l, &p), Vec::new()),
+                    Err(e) => {
+                        o.out(format!(":: [Warning] :: conda: {e}"));
+                        return o.with_code(1);
+                    }
+                },
+            };
+            let mut rows = base;
+            let changed = condacatalog::pin_hashes(&previous, &mut rows, &[]);
+            let added = condacatalog::add_newer(&mut rows, &p);
+            let path = ctx.root.join(conda::WIN_TABLE);
+            let tmp = ctx.root.join(format!("{}.tmp", conda::WIN_TABLE));
+            let text = condacatalog::render(&rows, "update", &condacatalog::now());
+            if let Err(e) = std::fs::write(&tmp, text).and_then(|_| std::fs::rename(&tmp, &path)) {
+                let _ = std::fs::remove_file(&tmp);
+                o.out(format!("pyenv: cannot write {}: {e}", path.display()));
+                return o.with_code(1);
+            }
+            let installable = rows
+                .iter()
+                .filter(|r| {
+                    matches!(
+                        r.verdict,
+                        conda::Verdict::Ok(_) | conda::Verdict::OkLatest(_)
+                    )
+                })
+                .count();
+            o.out(format!(
+                ":: [Info] ::  conda: {installable} installable versions ({added} new)"
+            ));
+            if !changed.is_empty() {
+                // D8: a warning, exit 0: the user can't act on it; a release can.
+                o.out(format!(
+                    ":: [Warning] :: conda: the publisher changed {} after rpyenv pinned them; they won't install until an rpyenv release carries the reviewed hash",
+                    changed.join(" ")
+                ));
+            }
+        }
     }
     o.out(format!(
         ":: [Info] ::  Scanned {pages} pages and found {} installers.",
