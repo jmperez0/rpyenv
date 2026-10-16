@@ -41,6 +41,7 @@ an rpyenv extension, recorded in the parity allowlist.
 | D7 | Linux | Unchanged. Its table comes from upstream's definitions, which update with each rpyenv release, as upstream's do. |
 | D8 | How a reviewed hash change reaches users (user, after a side-agent note) | **Reviewed rows win; maintainers accept explicitly; `update` warns.** For a name the shipped table has as `ok`/`ok-latest`, its row is used, whatever the root copy says; the root copy only adds names (or replaces a shipped row that isn't installable). A maintainer accepts a publisher's changed hash with `conda_windows_table --accept <name>` in a reviewed PR, and the next release fixes every machine. `pyenv update` reports a changed hash as a warning and exits 0 (the user can't act; a release can). Chosen over an accepted-changes list file (still needs a release to reach users) and over the earlier "newer copy wins", under which a root copy re-stamped by every `update` would outrank every later release, so a corrected hash could never arrive. |
 | D9 | A conda page `pyenv update` can't read (user, after a side-agent note) | **Warn, keep the previous table whole, exit 0**, as a failed PyPy read already does (M7a R3). The user can't fix an outage or GitHub's hourly limit, and exit 1 would break scripts that run `update`; the shipped table still installs. Chosen over exit 1 (unless `--ignore`) and over keeping the families that were read (fresher on a partial outage, but more code and a mixed table). |
+| D10 | A pyenv root with a space, for Miniforge (user, after a side-agent note) | **Refuse before downloading, with a hint**: use a miniconda3 version, or move the pyenv root to a folder without spaces (§5 step 2). Chosen over installing Miniforge outside the user folder behind a junction (works for everyone, but adds a junction to every conda install, and uninstall, migrate and the MSI would have to follow it); that stays a possible follow-up if users report it. 8.3 short names are no way out: Miniforge also refuses `~` (§3). |
 
 ## 3. Measurements this design rests on (2026-10-16)
 
@@ -190,6 +191,12 @@ Called where `winpkg::install_pypy` is, for names `conda::is_conda_name` accepts
    before downloading; the installer's own refusal (exit 2) remains the backstop for any
    host where the cut differs. The cut stays at Latin-1 rather than all non-ASCII, which
    would block profile paths with `é`, accepted by Miniforge and Miniconda.
+   A space under Miniforge gets a message naming the two ways out (D10):
+   `python-build: <name>: Miniforge's installer refuses a path with a space, and rpyenv
+   would install it into <target>. Install a miniconda3 version instead (its installer
+   accepts spaces), or set PYENV_ROOT, PYENV and PYENV_HOME to a folder without spaces.`
+   Any other refused character: `python-build: <name>: conda's installer refuses the
+   character <c> in <target>; set PYENV_ROOT, PYENV and PYENV_HOME to a folder without it.`
 3. **Download** into the cache and check the SHA-256; a mismatch is refused as for every
    other download.
 4. **Run the installer in place:**
