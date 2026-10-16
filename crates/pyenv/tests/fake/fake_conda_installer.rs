@@ -10,6 +10,11 @@
 //! - `conda.exe`: `--version` prints `conda 25.1.1`; `install …` logs `conda: <args>`, exits
 //!   `%FAKECONDA_INSTALL_EXIT%` (default 0).
 //! - with `%FAKECONDA_SLEEP%` (seconds), the installer sleeps after writing (Ctrl+C tests).
+//! - with `%FAKECONDA_GRANDCHILD%` set, the installer waits a second (as NSIS extracts its
+//!   payload), then starts a copy of itself as a sleeper that appends a byte to `<D>\grow.txt`
+//!   every 100 ms (for 20 s) and writes its id to `<D>\grandchild.pid`, like `_conda.exe`.
+//! - every mode logs `env: CONDA_PREFIX=… CONDA_DEFAULT_ENV=… PYTHONPATH=…` (`unset` or the
+//!   value), so tests can check what the parent passed down.
 use std::io::Write;
 
 fn log(line: &str) {
@@ -52,7 +57,37 @@ fn raw_tail() -> String {
     std::env::args().skip(1).collect::<Vec<_>>().join(" ")
 }
 
+fn env_line() -> String {
+    let v = |k: &str| std::env::var(k).unwrap_or_else(|_| "unset".into());
+    format!(
+        "env: CONDA_PREFIX={} CONDA_DEFAULT_ENV={} PYTHONPATH={}",
+        v("CONDA_PREFIX"),
+        v("CONDA_DEFAULT_ENV"),
+        v("PYTHONPATH")
+    )
+}
+
+/// The grandchild: grows a file in `d` until killed (or 20 s).
+fn sleeper(d: &str) {
+    let d = std::path::Path::new(d);
+    std::fs::write(d.join("grandchild.pid"), std::process::id().to_string()).unwrap();
+    for _ in 0..200 {
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(d.join("grow.txt"))
+        {
+            let _ = f.write_all(b"x");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
 fn main() {
+    if let Some(d) = std::env::var_os("FAKECONDA_SLEEPER") {
+        sleeper(&d.to_string_lossy());
+        return;
+    }
     let me = std::env::current_exe().unwrap();
     let name = me
         .file_name()
@@ -61,10 +96,16 @@ fn main() {
         .to_ascii_lowercase();
     let args: Vec<String> = std::env::args().skip(1).collect();
     if name == "python.exe" {
+        log(&env_line());
         log(&format!("python: {}", args.join(" ")));
-        std::process::exit(code("FAKECONDA_PYTHON_EXIT"));
+        let c = code("FAKECONDA_PYTHON_EXIT");
+        if c != 0 {
+            eprintln!("fake python: ssl failed to import");
+        }
+        std::process::exit(c);
     }
     if name == "conda.exe" {
+        log(&env_line());
         if args.first().map(String::as_str) == Some("--version") {
             println!("conda 25.1.1");
             return;
@@ -91,6 +132,7 @@ fn main() {
             "no"
         }
     ));
+    log(&env_line());
     log(&format!(
         "tos: {}",
         std::env::var("CONDA_PLUGINS_AUTO_ACCEPT_TOS").unwrap_or_else(|_| "unset".into())
@@ -114,6 +156,16 @@ fn main() {
     )
     .unwrap();
     std::fs::write(d.join("conda-meta").join("history"), "+install\n").unwrap();
+    if std::env::var_os("FAKECONDA_GRANDCHILD").is_some() {
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        let mut grandchild = std::process::Command::new(&me)
+            .env("FAKECONDA_SLEEPER", &d)
+            .env_remove("FAKECONDA_GRANDCHILD")
+            .spawn()
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_secs(60));
+        let _ = grandchild.wait();
+    }
     if let Some(s) = std::env::var("FAKECONDA_SLEEP")
         .ok()
         .and_then(|v| v.parse().ok())

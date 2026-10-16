@@ -150,8 +150,20 @@ pub fn install(ctx: &Ctx, args: &[&str]) -> Output {
     if o.register && o.all {
         return fail("pyenv-install: --register not supported for all versions.");
     }
+    let conda_only = !o.list
+        && !o.all
+        && !o.clear
+        && !wanted.is_empty()
+        && wanted.iter().all(|w| conda::is_conda_name(w));
     let rows: Vec<Row> = match db {
         Ok(r) => r,
+        // Ruling R19: the conda table ships with rpyenv, so conda names need no CPython
+        // database (`install -l` lists them alone when the table reads).
+        Err(DbError::Missing | DbError::Empty)
+            if conda_only || (o.list && conda_table(&mut table, ctx).is_ok()) =>
+        {
+            Vec::new()
+        }
         Err(DbError::Missing | DbError::Empty) => {
             say("pyenv-install: no definitions in local database");
             say("");
