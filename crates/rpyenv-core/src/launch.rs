@@ -323,9 +323,16 @@ pub fn win_child_path(ctx: &Ctx, names: &[String], appdata: Option<&OsStr>) -> O
     };
     for n in names {
         let v = ctx.versions_dir().join(n);
-        add(v.as_os_str());
-        add(v.join("Scripts").as_os_str());
-        add(v.join("bin").as_os_str());
+        if v.join("conda-meta").is_dir() {
+            // M7c design §6.2: conda's own activation folders.
+            for d in crate::venv::conda_win_dirs(&v) {
+                add(d.as_os_str());
+            }
+        } else {
+            add(v.as_os_str());
+            add(v.join("Scripts").as_os_str());
+            add(v.join("bin").as_os_str());
+        }
     }
     if let (Some(last), Some(appdata)) = (names.last(), appdata) {
         add(OsStr::new(&user_site_scripts(appdata, last)));
@@ -917,6 +924,39 @@ mod tests {
             win_child_path(&ctx, &names, Some(OsStr::new("C:\\AppData"))),
             OsString::from(expected)
         );
+    }
+
+    #[test]
+    fn win_child_path_gives_a_conda_tree_its_six_folders() {
+        let (_t, mut ctx) = win_ctx(&[]);
+        ctx.path = Some("C:\\Windows".into());
+        let v = ctx.versions_dir().join("miniforge3-26.7.2-0");
+        fs::create_dir_all(v.join("conda-meta")).unwrap();
+        let got = win_child_path(&ctx, &["miniforge3-26.7.2-0".to_string()], None);
+        let want: Vec<String> = [
+            vec![],
+            vec!["Library", "mingw-w64", "bin"],
+            vec!["Library", "usr", "bin"],
+            vec!["Library", "bin"],
+            vec!["Scripts"],
+            vec!["bin"],
+        ]
+        .iter()
+        .map(|s| {
+            s.iter()
+                .fold(v.clone(), |a, c| a.join(c))
+                .display()
+                .to_string()
+        })
+        .collect();
+        assert_eq!(
+            got.to_string_lossy(),
+            format!("{};C:\\Windows;", want.join(";"))
+        );
+        // A CPython beside it keeps the three folders.
+        fs::create_dir_all(ctx.versions_dir().join("3.12.0")).unwrap();
+        let cp = win_child_path(&ctx, &["3.12.0".to_string()], None);
+        assert!(!cp.to_string_lossy().contains("Library"));
     }
 
     /// The shims folder leaves the child's PATH however it is spelled: with a trailing `\`,
