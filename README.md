@@ -5,9 +5,10 @@ A drop-in replacement for [pyenv](https://github.com/pyenv/pyenv) and
 It works the same on Linux and Windows and uses native executable shims
 instead of shell scripts and batch wrappers.
 
-> **Status: design stage.** No code has been written yet. This README
-> describes what rpyenv is meant to do; nothing below works today. The full
-> design is in [docs/specs/2026-09-27-rpyenv-design.md](docs/specs/2026-09-27-rpyenv-design.md).
+> **Status: v0.1.0 released** (Windows MSI, Linux tarball and install script). It covers
+> roadmap milestones M1 to M7b below: everything except conda on Windows, which comes
+> in the next release. The full design is in
+> [docs/specs/2026-09-27-rpyenv-design.md](docs/specs/2026-09-27-rpyenv-design.md).
 
 ## Why
 
@@ -54,7 +55,7 @@ the child's exit code, and leaves your console as it found it.
   - Linux: compiled from source, as pyenv does.
 - **Official PyPy builds.** PyPy installs from PyPy's official binaries: on Linux (x64, aarch64) under upstream's names (`pyenv install pypy3.11`), on Windows (x64) under pyenv-win's codes after `pyenv update` (`pyenv install pypy3.11-v7.3.20-win64`). Each download is checked against the SHA-256 PyPy publishes. PyPy source builds, nightlies, distribution-specific definitions and third-party builds (older definitions that download someone else's portable PyPy) are not supported.
 - **Conda distributions.** Anaconda, Miniconda and Miniforge install on Linux (x64, aarch64) under upstream's names (`pyenv install miniforge3-<release>`), each installer checked against its published SHA-256. Miniconda 25.x prints a note that its defaults channel is under Anaconda's terms (Miniforge isn't). `-latest` names are checked against a hash read from the same publisher at install time, which catches a broken download but not a compromised publisher, so pick a numbered version for a hash upstream pyenv reviewed. `pyenv install miniconda3` on its own resolves through upstream's `latest` sort to an old MD5-only release (e.g. `miniconda3-4.7.12`) that rpyenv refuses; the refusal names the newest release that installs (e.g. `miniconda3-3.14-26.7.1-1`). Conda's bundled system tools get no shims, as with upstream. Windows is below.
-  - **Conda on Windows (x64; ARM64 runs the x64 installers under emulation).** The names are the ones Linux uses
+  - **Conda on Windows (x64; ARM64 runs the x64 installers under emulation; after v0.1.0).** The names are the ones Linux uses
     (`pyenv install miniforge3-26.7.2-0`, `miniconda3-3.13-25.9.1-3`, `anaconda3-2026.07-1`). A bare family
     (`pyenv install miniforge3`) installs its newest installable release. rpyenv runs the official installer
     silently, into `versions\<name>`, with no registry entries, no shortcuts and no `PATH` change. Each download is
@@ -134,7 +135,7 @@ Shims resolve the version themselves, in-process, without starting
 networking, TLS, or archive code the CLI needs, so they stay small and
 start fast.
 
-## Planned architecture
+## Architecture
 
 A Cargo workspace with one shared library and three binaries:
 
@@ -145,7 +146,7 @@ A Cargo workspace with one shared library and three binaries:
 | `pyenv-shim` | Console shim. `pyenv rehash` links it as `python`, `pip`, …: symlinks on Linux, hardlinks to a per-user copy on Windows |
 | `pyenv-shimw` | Windows GUI shim for `pythonw` and GUI scripts |
 
-## Planned commands
+## Commands
 
 pyenv's command set, plus two rpyenv-only setup commands:
 
@@ -295,19 +296,20 @@ nothing. `pyenv init --install pwsh` adds just the profile line.
 
 ## Roadmap
 
-1. **M1 Core.** Version resolution, shims, rehash, and the inspect and
+1. **M1 Core** (done). Version resolution, shims, rehash, and the inspect and
    version-selection commands. rpyenv becomes usable with Pythons that pyenv
    or pyenv-win already installed.
-2. **M2 Installer.** `install`, `uninstall`, `update`, `latest`: official
+2. **M2 Installer** (done). `install`, `uninstall`, `update`, `latest`: official
    packages on Windows, source builds on Linux.
-3. **M3 Shell integration.** `init`, `shell`, and completions.
-4. **M4 Virtualenvs and plugins.**
-5. **M5 Windows console and live rehash.** Console windows that appear only
+3. **M3 Shell integration** (done). `init`, `shell`, and completions.
+4. **M4 Virtualenvs and plugins** (done).
+5. **M5 Windows console and live rehash** (done). Console windows that appear only
    when needed; live rehash on both OSes.
-6. **M6 Release.** The Windows MSI, the Linux tarball, and the install
+6. **M6 Release** (done, v0.1.0). The Windows MSI, the Linux tarball, and the install
    script.
-7. **M7 More distributions.** PyPy (where official binaries exist), plus
-   Anaconda, Miniconda, and Miniforge.
+7. **M7 More distributions.** PyPy where official binaries exist (M7a, done);
+   Anaconda, Miniconda and Miniforge on Linux (M7b, done) and on Windows (M7c, next
+   release).
 8. **M8 Missing Linux build dependencies.** Install them through the
    package manager, or compile them without root access.
 9. **M9 Shared versions** that an administrator manages for all users, if
@@ -315,8 +317,17 @@ nothing. `pyenv init --install pwsh` adds just the profile line.
 
 ## Building
 
-Not available yet. When code lands it will be a standard Cargo
-workspace: `cargo build --release`.
+A standard Cargo workspace; the toolchain is pinned in `rust-toolchain.toml` (Rust 1.96).
+
+```sh
+cargo build --release   # pyenv, pyenv-shim, pyenv-shimw (the Windows GUI shim)
+cargo test --workspace
+```
+
+Tests never touch your own pyenv root: they set `PYENV_ROOT` (and on Windows `PYENV` and
+`PYENV_HOME`) to temporary folders. The Windows MSI is built with
+`installer/build.ps1 -Arch x64 -BinDir target/release -OutDir dist`, which uses the WiX
+version it pins.
 
 ### Accepting a changed conda hash
 
