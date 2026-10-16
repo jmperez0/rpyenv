@@ -452,6 +452,19 @@ pub fn render(rows: &[LinuxRow], by: &str, time: &str) -> String {
     s
 }
 
+/// Whether two rendered tables hold the same rows, in the same order, ignoring comment lines
+/// (the `# generated` stamp) and blank lines. CI leaves `windows.tsv` alone when they do, so
+/// the weekly sync proposes nothing (final review I2).
+pub fn same_rows(previous: &str, new: &str) -> bool {
+    let rows = |t: &str| -> Vec<String> {
+        t.lines()
+            .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
+            .map(str::to_string)
+            .collect()
+    };
+    rows(previous) == rows(new)
+}
+
 /// `YYYY-MM-DDTHH:MM:SSZ` for seconds since 1970 (civil-from-days, H. Hinnant).
 pub fn utc_stamp(secs: u64) -> String {
     let (days, rem) = ((secs / 86_400) as i64, secs % 86_400);
@@ -688,6 +701,33 @@ mod tests {
             crate::install::conda::parse_windows(&text, true).unwrap(),
             rows
         );
+    }
+
+    #[test]
+    fn same_rows_ignores_the_generated_line_only() {
+        let rows = from_linux(&linux(), &Published::new());
+        let a = render(&rows, "ci", "2026-10-16T09:30:00Z");
+        let b = render(&rows, "ci", "2026-10-23T09:30:00Z");
+        assert_ne!(a, b);
+        assert!(same_rows(&a, &b));
+        // A checkout with CRLF line ends holds the same rows.
+        assert!(same_rows(&a.replace('\n', "\r\n"), &b));
+        let mut fewer = rows.clone();
+        fewer.pop();
+        assert!(!same_rows(
+            &a,
+            &render(&fewer, "ci", "2026-10-16T09:30:00Z")
+        ));
+        let mut swapped = rows.clone();
+        swapped.swap(0, 1);
+        assert!(!same_rows(
+            &a,
+            &render(&swapped, "ci", "2026-10-16T09:30:00Z")
+        ));
+        // One row's text differs (its verdict's last word).
+        let changed = format!("{}x\n", a.trim_end_matches('\n'));
+        assert!(!same_rows(&a, &changed));
+        assert!(!same_rows("", &a));
     }
 
     #[test]
