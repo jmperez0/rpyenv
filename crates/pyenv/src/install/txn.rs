@@ -636,6 +636,22 @@ mod tests {
         Txn::begin_for(versions, name, Flavor::PyenvWin).unwrap()
     }
 
+    /// `begin_for` right after a transaction of the same name was dropped. On Unix a process
+    /// another test thread spawns is forked with this test's lock file open and holds the lock
+    /// until it execs (`O_CLOEXEC`), so the lock can look taken for a moment (seen in WSL: 6 of
+    /// 40 parallel runs, none of 40 with one thread).
+    fn begin_again(versions: &Path, name: &str, flavor: Flavor) -> Txn {
+        for _ in 0..250 {
+            match Txn::begin_for(versions, name, flavor) {
+                Err(e) if e.contains("is in progress") => {
+                    std::thread::sleep(std::time::Duration::from_millis(20))
+                }
+                r => return r.unwrap(),
+            }
+        }
+        panic!("the install lock of {name} stayed taken for 5 s");
+    }
+
     /// Final review C1, M7c design §3: the installer's `/D=` folder is empty when it runs; the
     /// marker is beside it until commit, which then carries `envs\` from the previous copy.
     #[test]
@@ -789,7 +805,7 @@ mod tests {
         assert_eq!(entries(&versions), ["m"]);
         // And for a CPython install of the same name.
         touch(&versions.join(".rpyenv-incomplete-m"), "");
-        let mut txn = win(&versions, "m");
+        let mut txn = begin_again(&versions, "m", Flavor::PyenvWin);
         let stage = txn.stage_dir().join("p");
         touch(&stage.join("python.exe"), "cpython");
         txn.place(&stage).unwrap();
@@ -885,7 +901,7 @@ mod tests {
         );
         assert!(versions.join(".old-m").is_dir(), "{:?}", entries(&versions));
         drop(hold);
-        let txn = Txn::begin_for(&versions, "m", flavor).unwrap();
+        let txn = begin_again(&versions, "m", flavor);
         assert_eq!(
             std::fs::read_to_string(target.join("python.exe")).unwrap(),
             "old"
