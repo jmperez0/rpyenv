@@ -6,6 +6,7 @@ pub mod archive;
 pub mod builder;
 pub mod checksum;
 pub mod conda;
+pub mod condacatalog;
 pub mod default_packages;
 pub mod defs;
 pub mod fetch;
