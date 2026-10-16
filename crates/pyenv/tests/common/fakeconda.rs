@@ -1,6 +1,7 @@
 //! A fake conda installer for tier-1 tests (M7b): run as `bash <it> -f -b -p <prefix>`, it
-//! records its arguments, whether `<prefix>/.rpyenv-incomplete` exists, and
-//! CONDA_PLUGINS_AUTO_ACCEPT_TOS into `$FAKECONDA_LOG` (when set), then writes `bin/python<X.Y>`
+//! records its arguments, whether `<prefix>/.rpyenv-incomplete` exists,
+//! CONDA_PLUGINS_AUTO_ACCEPT_TOS, and the caller's CONDA_PREFIX, CONDA_DEFAULT_ENV and
+//! PYTHONPATH (and, from `conda install`, CONDA_CHANNEL_ALIAS) into `$FAKECONDA_LOG` (when set), then writes `bin/python<X.Y>`
 //! (answers `-c …` with exit 0), `bin/python` (a link), `bin/conda` (`--version` prints
 //! `conda 25.1.1`; `install …` appends its arguments to the log and exits `$FAKECONDA_INSTALL_EXIT`,
 //! default 0) and `conda-meta/history` and an empty `envs/` (as real installers do). It exits `$FAKECONDA_EXIT` (default 0) before writing
@@ -15,7 +16,8 @@ while [ $# -gt 0 ]; do
   case "$1" in -p) prefix=$2; shift 2;; *) shift;; esac
 done
 {{ echo "args: -f -b -p $prefix"; [ -e "$prefix/.rpyenv-incomplete" ] && echo "marker: yes" || echo "marker: no"
-   echo "tos: ${{CONDA_PLUGINS_AUTO_ACCEPT_TOS:-unset}}"; }} >> "$log"
+   echo "tos: ${{CONDA_PLUGINS_AUTO_ACCEPT_TOS:-unset}}"
+   echo "installer env: ${{CONDA_PREFIX:-unset}} ${{CONDA_DEFAULT_ENV:-unset}} ${{PYTHONPATH:-unset}}"; }} >> "$log"
 [ -n "${{FAKECONDA_EXIT:-}}" ] && exit "$FAKECONDA_EXIT"
 mkdir -p "$prefix/bin" "$prefix/conda-meta" "$prefix/envs"
 printf '#!/bin/sh\nexit 0\n' > "$prefix/bin/python{py}"
@@ -25,7 +27,7 @@ cat > "$prefix/bin/conda" <<'EOF'
 #!/bin/sh
 case "$1" in
   --version) echo "conda 25.1.1";;
-  install) echo "conda: $*" >> "${{FAKECONDA_LOG:-/dev/null}}"; exit "${{FAKECONDA_INSTALL_EXIT:-0}}";;
+  install) {{ echo "conda: $*"; echo "conda env: ${{CONDA_PREFIX:-unset}} ${{CONDA_DEFAULT_ENV:-unset}} ${{PYTHONPATH:-unset}} alias=${{CONDA_CHANNEL_ALIAS:-unset}}"; }} >> "${{FAKECONDA_LOG:-/dev/null}}"; exit "${{FAKECONDA_INSTALL_EXIT:-0}}";;
 esac
 EOF
 chmod 755 "$prefix/bin/conda"

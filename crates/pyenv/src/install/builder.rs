@@ -968,17 +968,16 @@ fn run_step(
             let vars = &job.definition.vars;
             let mut c = command("bash", &plan.env);
             c.arg(src).args(["-f", "-b", "-p"]).arg(&plan.prefix);
-            for (k, v) in vars {
-                c.env(k, v);
-            }
+            // Not the caller's active conda env or Python settings (conda follows
+            // CONDA_PREFIX), then the definition's own variables.
+            super::conda::clean_env(&mut c, vars);
             logged(log, &mut c)?;
             if step == "miniconda" {
                 // Upstream's workaround for pyenv issue #2070: pip, without upgrading conda.
                 let conda = plan.prefix.join("bin").join("conda");
-                let out = command(&conda, &plan.env)
-                    .arg("--version")
-                    .stdin(Stdio::null())
-                    .output();
+                let mut ver = command(&conda, &plan.env);
+                super::conda::clean_env(&mut ver, &[]);
+                let out = ver.arg("--version").stdin(Stdio::null()).output();
                 if interrupted() {
                     return Err(InstallError::Interrupted);
                 }
@@ -998,9 +997,7 @@ fn run_step(
                     })?;
                 let mut c = command(&conda, &plan.env);
                 c.args(["install", "--yes", "pip", &format!("conda={v}")]);
-                for (k, val) in vars {
-                    c.env(k, val);
-                }
+                super::conda::clean_env(&mut c, vars);
                 logged(log, &mut c)?;
             }
             Ok(())
