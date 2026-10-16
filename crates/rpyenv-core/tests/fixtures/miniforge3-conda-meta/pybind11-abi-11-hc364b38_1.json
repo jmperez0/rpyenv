@@ -1,0 +1,1 @@
+{"name": "pybind11-abi", "version": "11", "files": ["etc/conda/test-files/pybind11-abi/0/check_abi.py", "etc/conda/test-files/pybind11-abi/0/include/pybind11/detail/internals.h"]}

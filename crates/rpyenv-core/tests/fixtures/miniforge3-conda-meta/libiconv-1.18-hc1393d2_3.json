@@ -1,0 +1,1 @@
+{"name": "libiconv", "version": "1.18", "files": ["Library/bin/charset.dll", "Library/bin/iconv.dll", "Library/include/iconv.h", "Library/include/libcharset.h", "Library/include/localcharset.h", "Library/lib/charset.lib", "Library/lib/iconv.lib"]}

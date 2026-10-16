@@ -1,0 +1,1 @@
+{"name": "libmamba-spdlog", "version": "2.9.0", "files": ["Library/include/mamba/spdlog/logging_spdlog.hpp", "Library/include/mamba/spdlog/logging_spdlog_impl.hpp", "Library/lib/cmake/libmamba-spdlog/libmamba-spdlogConfig.cmake", "Library/lib/cmake/libmamba-spdlog/libmamba-spdlogTargets.cmake", "Library/lib/cmake/libmamba-spdlog/libmamba-spdlogVersion.cmake"]}

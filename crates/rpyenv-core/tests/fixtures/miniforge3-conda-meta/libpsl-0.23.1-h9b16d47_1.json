@@ -1,0 +1,1 @@
+{"name": "libpsl", "version": "0.23.1", "files": ["Library/bin/psl-5.dll", "Library/include/libpsl.h", "Library/lib/pkgconfig/libpsl.pc", "Library/lib/psl.lib"]}
