@@ -153,7 +153,7 @@ fn venv_works(p: &Path) -> bool {
         .is_ok_and(|s| s.success())
 }
 
-/// A file in a conda tree's `Libraryin` (DLLs and tools): never an interpreter (M7c task 6).
+/// A file in a conda tree's `Library\bin` (DLLs and tools): never an interpreter (M7c task 6).
 fn in_library_bin(p: &Path) -> bool {
     let name = |p: Option<&Path>| {
         p.and_then(Path::file_name)
