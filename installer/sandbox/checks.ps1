@@ -295,6 +295,22 @@ function JustForMe {
     Like 'server: per-user INSTALLFOLDER' '(^| )INSTALLFOLDER=C:\\Users\\' $cl
     Check 'files in the per-user folder' True (Test-Path "$UserBin\pyenv.exe")
     Check 'nothing in Program Files' False (Test-Path (Split-Path $MachineBin))
+    Check 'conda table installed' True (Test-Path (Join-Path (Split-Path $UserBin) 'share\conda\windows.tsv'))
+    # M7c design D3 (ruling R20): a fresh install lists conda names with no
+    # .versions_cache.xml; install --list reads the shipped table and fetches nothing.
+    $scratch = Join-Path $env:TEMP 'rpx-conda-list'
+    if (Test-Path $scratch) { Remove-Item -Recurse -Force $scratch }
+    New-Item -ItemType Directory -Force $scratch | Out-Null
+    $saved = @{}
+    foreach ($n in 'PYENV', 'PYENV_ROOT', 'PYENV_HOME', 'HOME') { $saved[$n] = [Environment]::GetEnvironmentVariable($n, 'Process') }
+    foreach ($n in 'PYENV', 'PYENV_ROOT', 'PYENV_HOME', 'HOME') { [Environment]::SetEnvironmentVariable($n, $scratch, 'Process') }
+    try { $list = @(& "$UserBin\pyenv.exe" install --list 2>&1 | ForEach-Object { "$_".Trim() }) }
+    finally { foreach ($n in $saved.Keys) { [Environment]::SetEnvironmentVariable($n, $saved[$n], 'Process') } }
+    Check 'conda list: scratch root has no versions cache' False (Test-Path (Join-Path $scratch '.versions_cache.xml'))
+    Note "install --list: $($list.Count) lines"
+    Like 'install --list shows a miniforge3 line' '(?m)^miniforge3-\d' ($list -join "`n")
+    Like 'install --list shows a miniconda3 line' '(?m)^miniconda3-' ($list -join "`n")
+    Remove-Item -Recurse -Force $scratch
     $u = @(Entries (UserPath))
     Note "user PATH: $($u -join ';')"
     Like 'user PATH starts with the shims' '\\\.pyenv\\pyenv-win\\shims\\?$' $u[0]
