@@ -22,6 +22,32 @@ fn shown(prefix: &str) -> &str {
 /// pyenv-win's `pyenv-latest.vbs` help (M2 reference, "latest").
 pub const WIN_HELP: &str = "Usage: pyenv latest [-k|--known] [-q|--quiet] <prefix>\n\n  -k/--known      Select from all known versions instead of installed\n  -q/--quiet      Do not print an error message on resolution failure\n\n";
 
+/// `latest -k` for a conda family or name (M7c design §6.1): the table's newest installable
+/// release, or the name itself when it is an installable row.
+fn latest_win_conda(ctx: &Ctx, prefix: &str, quiet: bool) -> Output {
+    use crate::install::conda::{self, Verdict};
+    let mut o = Output::new();
+    let found = conda::windows_table(&ctx.root).ok().and_then(|t| {
+        let name = crate::install::winconda::resolve_name(&t.rows, prefix);
+        t.rows
+            .iter()
+            .any(|r| r.name == name && matches!(r.verdict, Verdict::Ok(_) | Verdict::OkLatest(_)))
+            .then_some(name)
+    });
+    match found {
+        Some(v) => o.out(v),
+        None => {
+            if !quiet {
+                o.out(format!(
+                    "pyenv-latest: no known versions match the prefix '{prefix}'."
+                ));
+            }
+            o.code = 1;
+        }
+    }
+    o
+}
+
 /// pyenv-win's `pyenv latest` (M1 reference, "latest"): the last non-option argument is the
 /// prefix; `--help` wins wherever it is; no arguments at all is the help with exit 1.
 fn latest_win(ctx: &Ctx, args: &[&str]) -> Output {
@@ -47,6 +73,9 @@ fn latest_win(ctx: &Ctx, args: &[&str]) -> Output {
             o.out("pyenv-latest: missing <prefix> argument");
         }
         return o.with_code(1);
+    }
+    if known && crate::install::conda::is_conda_name(prefix) {
+        return latest_win_conda(ctx, prefix, quiet);
     }
     let candidates: Vec<String> = if known {
         crate::install::wincatalog::read_db(&ctx.root)

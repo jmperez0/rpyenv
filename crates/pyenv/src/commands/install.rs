@@ -190,7 +190,7 @@ fn conda_text(
             .iter()
             .any(|(k, _)| k == "CONDA_PLUGINS_AUTO_ACCEPT_TOS")
         {
-            say(TERMS_NOTICE);
+            say(conda::TERMS_NOTICE);
         }
     };
     Some(verdict.and_then(|v| match v {
@@ -225,8 +225,6 @@ fn conda_text(
         )),
     }))
 }
-
-const TERMS_NOTICE: &str = "rpyenv: Miniconda's defaults channel is covered by Anaconda's terms of service, which require a paid license for organizations of 200 or more people; this install accepts them, as upstream pyenv does. Miniforge (conda-forge) isn't covered.";
 
 pub fn install(ctx: &Ctx, args: &[&str]) -> Output {
     // The process environment, which every lookup and the build itself see.

@@ -217,7 +217,7 @@ fn graalpy_codes_are_refused() {
     db(&f, &[("graalpy-24.2.1-windows-amd64", true)]);
     let r = f.pyenv(&["install", "graalpy-24.2.1-windows-amd64"]);
     assert_eq!(r.code, 1);
-    assert!(r.stdout.ends_with(":: [Error] :: rpyenv cannot install graalpy-24.2.1-windows-amd64: only CPython and PyPy are supported.\r\n"), "{}", r.stdout);
+    assert!(r.stdout.ends_with(":: [Error] :: rpyenv cannot install graalpy-24.2.1-windows-amd64: only CPython, PyPy and conda are supported.\r\n"), "{}", r.stdout);
 }
 
 const PYPY: &str = "pypy3.11-v7.3.99-win64";
