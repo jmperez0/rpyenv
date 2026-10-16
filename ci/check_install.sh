@@ -78,7 +78,8 @@ if [ "$conda" = 1 ]; then
   before=$(ls "$decoy/conda-meta")
   # `install -f` over a real installer's tree (which creates its own empty envs/) keeps the
   # env: the final review's Critical. The download comes from $root/cache when it is there.
-  CONDA_PREFIX="$decoy" CONDA_DEFAULT_ENV=decoy-env CONDA_SHLVL=1 \n    PYENV_ROOT="$root" "$PYENV_BIN" install -f "$v"
+  CONDA_PREFIX="$decoy" CONDA_DEFAULT_ENV=decoy-env CONDA_SHLVL=1 \
+    PYENV_ROOT="$root" "$PYENV_BIN" install -f "$v"
   after=$(ls "$decoy/conda-meta")
   [ "$before" = "$after" ] || { echo "::error::pyenv install changed the caller's active conda env $decoy"; diff <(echo "$before") <(echo "$after"); exit 1; }
   [ -d "$p/envs/ci-env/conda-meta" ] || { echo "::error::install -f lost the conda env at $p/envs/ci-env"; exit 1; }
