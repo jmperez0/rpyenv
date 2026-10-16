@@ -412,6 +412,7 @@ mod tests {
         );
     }
 
+    // allowlist D-113
     #[test]
     fn conda_tree_shims_follow_package_ownership_in_library_bin() {
         // M7c design §6.3: a version with `conda-meta` searches `Library\bin`, not `bin`,

@@ -931,6 +931,7 @@ mod tests {
         );
     }
 
+    // allowlist D-112
     #[test]
     fn win_child_path_gives_a_conda_tree_its_six_folders() {
         let (_t, mut ctx) = win_ctx(&[]);

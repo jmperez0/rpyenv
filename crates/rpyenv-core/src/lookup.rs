@@ -768,6 +768,7 @@ mod tests {
         );
     }
 
+    // allowlist D-114
     #[test]
     fn a_conda_tree_finds_files_in_library_bin_last() {
         let (_t, mut ctx) = win_root(&["miniforge3-x", "3.9.1"]);
@@ -798,6 +799,7 @@ mod tests {
 
     /// In an env, `conda` is its install's, while other tools stay the env's own. The env
     /// name's `/` is a separator only on Windows.
+    // allowlist D-114
     #[cfg(windows)]
     #[test]
     fn conda_in_an_env_runs_the_installs_conda() {
