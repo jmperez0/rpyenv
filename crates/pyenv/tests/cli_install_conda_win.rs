@@ -9,6 +9,8 @@ mod common;
 use common::server::{start, Reply, Server};
 use common::winfake::sha256;
 use common::Fixture;
+// The product passes the root in its long form (GitHub's runners give TEMP as RUNNER~1).
+use pyenv::install::winconda::long_form;
 use std::path::PathBuf;
 
 const FORGE: &str = "miniforge3-26.7.2-0";
@@ -169,7 +171,7 @@ fn a_conda_name_installs_in_place_with_the_silent_flags() {
     let t = T::std();
     let r = t.run(&["install", FORGE], &[]);
     assert_eq!(r.code, 0, "{}\n{}", r.stdout, r.stderr);
-    let target = t.version(FORGE);
+    let target = long_form(&t.version(FORGE));
     assert!(target.join("python.exe").is_file());
     assert!(!target.join(".rpyenv-incomplete").exists());
     assert!(!t
@@ -427,7 +429,7 @@ fn a_root_with_a_refused_character_is_refused_before_download() {
     );
     let r = t.run(&["install", FORGE], &[]);
     assert_eq!(r.code, 1, "{}", r.stdout);
-    let target = t.version(FORGE);
+    let target = long_form(&t.version(FORGE));
     let want = format!(
         ":: [Error] :: python-build: {FORGE}: Miniforge's installer refuses a path with a space, and rpyenv would install it into {}. Install a miniconda3 version instead (its installer accepts spaces), or set PYENV_ROOT, PYENV and PYENV_HOME to a folder without spaces.",
         target.display()
@@ -442,7 +444,7 @@ fn a_root_with_a_refused_character_is_refused_before_download() {
     assert_eq!(r.code, 1, "{}", r.stdout);
     let want = format!(
         ":: [Error] :: python-build: {CONDA}: conda's installer refuses the character '^' in {}; set PYENV_ROOT, PYENV and PYENV_HOME to a folder without it.",
-        t.version(CONDA).display()
+        long_form(&t.version(CONDA)).display()
     );
     assert!(lines(&r).contains(&want.as_str()), "{want}\n{}", r.stdout);
     assert_eq!(t.s.hits(CONDA_PATH), 0);
@@ -456,7 +458,7 @@ fn a_miniconda_root_with_a_space_installs_with_an_unquoted_d_tail() {
     let t = T::new("a b", &[(CONDA, CONDA_PATH, "miniconda", "")], &[], None);
     let r = t.run(&["install", CONDA], &[]);
     assert_eq!(r.code, 0, "{}\n{}\n{}", r.stdout, r.stderr, t.log());
-    let target = t.version(CONDA);
+    let target = long_form(&t.version(CONDA));
     assert!(target.to_string_lossy().contains("a b"));
     let want = format!("args: {SILENT} /D={}", target.display());
     assert!(t.log().lines().any(|l| l == want), "{want}\n{}", t.log());

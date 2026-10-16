@@ -25,6 +25,43 @@ pub fn refused_char(path: &Path, family: &str) -> Option<char> {
         .find(|&c| (c as u32) > 0xFF || REFUSED.contains(&c) || (space && c == ' '))
 }
 
+/// `p` with 8.3 short names expanded (`C:\Users\RUNNER~1` → `C:\Users\runneradmin`): the
+/// deepest folder of it that exists goes through `GetLongPathNameW`, the rest is kept as
+/// written. No canonicalize (`\\?\` paths break pyenv-win's). On failure, `p` as it is.
+#[cfg(windows)]
+pub fn long_form(p: &Path) -> std::path::PathBuf {
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    use windows_sys::Win32::Storage::FileSystem::GetLongPathNameW;
+    let mut base = p.to_path_buf();
+    let mut rest = Vec::new();
+    while !base.exists() {
+        match (base.file_name().map(|n| n.to_os_string()), base.parent()) {
+            (Some(n), Some(parent)) if !parent.as_os_str().is_empty() => {
+                rest.push(n);
+                base = parent.to_path_buf();
+            }
+            _ => return p.to_path_buf(),
+        }
+    }
+    let wide: Vec<u16> = base.as_os_str().encode_wide().chain(Some(0)).collect();
+    let mut buf = vec![0u16; 32768];
+    // SAFETY: `wide` is NUL-terminated; `buf` holds `buf.len()` u16s.
+    let n = unsafe { GetLongPathNameW(wide.as_ptr(), buf.as_mut_ptr(), buf.len() as u32) } as usize;
+    if n == 0 || n >= buf.len() {
+        return p.to_path_buf();
+    }
+    let mut out = std::path::PathBuf::from(std::ffi::OsString::from_wide(&buf[..n]));
+    for c in rest.iter().rev() {
+        out.push(c);
+    }
+    out
+}
+
+#[cfg(not(windows))]
+pub fn long_form(p: &Path) -> std::path::PathBuf {
+    p.to_path_buf()
+}
+
 pub fn installer_args(target: &Path) -> Vec<String> {
     [
         "/S",
@@ -229,7 +266,9 @@ fn install_one(job: &CondaJob, say: &mut dyn FnMut(&str)) -> Result<Done, Instal
             )));
         }
     };
-    let versions = job.root.join("versions");
+    // A root written with 8.3 short names (`C:\Users\RUNNER~1\…`) would be refused for its `~`,
+    // though the folder itself has none: the installers get the long form.
+    let versions = long_form(&job.root.join("versions"));
     let target = versions.join(name);
     // Spec §5 step 2, D10: refuse before downloading, naming the way out.
     match refused_char(&target, conda::family(name)) {
@@ -378,6 +417,31 @@ fn is_hash_mismatch(m: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// GitHub's Windows runners set TEMP to `C:\Users\RUNNER~1\…`; the root under it must reach
+    /// the installer (and the `~` check) in its long form, with a not-yet-created tail kept.
+    #[cfg(windows)]
+    #[test]
+    fn long_form_expands_short_names_and_keeps_a_missing_tail() {
+        use std::os::windows::ffi::{OsStrExt, OsStringExt};
+        use windows_sys::Win32::Storage::FileSystem::GetShortPathNameW;
+        let t = tempfile::tempdir().unwrap();
+        let long = t.path().join("a_long_folder_name_for_8dot3");
+        std::fs::create_dir_all(&long).unwrap();
+        let wide: Vec<u16> = long.as_os_str().encode_wide().chain(Some(0)).collect();
+        let mut buf = vec![0u16; 32768];
+        // SAFETY: `wide` is NUL-terminated; `buf` holds `buf.len()` u16s.
+        let n = unsafe { GetShortPathNameW(wide.as_ptr(), buf.as_mut_ptr(), buf.len() as u32) };
+        let short = std::path::PathBuf::from(std::ffi::OsString::from_wide(&buf[..n as usize]));
+        let want = long_form(&long).join("versions").join("m");
+        if short == long || n == 0 {
+            eprintln!("8.3 names are off on this volume; only the missing-tail half runs");
+        } else {
+            assert!(short.to_string_lossy().contains('~'), "{}", short.display());
+        }
+        assert_eq!(long_form(&short.join("versions").join("m")), want);
+        assert!(!want.to_string_lossy().contains('~'), "{}", want.display());
+    }
+
     #[test]
     fn installer_args_put_d_last() {
         let a = installer_args(Path::new("C:\\r\\versions\\m"));
