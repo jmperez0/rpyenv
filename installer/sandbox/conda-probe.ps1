@@ -65,9 +65,9 @@ foreach ($fam in 'miniforge3', 'miniconda3', 'anaconda3') {
         if (-not $ok) { $refused[$c] = $true }
         # No -f: $c itself can be a brace.
         Add-Content "$Out\path-chars.txt" ("$fam`tU+" + $code.ToString('X4') + "`t$c`texit=$($r.Exit)`tseconds=$($r.Seconds)`tpython=$ok") -Encoding UTF8
-        Remove-Item -LiteralPath $t -Recurse -Force -ErrorAction SilentlyContinue
-        # a refusal may leave a folder behind or a mangled sibling: record
+        # a refusal may leave a folder behind or a mangled sibling: record BEFORE deleting, or the check cannot fail
         Add-Content "$Out\path-chars-leftovers.txt" ("$fam U+" + $code.ToString('X4') + ': ' + ((Get-ChildItem C:\probe -Force -ErrorAction SilentlyContinue | ForEach-Object Name) -join '|')) -Encoding UTF8
+        Remove-Item -LiteralPath $t -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 'done' | Set-Content "$Out\done.txt"
