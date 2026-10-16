@@ -73,6 +73,11 @@ jobs:
             git clean -fdq -- crates/pyenv/pypy
             exit 1
           fi
+      # Before the conda step: it runs the Windows table example (M7c design §4.2). Unconditional,
+      # since whether anything changed isn't known until after the tables are rebuilt.
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, 2026-10-02
+        with:
+          toolchain: "1.96"
       - name: Rebuild the conda table
         id: conda
         continue-on-error: true
@@ -84,6 +89,20 @@ jobs:
             git clean -fdq -- crates/pyenv/conda
             exit 1
           fi
+          # M7c design §4.2: the Windows table, from the publishers' pages. The step's `set -o
+          # pipefail` makes `$?` below cargo's status, not tee's.
+          set +e
+          cargo run -q -p pyenv --example conda_windows_table -- crates/pyenv/conda/linux.tsv crates/pyenv/conda/windows.tsv 2> "$RUNNER_TEMP/conda-win.err" | tee -a "$log"
+          win=$?
+          set -e
+          cat "$RUNNER_TEMP/conda-win.err" | tee -a "$log"
+          if [ "$win" = 2 ]; then
+            git checkout -- crates/pyenv/conda/windows.tsv
+            exit 1
+          fi
+          # 1: the table is written (new releases arrive) but a hash changed or a row stopped
+          # installing; the PR names them and the last step fails (M7c design §4.2 steps 5-6).
+          echo "conda_win_attention=$win" >> "$GITHUB_OUTPUT"
       - name: Anything to propose?
         id: update
         run: |
@@ -100,16 +119,13 @@ jobs:
           else
             echo "python_build=true" >> "$GITHUB_OUTPUT"
           fi
-      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, 2026-10-02
-        if: steps.update.outputs.changed == 'true'
-        with:
-          toolchain: "1.96"
       - name: Build, regenerate the goldens, and run the checks
         if: steps.update.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           PYPY: ${{ steps.pypy.outcome }}
           CONDA: ${{ steps.conda.outcome }}
+          CONDA_WIN: ${{ steps.conda.outputs.conda_win_attention }}
         run: |
           r="$RUNNER_TEMP/results.md"
           up="$RUNNER_TEMP/pyenv-$SHA"
@@ -132,6 +148,11 @@ jobs:
           : > "$r"
           table "PyPy tables (ci/pypy_tables.py)" "$PYPY" crates/pyenv/pypy/ "$RUNNER_TEMP/pypy.log"
           table "conda table (ci/conda_tables.py)" "$CONDA" crates/pyenv/conda/ "$RUNNER_TEMP/conda.log"
+          if [ "$CONDA_WIN" = "1" ]; then
+            { echo "- **Windows conda table (crates/pyenv/conda/windows.tsv)**: needs attention"
+              echo '  ```'; sed 's/^/  /' "$RUNNER_TEMP/conda-win.err"; echo '  ```'; } >> "$r"
+          elif [ "$CONDA_WIN" = "0" ]; then echo "- **Windows conda table (crates/pyenv/conda/windows.tsv)**: pass" >> "$r"
+          fi
           check "cargo test --workspace" cargo test --workspace
           check "differential cases (parity/diff.py)" python3 parity/diff.py --rpyenv target/debug --upstream "$up"
           curl -fsSL "https://github.com/bats-core/bats-core/archive/refs/tags/v${BATS_VERSION}.tar.gz" | tar -xz -C "$RUNNER_TEMP"
@@ -157,6 +178,7 @@ jobs:
           PYTHON_BUILD: ${{ steps.update.outputs.python_build }}
           PYPY: ${{ steps.pypy.outcome }}
           CONDA: ${{ steps.conda.outcome }}
+          CONDA_WIN: ${{ steps.conda.outputs.conda_win_attention }}
         run: |
           branch="sync-python-build-$TAG"
           git config user.name "github-actions[bot]"
@@ -189,6 +211,15 @@ jobs:
               echo "Automated: only the PyPy or conda tables (\`crates/pyenv/pypy/\`, \`crates/pyenv/conda/\`) changed, rebuilt by ci/pypy_tables.py and ci/conda_tables.py from the vendored definitions and pypy.org's pages; the checks below say which rebuild succeeded. Review their diff."
               echo "crates/pyenv/python-build and the parity pin are unchanged (still pyenv $OLD_SHA)."
             fi
+            if [ "$CONDA_WIN" = "1" ]; then
+              echo
+              echo "**Windows conda table needs attention**"
+              echo
+              echo '```'
+              cat "$RUNNER_TEMP/conda-win.err"
+              echo '```'
+              echo "The table keeps the pinned hash for a changed row (see the README's \"Accepting a changed conda hash\"); check why before accepting it."
+            fi
             echo
             echo "Checks run by the workflow:"
             echo
@@ -207,11 +238,13 @@ jobs:
       # A table step's failure, let through above so the CPython sync could still open its
       # pull request, still fails the run (a scheduled run's failure notifies the owner).
       - name: Fail when a table couldn't be rebuilt
-        if: steps.pypy.outcome == 'failure' || steps.conda.outcome == 'failure'
+        if: steps.pypy.outcome == 'failure' || steps.conda.outcome == 'failure' || steps.conda.outputs.conda_win_attention == '1'
         env:
           PYPY: ${{ steps.pypy.outcome }}
           CONDA: ${{ steps.conda.outcome }}
+          CONDA_WIN: ${{ steps.conda.outputs.conda_win_attention }}
         run: |
+          [ "$CONDA_WIN" != "1" ] || echo "::error::Windows conda table: a hash changed or a row stopped installing; see the PR body"
           [ "$PYPY" = "success" ] || echo "::error::ci/pypy_tables.py failed; crates/pyenv/pypy was left unchanged. The step 'Rebuild the PyPy tables' has the log."
           [ "$CONDA" = "success" ] || echo "::error::ci/conda_tables.py failed; crates/pyenv/conda was left unchanged. The step 'Rebuild the conda table' has the log."
           exit 1

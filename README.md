@@ -290,6 +290,15 @@ nothing. `pyenv init --install pwsh` adds just the profile line.
 Not available yet. When code lands it will be a standard Cargo
 workspace: `cargo build --release`.
 
+### Accepting a changed conda hash
+
+The weekly sync pins every Windows conda installer hash in `crates/pyenv/conda/windows.tsv`.
+When it fails with `changed hash, kept the pinned one: <name>`, a publisher's file changed
+under a name rpyenv already trusts. Find out why first: the release notes, the publisher's
+announcement, `Get-AuthenticodeSignature` on the new installer. Then run
+`cargo run -p pyenv --example conda_windows_table -- crates/pyenv/conda/linux.tsv crates/pyenv/conda/windows.tsv --accept <name>`
+and open a pull request that says why the new hash is right.
+
 ## License
 
 [MIT](LICENSE)
