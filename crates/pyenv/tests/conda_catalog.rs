@@ -86,4 +86,27 @@ fn read_published_collects_both_listings_and_the_releases() {
     std::env::set_var("RPYENV_TEST_CONDA", limited.url(""));
     let e = read_published(&f, &sources()).unwrap_err();
     assert!(e.contains("not a list"), "{e}");
+
+    // A listed sidecar that answers 500 fails the read, naming it.
+    let broken = start(vec![
+        ("/miniconda/", vec![Reply::Body(listing("M-Windows-x86_64.exe", SHA_A))]),
+        ("/archive/", vec![Reply::Body(listing("A-Windows-x86_64.exe", SHA_B))]),
+        (
+            "/miniforge-api/releases?per_page=100&page=1",
+            vec![Reply::Body(format!(
+                r#"[{{"tag_name":"26.7.2-0","assets":[{{"name":"{ASSET}"}},{{"name":"{ASSET}.sha256"}}]}}]"#
+            ).into_bytes())],
+        ),
+        (
+            "/miniforge-api/releases?per_page=100&page=2",
+            vec![Reply::Body(b"[]".to_vec())],
+        ),
+        (
+            "/miniforge/releases/download/26.7.2-0/Miniforge3-26.7.2-0-Windows-x86_64.exe.sha256",
+            vec![Reply::Status(500)],
+        ),
+    ]);
+    std::env::set_var("RPYENV_TEST_CONDA", broken.url(""));
+    let e = read_published(&f, &sources()).unwrap_err();
+    assert!(e.contains(".sha256"), "{e}");
 }
