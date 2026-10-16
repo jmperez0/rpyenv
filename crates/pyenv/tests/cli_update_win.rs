@@ -460,6 +460,98 @@ fn update_writes_the_conda_table_with_newer_releases() {
     );
 }
 
+/// M7c design §4.3, the `cargo install` path: no shipped table and no root copy. `update`
+/// builds the table from the Linux names and the publishers' pages alone (`from_linux`), with
+/// no previous table to pin against, and writes it to the root.
+#[test]
+fn update_without_any_table_builds_one_from_the_linux_names() {
+    let f = Fixture::new();
+    let s = fake(ok_listing(), ok_27());
+    let base = s.url("/ftp/python");
+    // The override folder serves both tables in debug builds. It gets the embedded Linux
+    // table (release builds always use that one) and no `windows.tsv`.
+    let empty = f.base.join("no-tables");
+    std::fs::create_dir_all(&empty).unwrap();
+    std::fs::write(empty.join("linux.tsv"), include_str!("../conda/linux.tsv")).unwrap();
+    let pypy = s.url("/pypy");
+    let conda = base.trim_end_matches("/ftp/python").to_string();
+    let tables = empty.display().to_string();
+    let run_env = |args: &[&str]| {
+        f.pyenv_env(
+            args,
+            &[
+                ("RPYENV_TEST_PYTHON_ORG", base.as_str()),
+                ("RPYENV_TEST_PYPY", pypy.as_str()),
+                ("RPYENV_TEST_CONDA", conda.as_str()),
+                ("RPYENV_TEST_CONDA_TABLES", tables.as_str()),
+            ],
+        )
+    };
+    assert!(!f.root.join(".conda_versions.tsv").exists());
+    // Before: no table anywhere.
+    let r = run_env(&["install", "miniforge3-26.7.2-0"]);
+    assert!(
+        r.stdout
+            .contains("rpyenv has no conda version table; run pyenv update"),
+        "{}",
+        r.stdout
+    );
+    let r = run_env(&["update"]);
+    assert_eq!(r.code, 0, "{}", r.stdout);
+    // The fake publishers serve three installers whose names `linux.tsv` has.
+    assert!(
+        r.stdout
+            .contains(":: [Info] ::  conda: 3 installable versions (0 new)\r\n"),
+        "{}",
+        r.stdout
+    );
+    assert!(!r.stdout.contains("[Warning]"), "{}", r.stdout);
+    let text = std::fs::read_to_string(f.root.join(".conda_versions.tsv")).unwrap();
+    let first = text.lines().next().unwrap();
+    assert!(
+        first.starts_with("# generated ") && first.ends_with(" by update"),
+        "{text}"
+    );
+    let rows = pyenv::install::conda::parse_windows(&text, false).unwrap();
+    let linux_x64 = pyenv::install::conda::linux_table()
+        .unwrap()
+        .iter()
+        .filter(|r| r.arch == "Linux-x86_64")
+        .count();
+    assert_eq!(rows.len(), linux_x64, "one row per Linux x86_64 name");
+    let row = |name: &str| {
+        text.lines()
+            .find(|l| l.starts_with(&format!("{name}\t")))
+            .unwrap_or_else(|| panic!("{name}\n{text}"))
+            .to_string()
+    };
+    assert!(
+        row("miniforge3-26.7.2-0").starts_with(&format!(
+            "miniforge3-26.7.2-0\tWindows-x86_64\tok Miniforge3-26.7.2-0-Windows-x86_64 {conda}/miniforge/releases/download/26.7.2-0/{MF_26}#{SHA_A} miniconda"
+        )),
+        "{}",
+        row("miniforge3-26.7.2-0")
+    );
+    assert!(
+        row("anaconda3-2025.06-0").contains(&format!("#{SHA_B}")),
+        "{}",
+        row("anaconda3-2025.06-0")
+    );
+    assert!(
+        row("miniconda3-3.13-25.9.1-3").contains(&format!("#{SHA_B}")),
+        "{}",
+        row("miniconda3-3.13-25.9.1-3")
+    );
+    // The written table is the one now read.
+    let r = run_env(&["latest", "-k", "miniforge3"]);
+    assert_eq!(
+        (r.code, r.stdout.as_str()),
+        (0, "miniforge3-26.7.2-0\r\n"),
+        "{}",
+        r.stderr
+    );
+}
+
 /// Review focus 3, spec D9: a failed read keeps the previous table whole and costs nothing else.
 #[test]
 fn a_failed_conda_read_keeps_the_previous_table() {
