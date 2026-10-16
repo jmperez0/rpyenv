@@ -40,6 +40,7 @@ an rpyenv extension, recorded in the parity allowlist.
 | D6 | `-latest` names | As M7b D2: the hash is read at install time from the publisher (`repo.anaconda.com/miniconda/` SHA256 column; the latest Miniforge release's versioned `.sha256`). A name with no such source is refused. |
 | D7 | Linux | Unchanged. Its table comes from upstream's definitions, which update with each rpyenv release, as upstream's do. |
 | D8 | How a reviewed hash change reaches users (user, after a side-agent note) | **Reviewed rows win; maintainers accept explicitly; `update` warns.** For a name the shipped table has as `ok`/`ok-latest`, its row is used, whatever the root copy says; the root copy only adds names (or replaces a shipped row that isn't installable). A maintainer accepts a publisher's changed hash with `conda_windows_table --accept <name>` in a reviewed PR, and the next release fixes every machine. `pyenv update` reports a changed hash as a warning and exits 0 (the user can't act; a release can). Chosen over an accepted-changes list file (still needs a release to reach users) and over the earlier "newer copy wins", under which a root copy re-stamped by every `update` would outrank every later release, so a corrected hash could never arrive. |
+| D9 | A conda page `pyenv update` can't read (user, after a side-agent note) | **Warn, keep the previous table whole, exit 0**, as a failed PyPy read already does (M7a R3). The user can't fix an outage or GitHub's hourly limit, and exit 1 would break scripts that run `update`; the shipped table still installs. Chosen over exit 1 (unless `--ignore`) and over keeping the families that were read (fresher on a partial outage, but more code and a mixed table). |
 
 ## 3. Measurements this design rests on (2026-10-16)
 
@@ -146,8 +147,10 @@ same reads as §4.2 step 1, by the same module (`install/condacatalog.rs`):
      reproduces Linux's 75 (§8, tested).
 3. Write `<root>\.conda_versions.tsv` atomically (temp file, rename) with
    `# generated <now> by update`.
-4. A page that can't be fetched or parsed: `update` names the source, keeps the previous
-   file and exits 1. The CPython cache it already wrote stays.
+4. A page that can't be fetched or parsed (an outage, GitHub's hourly limit): `update`
+   prints `:: [Warning] :: conda: <source error>; kept the previous table`, keeps the
+   previous file whole (no mix of fresh and old rows) and exits 0 (D9). The CPython cache
+   it already wrote stays. A failure to write the file is still exit 1.
 
 The README says what D6 of M7b says for `-latest`: a hash added by `update` comes from
 the publisher's page at that moment, so it catches a broken download, not a compromised
