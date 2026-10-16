@@ -4,7 +4,7 @@
 # alone takes minutes, so the probe runs detached and this script polls). Nothing installs
 # on the host.
 #   pwsh -NoProfile -File installer/sandbox/run-conda-probe.ps1 [-Installers C:\tmp\m7c-installers]
-#        [-Id <running sandbox>] [-Stop] [-TimeoutMinutes 150] [-PathCharsOnly]
+#        [-Id <running sandbox>] [-Stop] [-TimeoutMinutes 150] [-PathCharsOnly] [-CheckOnly]
 # Each installer must match the SHA-256 the publisher lists (table below); -CheckOnly stops
 # after that check, before any Sandbox starts.
 param(

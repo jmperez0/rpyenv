@@ -179,7 +179,7 @@ Called where `winpkg::install_pypy` is, for names `conda::is_conda_name` accepts
    with Linux's texts and its newest-installable hint (`conda::newest_installable`, over
    the Windows rows). `ok-latest` reads its hash now (D6).
 2. **Check the target** `<root>\versions\<name>`: refuse, naming the character, paths
-   the installers reject (§3, measured): `^ % ! = & ( ) ; , ' # $ @ ~ [ ] { }`, any
+   the installers reject (§3; measured except the two parts below): `^ % ! = & ( ) ; , ' # $ @ ~ [ ] { }`, any
    character outside Latin-1, and, for Miniforge only, space.
    Two parts are inferred, not measured: "outside Latin-1" comes from two characters
    (`Ж` U+0416, `中` U+4E2D), with the Sandbox's ANSI code page unchecked; and Anaconda's
