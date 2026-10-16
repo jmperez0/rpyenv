@@ -48,10 +48,59 @@ pub fn resolve_name(rows: &[LinuxRow], wanted: &str) -> String {
     conda::newest_installable(rows, wanted, conda::WIN_ARCH).unwrap_or_else(|| wanted.to_string())
 }
 
-/// Waits for `child`, polling `stop` every 200 ms; when it turns true the child (and, on
-/// Windows, its process tree through the job) is ended and `None` returned.
-pub(crate) fn wait_or_kill(
+/// How long ending the installer's tree may take before the install gives up waiting.
+const END_TREE_SECS: u64 = 15;
+
+/// The installer's process tree (M7c Task 8 review I1). On Windows a job without breakaway
+/// holds the stub and everything it starts (`_conda.exe` does the real work), so Ctrl+C can
+/// end all of it. Assigning right after `spawn` leaves a short window in which the stub
+/// could start a child outside the job; NSIS extracts its payload for seconds before it
+/// starts `_conda.exe`, so that race is accepted.
+pub struct Tree {
+    #[cfg(windows)]
+    job: Option<rpyenv_core::winproc::Job>,
+}
+
+impl Tree {
+    /// A tree holding `child`. Where Windows refuses the job, only the child itself is ended.
+    pub fn new(child: &Child) -> Tree {
+        #[cfg(not(windows))]
+        let _ = child;
+        Tree {
+            #[cfg(windows)]
+            job: rpyenv_core::winproc::Job::new_tree().filter(|j| j.assign(child)),
+        }
+    }
+
+    /// Ends the child and, on Windows, every process in its job, and waits until none is
+    /// left, so nothing writes into the folder the caller deletes next.
+    fn end(&self, child: &mut Child) -> std::io::Result<()> {
+        let _ = child.kill();
+        let _ = child.wait();
+        #[cfg(windows)]
+        if let Some(job) = &self.job {
+            job.terminate();
+            let end = std::time::Instant::now() + std::time::Duration::from_secs(END_TREE_SECS);
+            while job.active_processes().is_none_or(|n| n > 0) {
+                if std::time::Instant::now() >= end {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        format!("its processes did not end within {END_TREE_SECS} s"),
+                    ));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Waits for `child`, polling `stop` every 200 ms; when it turns true the child and its tree
+/// are ended, awaited, and `None` returned. A tree that outlives `END_TREE_SECS` is an error
+/// of kind `TimedOut`.
+pub fn wait_or_kill(
     child: &mut Child,
+    tree: &Tree,
     stop: &dyn Fn() -> bool,
 ) -> std::io::Result<Option<ExitStatus>> {
     loop {
@@ -59,11 +108,63 @@ pub(crate) fn wait_or_kill(
             return Ok(Some(s));
         }
         if stop() {
-            let _ = child.kill();
-            let _ = child.wait();
+            tree.end(child)?;
             return Ok(None);
         }
         std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+}
+
+/// Variables that would point the installer, `conda install` or the import check at another
+/// conda or Python (M7c Task 8 review I2, ruling R18).
+fn scrubbed(name: &str) -> bool {
+    let up = name.to_ascii_uppercase();
+    up.starts_with("CONDA_")
+        || up.starts_with("_CE_")
+        || matches!(
+            up.as_str(),
+            "PYTHONHOME" | "PYTHONPATH" | "PYTHONSTARTUP" | "PYTHONUSERBASE" | "VIRTUAL_ENV"
+        )
+}
+
+/// `cmd` without the user's conda or Python environment, then the row's own variables.
+fn clean_env(cmd: &mut Command, row_env: &[(String, String)]) {
+    for (k, _) in std::env::vars_os() {
+        if scrubbed(&k.to_string_lossy()) {
+            cmd.env_remove(&k);
+        }
+    }
+    for (k, v) in row_env {
+        cmd.env(k, v);
+    }
+}
+
+/// The last `n` lines of the install log, for an error message.
+fn tail(log: &Path, n: usize) -> String {
+    let text = std::fs::read_to_string(log).unwrap_or_default();
+    let lines: Vec<&str> = text.lines().collect();
+    lines[lines.len().saturating_sub(n)..].join("\n")
+}
+
+/// `m`, then where the step's output went and its last lines (review M1).
+fn with_log(m: String, log: &Path) -> InstallError {
+    let t = tail(log, 5);
+    let mut m = format!("{m}; output is in {}", log.display());
+    if !t.is_empty() {
+        m.push_str(":\n");
+        m.push_str(&t);
+    }
+    InstallError::Message(m)
+}
+
+fn append_log(log: &Path, text: &str) {
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log)
+    {
+        let _ = f.write_all(text.as_bytes());
     }
 }
 
@@ -132,7 +233,7 @@ fn install_one(job: &CondaJob, say: &mut dyn FnMut(&str)) -> Result<Done, Instal
     // Spec §5 step 2, D10: refuse before downloading, naming the way out.
     match refused_char(&target, conda::family(name)) {
         Some(' ') => return Err(msg(format!("python-build: {name}: Miniforge's installer refuses a path with a space, and rpyenv would install it into {}. Install a miniconda3 version instead (its installer accepts spaces), or set PYENV_ROOT, PYENV and PYENV_HOME to a folder without spaces.", target.display()))),
-        Some(c) => return Err(msg(format!("python-build: {name}: conda's installer refuses the character {c:?} in {}; set PYENV_ROOT, PYENV and PYENV_HOME to a folder without it.", target.display()))),
+        Some(c) => return Err(msg(format!("python-build: {name}: conda's installer refuses the character '{c}' in {}; set PYENV_ROOT, PYENV and PYENV_HOME to a folder without it.", target.display()))),
         None => {}
     }
     if super::txn::is_complete_for(&target, Flavor::PyenvWin) && !job.force {
@@ -183,30 +284,54 @@ fn install_one(job: &CondaJob, say: &mut dyn FnMut(&str)) -> Result<Done, Instal
     }
     #[cfg(not(windows))]
     cmd.arg(d_arg);
-    for (k, v) in &install.env {
-        cmd.env(k, v);
+    clean_env(&mut cmd, &install.env);
+    // The install log (spec §5, review M1): every step appends its output here.
+    let log = job.root.join("install_cache").join(format!("{name}.log"));
+    let _ = std::fs::create_dir_all(job.root.join("install_cache"));
+    append_log(&log, &format!("== {name}: installer {}\n", all.join(" ")));
+    if let Ok(f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log)
+    {
+        if let Ok(g) = f.try_clone() {
+            cmd.stdout(f).stderr(g);
+        }
     }
     let mut child = cmd
         .spawn()
         .map_err(|e| msg(format!("cannot run {}: {e}", fetched.files[0].display())))?;
-    #[cfg(windows)]
-    let _job = rpyenv_core::winproc::Job::new().filter(|j| j.assign(&child));
-    let status = wait_or_kill(&mut child, &interrupted)
-        .map_err(|e| msg(e.to_string()))?
+    let tree = Tree::new(&child);
+    let status = wait_or_kill(&mut child, &tree, &interrupted)
+        .map_err(|e| {
+            msg(format!(
+                "{name}: {e}; {} may be incomplete",
+                target.display()
+            ))
+        })?
         .ok_or(InstallError::Interrupted)?;
     if !status.success() {
-        return Err(msg(format!("{name}: the installer exited with {status}")));
+        return Err(with_log(
+            format!("{name}: the installer exited with {status}"),
+            &log,
+        ));
     }
     let run = |exe: &Path, args: &[&str]| -> Result<std::process::Output, InstallError> {
         let mut c = Command::new(exe);
         c.args(args)
             .env("PATH", path_env(&target))
             .stdin(Stdio::null());
-        for (k, v) in &install.env {
-            c.env(k, v);
-        }
-        c.output()
-            .map_err(|e| msg(format!("cannot run {}: {e}", exe.display())))
+        clean_env(&mut c, &install.env);
+        append_log(
+            &log,
+            &format!("== {name}: {} {}\n", exe.display(), args.join(" ")),
+        );
+        let out = c
+            .output()
+            .map_err(|e| msg(format!("cannot run {}: {e}", exe.display())))?;
+        append_log(&log, &String::from_utf8_lossy(&out.stdout));
+        append_log(&log, &String::from_utf8_lossy(&out.stderr));
+        Ok(out)
     };
     if install.step == "miniconda" {
         let conda_exe = target.join("Scripts").join("conda.exe");
@@ -221,17 +346,18 @@ fn install_one(job: &CondaJob, say: &mut dyn FnMut(&str)) -> Result<Done, Instal
             &["install", "--yes", "pip", &format!("conda={v}")],
         )?;
         if !out.status.success() {
-            return Err(msg(format!(
-                "{name}: conda install pip failed ({})",
-                out.status
-            )));
+            return Err(with_log(
+                format!("{name}: conda install pip failed ({})", out.status),
+                &log,
+            ));
         }
     }
     let out = run(&target.join("python.exe"), &["-c", "import sys, ssl"])?;
     if !out.status.success() {
-        return Err(msg(format!(
-            "{name}: python.exe can't import ssl with conda's PATH; the install is broken"
-        )));
+        return Err(with_log(
+            format!("{name}: python.exe can't import ssl with conda's PATH; the install is broken"),
+            &log,
+        ));
     }
     if interrupted() {
         return Err(InstallError::Interrupted);
@@ -285,6 +411,25 @@ mod tests {
         );
     }
     #[test]
+    fn the_conda_and_python_environment_is_scrubbed() {
+        for n in [
+            "CONDA_PREFIX",
+            "conda_default_env",
+            "_CE_M",
+            "_ce_conda",
+            "PYTHONHOME",
+            "pythonpath",
+            "PYTHONSTARTUP",
+            "PYTHONUSERBASE",
+            "VIRTUAL_ENV",
+        ] {
+            assert!(scrubbed(n), "{n}");
+        }
+        for n in ["PATH", "PYTHONUTF8", "CONDAX", "HOME"] {
+            assert!(!scrubbed(n), "{n}");
+        }
+    }
+    #[test]
     fn wait_or_kill_ends_a_child_when_asked() {
         let mut c = Command::new(if cfg!(windows) { "ping" } else { "sleep" })
             .args(if cfg!(windows) {
@@ -296,7 +441,8 @@ mod tests {
             .spawn()
             .unwrap();
         let t = std::time::Instant::now();
-        assert!(wait_or_kill(&mut c, &|| true).unwrap().is_none());
+        let tree = Tree::new(&c);
+        assert!(wait_or_kill(&mut c, &tree, &|| true).unwrap().is_none());
         assert!(t.elapsed() < std::time::Duration::from_secs(5));
     }
 }

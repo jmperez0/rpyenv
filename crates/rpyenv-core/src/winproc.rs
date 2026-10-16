@@ -34,9 +34,11 @@ use windows_sys::Win32::System::Console::{
     CTRL_CLOSE_EVENT, CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT,
 };
 use windows_sys::Win32::System::JobObjects::{
-    AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-    SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK,
+    AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicAccountingInformation,
+    JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
+    TerminateJobObject, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK,
 };
 use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
 use windows_sys::Win32::System::StationsAndDesktops::{
@@ -56,6 +58,17 @@ pub struct Job(HANDLE);
 
 impl Job {
     pub fn new() -> Option<Job> {
+        Job::with_flags(JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK)
+    }
+
+    /// A job that keeps the whole process tree: kill-on-close and no breakaway, so every
+    /// descendant of an assigned process stays in the job (M7c Task 8 review I1; `new`
+    /// would let a conda installer's `_conda.exe` escape).
+    pub fn new_tree() -> Option<Job> {
+        Job::with_flags(JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE)
+    }
+
+    fn with_flags(flags: u32) -> Option<Job> {
         // SAFETY: creates an unnamed job and sets its limits from a zero-initialized
         // plain-data struct, as the API documents; the handle is closed on failure and on
         // drop.
@@ -65,8 +78,7 @@ impl Job {
                 return None;
             }
             let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
-            info.BasicLimitInformation.LimitFlags =
-                JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK;
+            info.BasicLimitInformation.LimitFlags = flags;
             let ok = SetInformationJobObject(
                 job,
                 JobObjectExtendedLimitInformation,
@@ -86,6 +98,28 @@ impl Job {
     pub fn assign(&self, child: &Child) -> bool {
         // SAFETY: `child` owns its process handle for the duration of the call.
         unsafe { self.assign_handle(child.as_raw_handle()) }
+    }
+
+    /// Ends every process in the job.
+    pub fn terminate(&self) -> bool {
+        // SAFETY: the job handle is ours.
+        unsafe { TerminateJobObject(self.0, 1) != 0 }
+    }
+
+    /// How many processes the job still holds, or `None` if Windows won't say.
+    pub fn active_processes(&self) -> Option<u32> {
+        // SAFETY: a zeroed plain-data struct of the size the call is told.
+        unsafe {
+            let mut info: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = std::mem::zeroed();
+            let ok = QueryInformationJobObject(
+                self.0,
+                JobObjectBasicAccountingInformation,
+                (&mut info as *mut JOBOBJECT_BASIC_ACCOUNTING_INFORMATION).cast(),
+                std::mem::size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32,
+                std::ptr::null_mut(),
+            );
+            (ok != 0).then_some(info.ActiveProcesses)
+        }
     }
 
     /// `assign`, for a process this crate started itself.

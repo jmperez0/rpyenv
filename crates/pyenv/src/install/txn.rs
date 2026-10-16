@@ -330,15 +330,19 @@ pub fn not_carried(old: &Path, new: &Path) -> (Vec<String>, Vec<String>) {
     // `requests-2.32.3.dist-info`: the project is what comes before the first `-`.
     let dist_infos = |base: &Path, pip_only: bool| -> BTreeSet<String> {
         let mut out = BTreeSet::new();
-        for lib in std::fs::read_dir(base.join("lib"))
+        let mut sites: Vec<PathBuf> = std::fs::read_dir(base.join("lib"))
             .into_iter()
             .flatten()
             .filter_map(Result::ok)
-        {
-            if !lib.file_name().to_string_lossy().starts_with("python") {
-                continue;
-            }
-            for e in std::fs::read_dir(lib.path().join("site-packages"))
+            .filter(|l| l.file_name().to_string_lossy().starts_with("python"))
+            .map(|l| l.path().join("site-packages"))
+            .collect();
+        if sites.is_empty() {
+            // A Windows conda tree: `Lib\site-packages` (M7c Task 8 review M4).
+            sites.push(base.join("Lib").join("site-packages"));
+        }
+        for site in sites {
+            for e in std::fs::read_dir(site)
                 .into_iter()
                 .flatten()
                 .filter_map(Result::ok)
@@ -437,6 +441,27 @@ mod tests {
         touch(&sp.join("six-1.16.0.dist-info/INSTALLER"), "pip\n");
         touch(
             &new.join("lib/python3.12/site-packages/six-1.17.0.dist-info/INSTALLER"),
+            "conda\n",
+        );
+        let (conda, pip) = not_carried(&old, &new);
+        assert!(conda.is_empty());
+        assert_eq!(pip, names(&["requests"]));
+    }
+
+    #[test]
+    fn not_carried_reads_a_windows_conda_trees_lib_site_packages() {
+        let t = tempfile::tempdir().unwrap();
+        let (old, new) = (t.path().join("old"), t.path().join("new"));
+        touch(
+            &old.join("Lib/site-packages/requests-2.32.3.dist-info/INSTALLER"),
+            "pip\n",
+        );
+        touch(
+            &old.join("Lib/site-packages/numpy-1.26.4.dist-info/INSTALLER"),
+            "conda\n",
+        );
+        touch(
+            &new.join("Lib/site-packages/numpy-1.26.4.dist-info/INSTALLER"),
             "conda\n",
         );
         let (conda, pip) = not_carried(&old, &new);

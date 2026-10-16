@@ -257,12 +257,20 @@ fn an_installer_failure_deletes_the_folder() {
     let r = t.run(&["install", FORGE], &[("FAKECONDA_EXIT", "3")]);
     assert_eq!(r.code, 1, "{}", r.stdout);
     let out = lines(&r);
-    assert!(
-        out.contains(
-            &format!(":: [Error] :: {FORGE}: the installer exited with exit code: 3").as_str()
-        ),
-        "{out:?}"
+    // The message names the install log (review M1); its first line is the step's header.
+    let log = t.root.join("install_cache").join(format!("{FORGE}.log"));
+    let want = format!(
+        ":: [Error] :: {FORGE}: the installer exited with exit code: 3; output is in {}:",
+        log.display()
     );
+    assert!(
+        out.contains(&want.as_str()),
+        "{want}
+{out:?}"
+    );
+    assert!(std::fs::read_to_string(&log)
+        .unwrap()
+        .starts_with(&format!("== {FORGE}: installer /S ")),);
     assert!(out.contains(&format!(":: [Error] :: couldn't install {FORGE}").as_str()));
     assert!(
         t.left_in_versions().is_empty(),
@@ -278,17 +286,71 @@ fn a_failed_import_check_deletes_the_folder() {
     assert_eq!(r.code, 1, "{}", r.stdout);
     let out = lines(&r);
     assert!(
-        out.contains(
-            &format!(":: [Error] :: {FORGE}: python.exe can't import ssl with conda's PATH; the install is broken")
-                .as_str()
-        ),
-        "{out:?}"
-    );
-    assert!(
         t.left_in_versions().is_empty(),
         "{:?}",
         t.left_in_versions()
     );
+    // Review M1: the message names the install log and quotes its last lines.
+    let log = t.root.join("install_cache").join(format!("{FORGE}.log"));
+    let at = out
+        .iter()
+        .position(|l| l.starts_with(&format!(":: [Error] :: {FORGE}: python.exe can't import")))
+        .unwrap_or_else(|| panic!("{out:?}"));
+    assert_eq!(
+        out[at],
+        format!(
+            ":: [Error] :: {FORGE}: python.exe can't import ssl with conda's PATH; the install is broken; output is in {}:",
+            log.display()
+        )
+    );
+    assert_eq!(out[at + 5], "fake python: ssl failed to import");
+    let text = std::fs::read_to_string(&log).unwrap();
+    assert!(text.contains("python.exe -c import sys, ssl"), "{text}");
+    assert!(text.contains("fake python: ssl failed to import"), "{text}");
+}
+
+#[test]
+fn a_failed_force_reinstall_keeps_the_previous_install_and_its_envs() {
+    let t = T::std();
+    let r = t.run(&["install", FORGE], &[]);
+    assert_eq!(r.code, 0, "{}", r.stdout);
+    let x = t.version(FORGE).join("envs").join("e1").join("x");
+    std::fs::create_dir_all(x.parent().unwrap()).unwrap();
+    std::fs::write(&x, "mine").unwrap();
+    let r = t.run(&["install", "-f", FORGE], &[("FAKECONDA_PYTHON_EXIT", "1")]);
+    assert_eq!(r.code, 1, "{}", r.stdout);
+    assert_eq!(std::fs::read_to_string(&x).unwrap(), "mine");
+    assert!(t.version(FORGE).join("python.exe").is_file());
+    assert!(!t.version(FORGE).join(".rpyenv-incomplete").exists());
+    assert_eq!(t.left_in_versions(), [FORGE]);
+}
+
+#[test]
+fn the_users_conda_and_python_variables_do_not_reach_the_installer_or_its_steps() {
+    let t = T::std();
+    let r = t.run(
+        &["install", CONDA],
+        &[
+            ("CONDA_PREFIX", "C:/elsewhere"),
+            ("CONDA_DEFAULT_ENV", "e1"),
+            ("PYTHONPATH", "x"),
+        ],
+    );
+    assert_eq!(
+        r.code, 0,
+        "{}
+{}",
+        r.stdout, r.stderr
+    );
+    let log = t.log();
+    let envs: Vec<&str> = log.lines().filter(|l| l.starts_with("env: ")).collect();
+    // The installer, `conda --version`, `conda install` and the import check.
+    assert_eq!(
+        envs, ["env: CONDA_PREFIX=unset CONDA_DEFAULT_ENV=unset PYTHONPATH=unset"; 4],
+        "{log}"
+    );
+    // The row's own variable still reaches the installer.
+    assert!(log.lines().any(|l| l == "tos: true"), "{log}");
 }
 
 #[test]
@@ -455,4 +517,85 @@ fn no_table_names_pyenv_update() {
         r.stdout
     );
     assert_eq!(t.log(), "");
+}
+
+#[test]
+fn a_conda_name_installs_without_the_cpython_database() {
+    // Ruling R19: the table ships with rpyenv.
+    let t = T::std();
+    std::fs::remove_file(t.root.join(pyenv::install::wincatalog::DB_NAME)).unwrap();
+    let r = t.run(&["install", FORGE], &[]);
+    assert_eq!(
+        r.code, 0,
+        "{}
+{}",
+        r.stdout, r.stderr
+    );
+    assert!(t.version(FORGE).join("python.exe").is_file());
+    assert!(!r.stdout.contains("no definitions in local database"));
+}
+
+#[test]
+fn install_list_without_the_database_lists_the_conda_names_alone() {
+    let t = T::std();
+    std::fs::remove_file(t.root.join(pyenv::install::wincatalog::DB_NAME)).unwrap();
+    let r = t.run(&["install", "-l"], &[]);
+    assert_eq!(r.code, 0, "{}", r.stdout);
+    let out = lines(&r);
+    let at = out
+        .iter()
+        .position(|l| *l == FORGE)
+        .unwrap_or_else(|| panic!("{out:?}"));
+    assert_eq!(&out[at..], [FORGE, FORGE_OLD, CONDA, CONDA_OLD]);
+    assert!(!out.contains(&"3.12.1"));
+}
+
+/// Review I1: Ctrl+C must end the NSIS stub's children too, and only then may the folder go.
+/// The fake starts a grandchild that grows a file in the target after a second, as
+/// `_conda.exe` would; the stop closure plays Ctrl+C once the file has grown.
+#[test]
+fn interrupting_the_installer_ends_its_grandchildren() {
+    use pyenv::install::winconda::{wait_or_kill, Tree};
+    use std::os::windows::process::CommandExt;
+    let scratch = tempfile::tempdir().unwrap();
+    let exe = scratch.path().join("Fake-Windows-x86_64.exe");
+    std::fs::copy(env!("CARGO_BIN_EXE_fake-conda-installer"), &exe).unwrap();
+    let d = scratch.path().join("target");
+    std::fs::create_dir_all(&d).unwrap();
+    let mut cmd = std::process::Command::new(&exe);
+    cmd.arg("/S")
+        .raw_arg(format!("/D={}", d.display()))
+        .env("FAKECONDA_GRANDCHILD", "1")
+        .env_remove("FAKECONDA_LOG")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let mut child = cmd.spawn().unwrap();
+    let tree = Tree::new(&child);
+    let grow = d.join("grow.txt");
+    let len = |p: &std::path::Path| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+    let started = std::time::Instant::now();
+    let r = wait_or_kill(&mut child, &tree, &|| {
+        len(&grow) >= 3 || started.elapsed() > std::time::Duration::from_secs(20)
+    });
+    assert!(matches!(r, Ok(None)), "{r:?}");
+    assert!(len(&grow) >= 3, "the grandchild never wrote");
+    let pid = std::fs::read_to_string(d.join("grandchild.pid")).unwrap();
+    // wait_or_kill returned: nothing may write any more.
+    let before = len(&grow);
+    std::thread::sleep(std::time::Duration::from_millis(700));
+    assert_eq!(len(&grow), before, "the grandchild is still writing");
+    let tasks = std::process::Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+        .output()
+        .unwrap();
+    assert!(
+        !String::from_utf8_lossy(&tasks.stdout).contains(&format!(" {pid} ")),
+        "{}",
+        String::from_utf8_lossy(&tasks.stdout)
+    );
+    // The folder can go, and stays gone.
+    std::fs::remove_dir_all(&d).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert!(!d.exists());
 }
