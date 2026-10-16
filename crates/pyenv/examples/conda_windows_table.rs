@@ -2,9 +2,12 @@
 //! conda_windows_table -- <linux.tsv> <windows.tsv> [--accept <name>[,<name>...]]`. Reads
 //! the publishers, rebuilds <windows.tsv> from <linux.tsv>'s x86_64 rows, keeps every pinned
 //! hash (§4.2 step 6) except the rows a maintainer accepts (§4.2 step 7, D8).
-//! Exit 0: written. 1: written, but some rows changed hash or stopped installing (named on
-//! stderr, starting `changed hash, kept the pinned one:` / `no longer installable:`).
-//! 2: the publishers couldn't be read; nothing written.
+//! When no row differs from <windows.tsv>'s, the file is left alone (its `# generated` line
+//! too) and `windows.tsv unchanged` is printed (final review I2).
+//! Exit 0: written or unchanged. 1: as 0, but some rows changed hash or stopped installing
+//! (named on stderr, starting `changed hash, kept the pinned one:` / `no longer installable:`).
+//! 2: bad usage, an unreadable or unparseable previous table, or the publishers couldn't be
+//! read; nothing written.
 use pyenv::install::{conda, condacatalog as cc, fetch::Fetcher};
 
 fn die(msg: String) -> ! {
@@ -36,10 +39,14 @@ fn main() {
         .unwrap_or_else(|e| die(e));
     // Only a missing file means "no previous table"; one that is there but unreadable or
     // unparseable stops the run, or its pinned hashes would be silently dropped.
-    let previous = match std::fs::read_to_string(win_path) {
-        Ok(t) => conda::parse_windows(&t, true)
-            .unwrap_or_else(|e| die(format!("{win_path}: the previous table doesn't parse: {e}"))),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+    let (previous, previous_text) = match std::fs::read_to_string(win_path) {
+        Ok(t) => (
+            conda::parse_windows(&t, true).unwrap_or_else(|e| {
+                die(format!("{win_path}: the previous table doesn't parse: {e}"))
+            }),
+            t,
+        ),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (Vec::new(), String::new()),
         Err(e) => die(format!("{win_path}: {e}")),
     };
     let published = match cc::read_published(&Fetcher::direct(), &cc::sources()) {
@@ -66,7 +73,13 @@ fn main() {
         )
     }
     let lost = cc::lost(&previous, &rows);
-    std::fs::write(win_path, cc::render(&rows, "ci", &cc::now())).expect("write windows.tsv");
+    let text = cc::render(&rows, "ci", &cc::now());
+    if cc::same_rows(&previous_text, &text) {
+        // Only the stamp would differ: no weekly timestamp-only PR (final review I2).
+        println!("windows.tsv unchanged");
+    } else {
+        std::fs::write(win_path, text).expect("write windows.tsv");
+    }
     let mut count = std::collections::BTreeMap::new();
     for r in &rows {
         let k = match r.verdict {
