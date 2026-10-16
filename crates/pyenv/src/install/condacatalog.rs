@@ -70,8 +70,11 @@ pub fn listing_files(html: &str, folder: &str) -> Vec<(String, Option<String>)> 
     out
 }
 
-/// One page of Miniforge's releases API: each Windows x64 installer's download URL and
-/// whether a `<asset>.sha256` sits beside it. A page that isn't a JSON array is an error
+/// One page of Miniforge's releases API: each Windows x64 installer rpyenv can use (a
+/// versioned one `name_of` parses, or an unversioned `<Family>-Windows-x86_64.exe` for the
+/// `-latest` rows) with its download URL and whether a `<asset>.sha256` sits beside it. Other
+/// assets (`*-uninstaller-patch`, `Miniforge-pypy3-*`) are left out, so their sidecars are never
+/// fetched and can't fail the read. A page that isn't a JSON array is an error
 /// (GitHub's rate-limit answer is an object).
 pub fn release_assets(json: &str, miniforge: &str) -> Result<Vec<(String, bool)>, String> {
     let v: serde_json::Value = serde_json::from_str(json).map_err(|e| format!("releases: {e}"))?;
@@ -89,7 +92,10 @@ pub fn release_assets(json: &str, miniforge: &str) -> Result<Vec<(String, bool)>
             .map(|a| a.iter().filter_map(|x| x["name"].as_str()).collect())
             .unwrap_or_default();
         for n in &names {
-            if n.ends_with(WIN_SUFFIX) && !tag.is_empty() {
+            let unversioned = n
+                .strip_suffix(WIN_SUFFIX)
+                .is_some_and(|f| !f.is_empty() && !f.contains('-'));
+            if (name_of(n).is_some() || unversioned) && !tag.is_empty() {
                 let sidecar = names.contains(&format!("{n}.sha256").as_str());
                 out.push((format!("{miniforge}/releases/download/{tag}/{n}"), sidecar));
             }
@@ -723,6 +729,29 @@ mod tests {
             ("https://github.com/conda-forge/miniforge/releases/download/26.7.2-0/Miniforge3-Windows-x86_64.exe".to_string(), false),
         ]);
         assert!(release_assets("{\"message\":\"API rate limit exceeded\"}", "x").is_err());
+    }
+
+    #[test]
+    fn release_assets_keeps_only_installers_rpyenv_can_use() {
+        let a = |n: &str| format!(r#"{{"name":"{n}"}},{{"name":"{n}.sha256"}}"#);
+        let json = format!(
+            r#"[{{"tag_name":"23.1.0-4","assets":[{},{},{},{{"name":"Miniforge-pypy3-23.1.0-4-Windows-x86_64.exe"}}]}}]"#,
+            a("Miniforge3-23.1.0-4-Windows-x86_64.exe"),
+            a("Miniforge3-Windows-x86_64.exe"),
+            a("Miniforge3-uninstaller-patch-Windows-x86_64.exe"),
+        );
+        let got = release_assets(&json, "https://github.com/conda-forge/miniforge").unwrap();
+        let base = "https://github.com/conda-forge/miniforge/releases/download/23.1.0-4/";
+        assert_eq!(
+            got,
+            vec![
+                (
+                    format!("{base}Miniforge3-23.1.0-4-Windows-x86_64.exe"),
+                    true
+                ),
+                (format!("{base}Miniforge3-Windows-x86_64.exe"), true),
+            ]
+        );
     }
 
     #[test]
