@@ -28,6 +28,26 @@ pub fn is_complete_for(dir: &Path, flavor: Flavor) -> bool {
     present && !dir.join(MARKER).exists() && !sibling_marker(dir).exists()
 }
 
+/// Deletes the unfinished `versions/<name>`: renamed aside to `.tmp-<name>-rollback` first (one
+/// atomic step, so no half-deleted tree is left under the version's name), then deleted. If the
+/// rename fails (a locked file on Windows), it is deleted in place. True when the target is gone.
+fn discard(versions: &Path, name: &str) -> bool {
+    let target = versions.join(name);
+    let aside = rollback_dir(versions, name);
+    let _ = std::fs::remove_dir_all(&aside);
+    if std::fs::rename(&target, &aside).is_ok() {
+        let _ = std::fs::remove_dir_all(&aside);
+    } else {
+        let _ = std::fs::remove_dir_all(&target);
+    }
+    target.symlink_metadata().is_err()
+}
+
+/// Where `discard` sets an unfinished tree aside; a staging name, so `pyenv versions` hides it.
+fn rollback_dir(versions: &Path, name: &str) -> PathBuf {
+    versions.join(format!(".tmp-{name}-rollback"))
+}
+
 /// The Linux flavor's test (M2a's callers).
 pub fn is_complete(dir: &Path) -> bool {
     is_complete_for(dir, Flavor::Pyenv)
@@ -102,12 +122,12 @@ impl Txn {
         let target = versions.join(name);
         let old = versions.join(format!(".old-{name}"));
         let sibling = sibling_marker(&target);
+        let _ = std::fs::remove_dir_all(rollback_dir(versions, name));
         if sibling.exists() {
             // A Windows conda install was killed (M7c design §5): the target, if any, is its
             // unfinished tree. The marker goes once the tree is gone, and before `.old` is put
             // back below, so a good tree never sits beside a marker.
-            let _ = std::fs::remove_dir_all(&target);
-            if target.symlink_metadata().is_err() {
+            if target.symlink_metadata().is_err() || discard(versions, name) {
                 let _ = std::fs::remove_file(&sibling);
             }
         }
@@ -133,11 +153,14 @@ impl Txn {
                     // it fails (`place` then refuses to overwrite it).
                     let _ = std::fs::remove_dir_all(&old);
                 }
-            } else {
+            } else if discard(versions, name) {
                 // Killed after the final rename: the target is the new, unfinished tree
                 // and `.old` (a folder or a link, renamed back as it is) is the only good copy.
-                let _ = std::fs::remove_dir_all(&target);
                 let _ = std::fs::rename(&old, &target);
+            } else if !sibling.exists() {
+                // Part of the unfinished tree is left (final review I1): it keeps a marker, so
+                // it never counts as installed, and `.old` stays for the next attempt.
+                let _ = std::fs::write(target.join(MARKER), "");
             }
         }
         let stage = versions.join(format!(".tmp-{name}"));
@@ -446,15 +469,19 @@ impl Drop for Txn {
             return;
         }
         let target = self.target();
-        if self.placed {
-            let _ = std::fs::remove_dir_all(&target);
+        if self.placed && !discard(&self.versions, &self.name) {
+            // Part of the tree is left, say a file Windows holds open (final review I1). It
+            // keeps a marker, so it never counts as installed; `begin_for` retries later.
+            let _ = std::fs::write(self.marker(), "");
         }
-        if self.sibling && target.symlink_metadata().is_err() {
+        let gone = target.symlink_metadata().is_err();
+        if gone && self.sibling {
             let _ = std::fs::remove_file(sibling_marker(&target));
         }
         if let Some(old) = self.old.take() {
-            // Never beside a marker: `begin_for` would take it for an unfinished tree.
-            if !sibling_marker(&target).exists() {
+            // Only into an empty place with no marker beside it; otherwise `.old` stays for
+            // `begin_for`, which puts it back once the unfinished tree is gone.
+            if gone && !sibling_marker(&target).exists() {
                 let _ = std::fs::rename(&old, &target);
             }
         }
@@ -769,5 +796,122 @@ mod tests {
         txn.commit().unwrap();
         assert!(is_complete_for(&versions.join("m"), Flavor::PyenvWin));
         assert_eq!(entries(&versions), ["m"]);
+    }
+
+    /// Makes deleting `target` fail part way: on Windows a file in it held open without
+    /// `FILE_SHARE_DELETE`; on Unix a read-only `versions/`, so the target's entries go but the
+    /// target itself stays. `None` where that can't be simulated (root ignores the mode bits).
+    struct Hold {
+        #[cfg(windows)]
+        _file: std::fs::File,
+        #[cfg(unix)]
+        versions: PathBuf,
+    }
+
+    impl Hold {
+        fn new(versions: &Path, held: &Path) -> Option<Hold> {
+            #[cfg(windows)]
+            {
+                let _ = versions;
+                use std::os::windows::fs::OpenOptionsExt;
+                // FILE_SHARE_READ only.
+                let f = std::fs::OpenOptions::new()
+                    .read(true)
+                    .share_mode(1)
+                    .open(held)
+                    .unwrap();
+                Some(Hold { _file: f })
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = held;
+                std::fs::set_permissions(versions, std::fs::Permissions::from_mode(0o555)).unwrap();
+                let h = Hold {
+                    versions: versions.to_path_buf(),
+                };
+                if std::fs::write(versions.join("probe"), "").is_ok() {
+                    eprintln!("skipped: the mode bits don't stop this user (root)");
+                    let _ = std::fs::remove_file(versions.join("probe"));
+                    return None;
+                }
+                Some(h)
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for Hold {
+        fn drop(&mut self) {
+            use std::os::unix::fs::PermissionsExt;
+            let _ =
+                std::fs::set_permissions(&self.versions, std::fs::Permissions::from_mode(0o755));
+        }
+    }
+
+    /// Final review I1: a rollback that can't delete the whole tree leaves it marked, keeps
+    /// `.old`, and the next `begin_for` puts `.old` back. `conda` picks `place_empty` (the
+    /// marker beside the target) or `place` (the marker in it, as Linux and CPython have).
+    fn a_failed_rollback_leaves_a_marked_tree(flavor: Flavor, conda: bool) {
+        let t = tempfile::tempdir().unwrap();
+        let versions = t.path().join("versions");
+        let target = versions.join("m");
+        touch(&target.join("bin/python"), "old");
+        touch(&target.join("python.exe"), "old");
+        let mut txn = Txn::begin_for(&versions, "m", flavor).unwrap();
+        if conda {
+            txn.place_empty().unwrap();
+            if flavor == Flavor::PyenvWin {
+                assert!(entries(&target).is_empty());
+            }
+        } else {
+            let stage = txn.stage_dir().join("p");
+            std::fs::create_dir_all(&stage).unwrap();
+            txn.place(&stage).unwrap();
+        }
+        // The new tree. The held file is in `bin`, which sorts after the marker as NTFS lists
+        // entries, so a delete in place takes the marker first and stops at `bin`.
+        touch(&target.join("bin/python"), "new");
+        touch(&target.join("python.exe"), "new");
+        let Some(hold) = Hold::new(&versions, &target.join("bin/python")) else {
+            return;
+        };
+        drop(txn);
+        assert!(target.exists(), "the delete was meant to fail part way");
+        assert!(
+            !is_complete_for(&target, flavor),
+            "a partial tree counts as installed: {:?}",
+            entries(&target)
+        );
+        assert!(versions.join(".old-m").is_dir(), "{:?}", entries(&versions));
+        drop(hold);
+        let txn = Txn::begin_for(&versions, "m", flavor).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(target.join("python.exe")).unwrap(),
+            "old"
+        );
+        assert!(is_complete_for(&target, flavor));
+        drop(txn);
+        assert_eq!(entries(&versions), ["m"]);
+    }
+
+    #[test]
+    fn a_failed_windows_conda_rollback_leaves_a_marked_tree() {
+        a_failed_rollback_leaves_a_marked_tree(Flavor::PyenvWin, true);
+    }
+
+    #[test]
+    fn a_failed_windows_rollback_leaves_a_marked_tree() {
+        a_failed_rollback_leaves_a_marked_tree(Flavor::PyenvWin, false);
+    }
+
+    #[test]
+    fn a_failed_linux_rollback_leaves_a_marked_tree() {
+        a_failed_rollback_leaves_a_marked_tree(Flavor::Pyenv, false);
+    }
+
+    #[test]
+    fn a_failed_linux_conda_rollback_leaves_a_marked_tree() {
+        a_failed_rollback_leaves_a_marked_tree(Flavor::Pyenv, true);
     }
 }
