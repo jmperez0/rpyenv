@@ -28,7 +28,7 @@ class PrefixMatches(unittest.TestCase):
 
     def test_parent_or_child(self):
         self.assertFalse(c.prefix_matches(EXP, os.path.dirname(EXP)))
-        self.assertFalse(c.prefix_matches(EXP, EXP + "\sub"))
+        self.assertFalse(c.prefix_matches(EXP, EXP + r"\sub"))
 
     def test_empty(self):
         self.assertFalse(c.prefix_matches("", ""))

@@ -1,4 +1,4 @@
-"""Checks one real conda install through rpyenv on Windows (M7c design §4; plan M7c Task 10).
+r"""Checks one real conda install through rpyenv on Windows (M7c design §4; plan M7c Task 10).
 
 Usage: python ci/check_conda_win.py <conda name>     (PYENV_ROOT names the scratch root; PYENV_EXE the pyenv.exe,
                                                        default target\release\pyenv.exe)
@@ -21,7 +21,7 @@ TAIL = 4000
 
 
 def prefix_matches(expected, printed):
-    """True when `printed` names the folder `expected`: case, `/` vs `\` and a trailing separator don't matter."""
+    r"""True when `printed` names the folder `expected`: case, `/` vs `\` and a trailing separator don't matter."""
     def norm(p):
         return p.strip().replace("/", "\\").rstrip("\\").lower()
     return norm(expected) == norm(printed) and norm(expected) != ""
@@ -82,10 +82,10 @@ def check(root, name, pyenv):
     # 2
     for exe in ("python.exe", "pip.exe", "conda.exe"):
         if not os.path.isfile(os.path.join(shims, exe)):
-            raise Failed(f"step 2: shims\{exe} missing")
+            raise Failed(rf"step 2: shims\{exe} missing")
     for exe in ("cygpath.exe", "curl.exe"):
         if os.path.exists(os.path.join(shims, exe)):
-            raise Failed(f"step 2: shims\{exe} exists (a Library\bin tool must not get a shim)")
+            raise Failed(rf"step 2: shims\{exe} exists (a Library\bin tool must not get a shim)")
     # 3
     env["PYENV_VERSION"] = name
     must(root, name, 3, [os.path.join(shims, "conda.exe"), "create", "--yes", "-n", "ci-env", "python"], env, CREATE_TIMEOUT)
@@ -98,7 +98,7 @@ def check(root, name, pyenv):
     del env["PYENV_VERSION"]
     must(root, name, 4, [pyenv, "install", "-f", name], env, INSTALL_TIMEOUT)
     if not os.path.isfile(os.path.join(prefix, "envs", "ci-env", "python.exe")):
-        raise Failed("step 4: install -f lost envs\ci-env")
+        raise Failed(r"step 4: install -f lost envs\ci-env")
     # 5
     must(root, name, 5, [pyenv, "uninstall", "-f", name], env)
     if os.path.exists(prefix):
