@@ -91,6 +91,23 @@ pub fn is_conda(dir: &Path) -> bool {
     dir.join("conda-meta").is_dir() || pathsearch::is_runnable(&dir.join("bin").join("conda"))
 }
 
+/// Conda's activation folders on Windows, in conda's order (M7c design §6.2).
+pub fn conda_win_dirs(prefix: &Path) -> [PathBuf; 6] {
+    [
+        prefix.to_path_buf(),
+        prefix.join("Library").join("mingw-w64").join("bin"),
+        prefix.join("Library").join("usr").join("bin"),
+        prefix.join("Library").join("bin"),
+        prefix.join("Scripts"),
+        prefix.join("bin"),
+    ]
+}
+
+/// A conda install on Windows (not an env): `conda-meta\` and `Scripts\conda.exe`.
+pub fn is_conda_win_install(dir: &Path) -> bool {
+    dir.join("conda-meta").is_dir() && dir.join("Scripts").join("conda.exe").is_file()
+}
+
 /// The libdir an old virtualenv keeps `orig-prefix.txt` in: `Lib` (jython), `lib-python`
 /// (pypy) or `lib`.
 fn libdir(dir: &Path) -> Option<PathBuf> {
@@ -160,7 +177,17 @@ pub fn base_prefix(ctx: &Ctx, name: &str) -> Result<PathBuf, VenvError> {
             if !(p.join("python.exe").is_file() || p.join("Scripts").join("python.exe").is_file()) {
                 return Err(VenvError::NoPython(name.to_string()));
             }
-            read_cfg(&p, Flavor::PyenvWin).and_then(|c| c.home)
+            if is_conda_win_install(&p) {
+                Some(p.clone())
+            } else if p.join("conda-meta").is_dir() {
+                // An env: versions\<install>\envs\<env>. No canonicalize (`\\?\` paths).
+                p.parent()
+                    .filter(|e| e.file_name().is_some_and(|n| n == "envs"))
+                    .and_then(Path::parent)
+                    .map(Path::to_path_buf)
+            } else {
+                read_cfg(&p, Flavor::PyenvWin).and_then(|c| c.home)
+            }
         }
     };
     found.filter(|d| d.is_dir()).ok_or_else(not_venv)
@@ -258,6 +285,65 @@ mod tests {
             })
         );
         let _ = root();
+    }
+
+    fn touch(p: &Path) {
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(p, "").unwrap();
+    }
+
+    /// `versions\<name>` with `python.exe`, `Scripts\conda.exe` and `conda-meta\`.
+    fn win_conda_install(ctx: &Ctx, name: &str) -> PathBuf {
+        let d = ctx.versions_dir().join(name);
+        touch(&d.join("python.exe"));
+        touch(&d.join("Scripts").join("conda.exe"));
+        fs::create_dir_all(d.join("conda-meta")).unwrap();
+        d
+    }
+
+    #[test]
+    fn windows_conda_installs_are_their_own_base() {
+        let t = tempfile::tempdir().unwrap();
+        let ctx = Ctx::for_test(Flavor::PyenvWin, t.path(), t.path());
+        let base = win_conda_install(&ctx, "miniforge3-x");
+        assert!(is_conda_win_install(&base));
+        assert_eq!(base_prefix(&ctx, "miniforge3-x"), Ok(base));
+        // A CPython with python.exe and no pyvenv.cfg is no env.
+        touch(&ctx.versions_dir().join("3.12.0").join("python.exe"));
+        assert_eq!(
+            base_prefix(&ctx, "3.12.0"),
+            Err(VenvError::NotVenv("3.12.0".to_string()))
+        );
+    }
+
+    #[test]
+    fn conda_win_dirs_are_conda_s_six_in_order() {
+        let p = Path::new("P");
+        let got: Vec<PathBuf> = conda_win_dirs(p).into();
+        let want: Vec<PathBuf> = [
+            vec![],
+            vec!["Library", "mingw-w64", "bin"],
+            vec!["Library", "usr", "bin"],
+            vec!["Library", "bin"],
+            vec!["Scripts"],
+            vec!["bin"],
+        ]
+        .iter()
+        .map(|s| s.iter().fold(p.to_path_buf(), |a, c| a.join(c)))
+        .collect();
+        assert_eq!(got, want);
+    }
+
+    /// The env's `/` becomes `\`, which only Windows reads as a separator.
+    #[cfg(windows)]
+    #[test]
+    fn windows_conda_envs_point_at_their_install() {
+        let t = tempfile::tempdir().unwrap();
+        let ctx = Ctx::for_test(Flavor::PyenvWin, t.path(), t.path());
+        let base = win_conda_install(&ctx, "miniforge3-x");
+        touch(&base.join("envs").join("e1").join("python.exe"));
+        fs::create_dir_all(base.join("envs").join("e1").join("conda-meta")).unwrap();
+        assert_eq!(base_prefix(&ctx, "miniforge3-x/envs/e1"), Ok(base));
     }
 
     #[cfg(unix)]

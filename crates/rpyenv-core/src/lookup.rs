@@ -233,11 +233,16 @@ pub fn win_extensions(pathext: Option<&OsStr>) -> Vec<String> {
 /// Names match without case, as on NTFS, and each hit carries the file's on-disk name.
 fn win_hits(version_dir: &Path, program: &str, exts: &[String]) -> Vec<PathBuf> {
     let mut hits = Vec::new();
-    for dir in [
+    let mut dirs = vec![
         version_dir.to_path_buf(),
         version_dir.join("Scripts"),
         version_dir.join("bin"),
-    ] {
+    ];
+    // M7c design §6.1: a conda tree keeps its DLLs and tools in `Library\bin`, searched last.
+    if version_dir.join("conda-meta").is_dir() {
+        dirs.push(version_dir.join("Library").join("bin"));
+    }
+    for dir in dirs {
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
         };
@@ -311,8 +316,44 @@ fn which_win_with(ctx: &Ctx, command: &str, runnable_only: bool) -> Result<Found
                 });
             }
         }
+        // M7c design §6.1: an env has no conda of its own; `conda` is its install's.
+        if conda_stem(program)
+            && dir.join("conda-meta").is_dir()
+            && !crate::venv::is_conda_win_install(&dir)
+        {
+            if let Some(base) = dir
+                .parent()
+                .filter(|e| e.file_name().is_some_and(|n| n == "envs"))
+                .and_then(Path::parent)
+            {
+                if let Some(path) = win_hits(base, program, &exts)
+                    .into_iter()
+                    .find(|h| !runnable_only || is_runnable_win(h))
+                {
+                    return Ok(Found {
+                        path,
+                        warnings: Vec::new(),
+                    });
+                }
+            }
+        }
     }
     Err(NotFound::WinNotFound)
+}
+
+/// `conda`, `conda.exe` or `conda.bat`, in any case: the name an env borrows from its install.
+fn conda_stem(program: &str) -> bool {
+    let stem = Path::new(program)
+        .file_stem()
+        .map(|s| s.to_string_lossy())
+        .unwrap_or_default();
+    let ext = Path::new(program).extension().map(|s| s.to_string_lossy());
+    stem.eq_ignore_ascii_case("conda")
+        && ext.is_none_or(|e| {
+            ["exe", "bat", "cmd", "com"]
+                .iter()
+                .any(|r| e.eq_ignore_ascii_case(r))
+        })
 }
 
 fn is_runnable_win(p: &Path) -> bool {
@@ -733,6 +774,54 @@ mod tests {
             path("pip."),
             Ok(v.join("3.9.1").join("Scripts").join("pip.exe"))
         );
+    }
+
+    #[test]
+    fn a_conda_tree_finds_files_in_library_bin_last() {
+        let (_t, mut ctx) = win_root(&["miniforge3-x", "3.9.1"]);
+        let v = ctx.versions_dir();
+        fs::create_dir_all(v.join("miniforge3-x").join("conda-meta")).unwrap();
+        touch(&v.join("miniforge3-x/Library/bin/tool.exe"));
+        touch(&v.join("miniforge3-x/Library/bin/pip.exe"));
+        touch(&v.join("miniforge3-x/Scripts/pip.exe"));
+        touch(&v.join("3.9.1/Library/bin/tool.exe"));
+        ctx.pyenv_version = Some("miniforge3-x".to_string());
+        let path = |c: &str| which_win(&ctx, c).map(|f| f.path);
+        assert_eq!(
+            path("tool"),
+            Ok(v.join("miniforge3-x")
+                .join("Library")
+                .join("bin")
+                .join("tool.exe"))
+        );
+        // Scripts comes first.
+        assert_eq!(
+            path("pip"),
+            Ok(v.join("miniforge3-x").join("Scripts").join("pip.exe"))
+        );
+        // CPython layout is unchanged.
+        ctx.pyenv_version = Some("3.9.1".to_string());
+        assert_eq!(which_win(&ctx, "tool"), Err(NotFound::WinNotFound));
+    }
+
+    /// Review focus 5. The env name's `/` is a separator only on Windows.
+    #[cfg(windows)]
+    #[test]
+    fn conda_in_an_env_runs_the_installs_conda() {
+        let (_t, mut ctx) = win_root(&["miniforge3-x"]);
+        let b = ctx.versions_dir().join("miniforge3-x");
+        fs::create_dir_all(b.join("conda-meta")).unwrap();
+        touch(&b.join("Scripts/conda.exe"));
+        let e = b.join("envs").join("e1");
+        fs::create_dir_all(e.join("conda-meta")).unwrap();
+        touch(&e.join("python.exe"));
+        touch(&e.join("Scripts/pip.exe"));
+        ctx.pyenv_version = Some("miniforge3-x/envs/e1".to_string());
+        let run = |c: &str| which_win_runnable(&ctx, c).map(|f| f.path);
+        let conda = b.join("Scripts").join("conda.exe");
+        assert_eq!(run("conda"), Ok(conda.clone()));
+        assert_eq!(run("conda.exe"), Ok(conda));
+        assert_eq!(run("pip"), Ok(e.join("Scripts").join("pip.exe")));
     }
 
     #[test]
