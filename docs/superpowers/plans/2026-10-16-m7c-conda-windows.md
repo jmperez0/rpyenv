@@ -28,7 +28,7 @@
 
 1. **A pyenv root path with a space or a non-ASCII letter** (`C:\Users\José Pérez\.pyenv`): the install must refuse before downloading, naming the character and the path, not fail inside the installer. Pinned in Task 8 (`a_root_with_a_refused_character_is_refused_before_download`).
 2. **`pyenv install miniforge3`** (bare family): installs the family's newest installable release. Pinned in Task 8 (`a_bare_family_installs_its_newest_installable_release`) and `latest -k` in Task 8.
-3. **`pyenv update` offline or rate-limited by GitHub (HTTP 403):** the CPython cache is still written, the previous conda table is kept, exit 1 (0 with `--ignore`). Pinned in Task 5 (`a_failed_conda_read_keeps_the_previous_table`).
+3. **`pyenv update` offline or rate-limited by GitHub (HTTP 403):** the CPython cache is still written, the previous conda table is kept whole with a warning, exit 0 (spec D9, as for PyPy). Pinned in Task 5 (`a_failed_conda_read_keeps_the_previous_table`).
 4. **An MSI upgrade carrying a corrected hash, on a machine whose root copy is newer:** the shipped (reviewed) row wins for that name, the root copy still contributes newer names, and a truncated root copy is ignored with a warning. Pinned in Task 2 (`shipped_rows_win_and_the_root_copy_adds_names`, `an_unreadable_copy_is_ignored_with_a_warning`).
 5. **Running `conda` or `pip` with a conda env selected:** `conda` resolves to the install's `Scripts\conda.exe` (envs have none); `pip` resolves to the env's own. Pinned in Task 6 (`conda_in_an_env_runs_the_installs_conda`).
 
@@ -1014,9 +1014,8 @@ fn update_writes_the_conda_table_with_newer_releases() {
 fn a_failed_conda_read_keeps_the_previous_table() {
     // Serve 403 {"message":"API rate limit exceeded"} for the releases API.
     // Pre-write <root>\.conda_versions.tsv with known bytes.
-    // Expect: exit 1; .versions_cache.xml written; .conda_versions.tsv byte-identical;
-    // stdout has ":: [Warning] :: conda: " and "kept the previous table".
-    // Same with --ignore: exit 0, same file kept.
+    // Expect (spec D9): exit 0; .versions_cache.xml written; .conda_versions.tsv
+    // byte-identical; stdout has ":: [Warning] :: conda: " and "kept the previous table".
 }
 
 #[test]
@@ -1035,13 +1034,10 @@ Write each body fully, following the file's existing helpers (fixture root, `pye
 
 ```rust
     // M7c design §4.3: the conda table, rebuilt from the publishers. A failed read keeps the
-    // previous table; a changed hash is kept pinned and fails the command.
-    let mut conda_failed = false;
+    // previous table whole and warns (D9); a changed hash is kept pinned and warns (D8).
+    // Neither fails the command: the user can't act on them.
     match condacatalog::read_published(&f, &condacatalog::sources()) {
-        Err(e) => {
-            o.out(format!(":: [Warning] :: conda: {e}; kept the previous table"));
-            conda_failed = true;
-        }
+        Err(e) => o.out(format!(":: [Warning] :: conda: {e}; kept the previous table")),
         Ok(p) => {
             // D8: the merged table (reviewed rows win) is both the base and the pin baseline.
             let (base, previous) = match conda::windows_table(&ctx.root) {
@@ -1072,7 +1068,7 @@ Write each body fully, following the file's existing helpers (fixture root, `pye
     }
 ```
 
-and at the end, before returning `o` after the `Scanned` line: `if conda_failed && !ignore { return o.with_code(1) }` (only a failed read sets `conda_failed`; a changed hash never fails `update`, spec D8).
+Neither a failed read (D9) nor a changed hash (D8) changes the exit code; only a failure to write the file does.
 
 - [ ] **Step 4: Run.** `cargo test -p pyenv --test cli_update_win` → PASS (all, old and new).
 
