@@ -39,6 +39,7 @@ an rpyenv extension, recorded in the parity allowlist.
 | D5 | Windows ARM64 hosts | As M7a D7: x64 rows are listed and installable; they run under emulation. No publisher ships a Windows ARM64 conda installer (§3). |
 | D6 | `-latest` names | As M7b D2: the hash is read at install time from the publisher (`repo.anaconda.com/miniconda/` SHA256 column; the latest Miniforge release's versioned `.sha256`). A name with no such source is refused. |
 | D7 | Linux | Unchanged. Its table comes from upstream's definitions, which update with each rpyenv release, as upstream's do. |
+| D8 | How a reviewed hash change reaches users (user, after a side-agent note) | **Reviewed rows win; maintainers accept explicitly; `update` warns.** For a name the shipped table has as `ok`/`ok-latest`, its row is used, whatever the root copy says; the root copy only adds names (or replaces a shipped row that isn't installable). A maintainer accepts a publisher's changed hash with `conda_windows_table --accept <name>` in a reviewed PR, and the next release fixes every machine. `pyenv update` reports a changed hash as a warning and exits 0 (the user can't act; a release can). Chosen over an accepted-changes list file (still needs a release to reach users) and over the earlier "newer copy wins", under which a root copy re-stamped by every `update` would outrank every later release, so a corrected hash could never arrive. |
 
 ## 3. Measurements this design rests on (2026-10-16)
 
@@ -80,8 +81,8 @@ anaconda-1.5.1	Windows-x86_64	no-binary Anaconda
   `miniconda`. The verify field is kept for the grammar; Windows checks `python.exe`
   instead (§5 step 6). A trailing `CONDA_PLUGINS_AUTO_ACCEPT_TOS=true`, as in `linux.tsv`,
   marks the rows whose installer gets that variable (§5 step 4).
-- The first line's `generated` time and source (`ci` or `update`) decide which copy wins
-  (§4.4).
+- The first line's `generated` time and source (`ci` or `update`) say where a copy came
+  from; they don't decide which copy is read (§4.4, D8).
 
 ### 4.2 Built by CI
 
@@ -113,16 +114,23 @@ and a Rust copy):
    arrive; the PR body names each such row under "changed hash, kept the pinned one";
    and the job fails. The same function (`condacatalog::pin_hashes`) applies §4.3 step 1's
    rule in `pyenv update`.
+7. **Accepting a change (D8):** `conda_windows_table --accept <name>[,<name>…]` takes the
+   publisher's current hash for those rows instead of pinning them. A maintainer runs it
+   locally after checking why the file changed (release notes, the publisher's
+   announcement, the installer's Authenticode signature) and opens a PR whose diff shows
+   the old and new hash; the commit message says why. That is the only documented way a
+   pinned hash changes.
 
 ### 4.3 Rebuilt by `pyenv update`
 
 On Windows, after the CPython cache, `pyenv update` rebuilds the conda table with the
 same reads as §4.2 step 1, by the same module (`install/condacatalog.rs`):
 
-1. Start from the newer of the two copies (§4.4). Re-read every `ok` row's hash from the
-   publisher; a hash that differs from the copy's is **not** taken silently: `update`
-   names the row, keeps the old hash and exits 1 (a publisher replacing a file is
-   exactly what pinning exists to catch).
+1. Start from the table as read (§4.4: reviewed rows win). Re-read every `ok` row's hash
+   from the publisher; a hash that differs is **not** taken: `update` keeps the old hash
+   and prints `:: [Warning] :: conda: the publisher changed <names> after rpyenv pinned
+   them; they won't install until an rpyenv release carries the reviewed hash`, and exits
+   0 (D8: the user can't act on it; a release can).
 2. Add releases newer than the newest row of their family, named backwards:
    - `Miniconda3-py<X><Y>_<release>-Windows-x86_64.exe` → `miniconda3-<X>.<Y>-<release>`
    - `<Family>-<release>-Windows-x86_64.exe` → `<family lowercased>-<release>`
@@ -145,8 +153,13 @@ publisher; a shipped row's hash was pinned at PR review.
   relative to the running `pyenv.exe` (`<exe dir>\..\share\conda\windows.tsv`).
 - **Updated:** `<root>\.conda_versions.tsv`, beside `.versions_cache.xml`, so an MSI
   repair or upgrade never touches it.
-- **Read by** `install`, `install --list`, `latest -k`: the copy with the later
-  `generated` time; a copy that doesn't parse is ignored with a warning naming it.
+- **Read by** `install`, `install --list`, `latest -k`, merged by name (D8): every row
+  of the shipped copy, then the updated copy's rows for names the shipped copy lacks;
+  for a name in both, the shipped row wins when it is `ok`/`ok-latest`, else the
+  updated row is used. A copy that doesn't parse is ignored with a warning naming it.
+- **A download that fails its hash** for a conda row adds one line to the usual
+  mismatch error: `if the publisher replaced this installer, a later rpyenv release will
+  carry the reviewed hash`.
 - **Neither present** (a bare `cargo build`): conda names are refused with
   `rpyenv has no conda version table; run pyenv update`, and `install --list` shows no
   conda lines. Tests point at a table with `RPYENV_TEST_CONDA_TABLES` (M7b's variable,
@@ -267,9 +280,12 @@ given `-n`, as upstream, which sets no `CONDA_PREFIX`.
 - Backwards naming over every Linux `ok` row: the 380 matches stay matches, and the 8
   known differences (§3) are listed by name in the test; a new difference fails it.
 - The ToS rule (`miniconda3`, conda 25 or later, or `-latest`) picks exactly Linux's 75 `miniconda3` names.
-- Copy choice: later `generated` wins either way round; neither → the refusal text.
+- Copy merge (D8): a shipped `ok` row wins over the updated copy's row for the same name
+  even when the updated copy is newer; the updated copy adds names and replaces shipped
+  rows that aren't installable; neither copy → the refusal text.
 - `update`: saved copies of both listing pages and a `.sha256`; a changed layout fails
-  and keeps the old file; a changed hash on an `ok` row exits 1 and keeps the old hash;
+  and keeps the old file; a changed hash on an `ok` row warns, exits 0 and keeps the old
+  hash; `--accept` takes the new one;
   `uninstaller-patch` is not added.
 - The ownership rule against Task 1's fixtures.
 - `win_child_path` order for a conda tree; lookup finds `Library\bin` files.

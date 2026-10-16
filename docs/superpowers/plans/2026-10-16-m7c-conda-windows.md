@@ -13,11 +13,12 @@
 ## Global Constraints
 
 - Windows table arch string: `Windows-x86_64`. Row grammar: exactly `linux.tsv`'s (`<name>\t<arch>\t<verdict>`), parsed by `conda::parse_verdict`.
-- First line of every Windows table: `# generated <YYYY-MM-DDTHH:MM:SSZ> by <ci|update>`. The later time wins; equal times prefer the root copy.
+- First line of every Windows table: `# generated <YYYY-MM-DDTHH:MM:SSZ> by <ci|update>` (informational).
+- Reading (spec D8): merge by name. Every shipped row; the root copy's rows for names the shipped copy lacks; for a name in both, the shipped row wins when it is `ok`/`ok-latest`, else the root row.
 - Shipped copy: `<dir of pyenv.exe>\..\share\conda\windows.tsv`. Updated copy: `<root>\.conda_versions.tsv`.
 - Installer flags, verbatim: `/S /InstallationType=JustMe /AddToPath=0 /RegisterPython=0 /NoRegistry=1 /NoShortcuts=1 /D=<target>` (`/D=` last, unquoted).
 - Every hash comes from a publisher: repo.anaconda.com's `SHA256` column or Miniforge's `<asset>.sha256` file. Never GitHub's asset digest, never a hash rpyenv computed.
-- A changed hash on an existing `ok` row is never taken (CI and `update` alike): keep the old one, name the row, exit 1.
+- A changed hash on an existing `ok` row is never taken silently: CI keeps the old one, names the row and fails, unless the row is named in `--accept`; `pyenv update` keeps the old one, warns and exits 0 (spec D8).
 - Conda child `PATH` order: `root; Library\mingw-w64\bin; Library\usr\bin; Library\bin; Scripts; bin`.
 - Never run a conda installer, the MSI, or rpyenv against the real `C:\Users\JM\.pyenv` on the development machine: real installs run in Windows Sandbox (Task 1, Task 9) or CI (Task 10). Tests set `PYENV`, `PYENV_ROOT`, `PYENV_HOME`, `HOME` to scratch.
 - Commit messages: one line, no attribution lines.
@@ -28,7 +29,7 @@
 1. **A pyenv root path with a space or a non-ASCII letter** (`C:\Users\José Pérez\.pyenv`): the install must refuse before downloading, naming the character and the path, not fail inside the installer. Pinned in Task 8 (`a_root_with_a_refused_character_is_refused_before_download`).
 2. **`pyenv install miniforge3`** (bare family): installs the family's newest installable release. Pinned in Task 8 (`a_bare_family_installs_its_newest_installable_release`) and `latest -k` in Task 8.
 3. **`pyenv update` offline or rate-limited by GitHub (HTTP 403):** the CPython cache is still written, the previous conda table is kept, exit 1 (0 with `--ignore`). Pinned in Task 5 (`a_failed_conda_read_keeps_the_previous_table`).
-4. **An MSI upgrade after an older `pyenv update`:** the newer shipped table wins over the older root copy, and a truncated root copy is ignored with a warning. Pinned in Task 2 (`the_newer_copy_wins_either_way_round`, `an_unreadable_copy_is_ignored_with_a_warning`).
+4. **An MSI upgrade carrying a corrected hash, on a machine whose root copy is newer:** the shipped (reviewed) row wins for that name, the root copy still contributes newer names, and a truncated root copy is ignored with a warning. Pinned in Task 2 (`shipped_rows_win_and_the_root_copy_adds_names`, `an_unreadable_copy_is_ignored_with_a_warning`).
 5. **Running `conda` or `pip` with a conda env selected:** `conda` resolves to the install's `Scripts\conda.exe` (envs have none); `pip` resolves to the env's own. Pinned in Task 6 (`conda_in_an_env_runs_the_installs_conda`).
 
 ---
@@ -132,8 +133,8 @@ git commit -m "M7c task 1: Sandbox probe of the three conda installers; fixtures
   - `pub const WIN_PREFIXES: [&str; 3]` (`https://repo.anaconda.com/miniconda/`, `https://repo.anaconda.com/archive/`, `https://github.com/conda-forge/miniforge/`)
   - `pub fn generated(text: &str) -> Option<(String, String)>` (time, by)
   - `pub fn parse_windows(text: &str, trusted_only: bool) -> Result<Vec<LinuxRow>, String>`
-  - `pub struct WinTable { pub rows: Vec<LinuxRow>, pub generated: String, pub path: PathBuf, pub warnings: Vec<String> }`
-  - `pub fn windows_table(root: &Path) -> Result<WinTable, String>` (Err text: `rpyenv has no conda version table; run pyenv update`)
+  - `pub struct WinTable { pub rows: Vec<LinuxRow>, pub warnings: Vec<String> }`
+  - `pub fn windows_table(root: &Path) -> Result<WinTable, String>` (merged per spec D8; Err text: `rpyenv has no conda version table; run pyenv update`)
   - `pub fn shipped_table_path() -> Option<PathBuf>`
 
 - [ ] **Step 1: Write the failing tests** in `crates/pyenv/tests/conda_windows_table.rs`:
@@ -169,23 +170,32 @@ fn a_windows_row_must_be_windows_and_from_a_publisher() {
     assert!(conda::parse_windows(&foreign, false).is_ok());
 }
 
-/// Review focus 4: whichever copy is newer wins, whichever way round.
+/// Review focus 4 (spec D8): a shipped `ok` row wins over a newer root copy's row for the
+/// same name; the root copy adds names, and replaces a shipped row that isn't installable.
 #[test]
-fn the_newer_copy_wins_either_way_round() {
+fn shipped_rows_win_and_the_root_copy_adds_names() {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let t = tempfile::tempdir().unwrap();
     let (root, shipped) = (t.path().join("root"), t.path().join("shipped"));
     fs::create_dir_all(&root).unwrap();
     fs::create_dir_all(&shipped).unwrap();
-    let old = table("2026-01-01T00:00:00Z", "update", "");
-    let new = table("2026-10-16T09:30:00Z", "ci", "anaconda-1.5.1\tWindows-x86_64\tno-binary Anaconda\n");
-    for (in_root, in_shipped, want) in [(&old, &new, 2), (&new, &old, 2)] {
-        fs::write(root.join(conda::WIN_TABLE), in_root).unwrap();
-        fs::write(shipped.join("windows.tsv"), in_shipped).unwrap();
-        std::env::set_var("RPYENV_TEST_CONDA_TABLES", &shipped);
-        let w = conda::windows_table(&root).unwrap();
-        assert_eq!(w.rows.len(), want);
-        assert_eq!(w.generated, "2026-10-16T09:30:00Z");
-    }
+    let other_hash = ROW.replace(&"1".repeat(64), &"2".repeat(64));
+    let newer_name = ROW.replace("26.7.2-0", "27.1.0-0");
+    fs::write(shipped.join("windows.tsv"), table("2026-01-01T00:00:00Z", "ci", "anaconda-1.5.1\tWindows-x86_64\tno-binary Anaconda\n")).unwrap();
+    fs::write(
+        root.join(conda::WIN_TABLE),
+        format!("# generated 2026-10-16T09:30:00Z by update\n{other_hash}{newer_name}anaconda-1.5.1\tWindows-x86_64\tok Anaconda-1.5.1-Windows-x86_64 https://repo.anaconda.com/archive/Anaconda-1.5.1-Windows-x86_64.exe#{} anaconda verify_py3\n", "3".repeat(64)),
+    ).unwrap();
+    std::env::set_var("RPYENV_TEST_CONDA_TABLES", &shipped);
+    let w = conda::windows_table(&root).unwrap();
+    let url = |n: &str| match &w.rows.iter().find(|r| r.name == n).unwrap().verdict {
+        Verdict::Ok(i) => i.url.clone(),
+        v => panic!("{n}: {v:?}"),
+    };
+    assert!(url("miniforge3-26.7.2-0").ends_with(&"1".repeat(64)), "the shipped hash wins");
+    assert!(url("miniforge3-27.1.0-0").ends_with(&"1".repeat(64)), "the root copy adds a name");
+    assert!(url("anaconda-1.5.1").ends_with(&"3".repeat(64)), "a root ok row replaces a shipped no-binary");
+    assert_eq!(w.rows.len(), 3);
 }
 
 /// Review focus 4: a truncated root copy is ignored with a warning naming it.
@@ -259,8 +269,6 @@ pub fn parse_windows(text: &str, trusted_only: bool) -> Result<Vec<LinuxRow>, St
 
 pub struct WinTable {
     pub rows: Vec<LinuxRow>,
-    pub generated: String,
-    pub path: std::path::PathBuf,
     /// Copies that exist but couldn't be read, one line each.
     pub warnings: Vec<String>,
 }
@@ -276,29 +284,41 @@ pub fn shipped_table_path() -> Option<std::path::PathBuf> {
     Some(exe.parent()?.parent()?.join("share").join("conda").join("windows.tsv"))
 }
 
-/// The newer of the root copy and the shipped copy (§4.4); the root copy wins a tie.
+/// Both copies merged by name (§4.4, D8): every shipped row; the root copy's rows for names
+/// the shipped copy lacks, or whose shipped row isn't installable. A reviewed row is never
+/// replaced by one `pyenv update` read.
 pub fn windows_table(root: &std::path::Path) -> Result<WinTable, String> {
     let overridden = cfg!(debug_assertions)
         && std::env::var_os("RPYENV_TEST_CONDA_TABLES").is_some_and(|v| !v.is_empty());
     let mut warnings = Vec::new();
-    let mut best: Option<WinTable> = None;
-    for path in [Some(root.join(WIN_TABLE)), shipped_table_path()].into_iter().flatten() {
-        let Ok(text) = std::fs::read_to_string(&path) else { continue };
-        let read = generated(&text)
+    let mut read = |path: Option<std::path::PathBuf>| -> Option<Vec<LinuxRow>> {
+        let path = path?;
+        let text = std::fs::read_to_string(&path).ok()?;
+        match generated(&text)
             .ok_or_else(|| "no `# generated` line".to_string())
-            .and_then(|(time, _)| parse_windows(&text, !overridden).map(|rows| (time, rows)));
-        match read {
-            Ok((time, rows)) => {
-                if best.as_ref().is_none_or(|b| time > b.generated) {
-                    best = Some(WinTable { rows, generated: time, path, warnings: Vec::new() });
-                }
+            .and_then(|_| parse_windows(&text, !overridden))
+        {
+            Ok(rows) => Some(rows),
+            Err(e) => {
+                warnings.push(format!("rpyenv: ignored {}: {e}", path.display()));
+                None
             }
-            Err(e) => warnings.push(format!("rpyenv: ignored {}: {e}", path.display())),
+        }
+    };
+    let shipped = read(shipped_table_path());
+    let updated = read(Some(root.join(WIN_TABLE)));
+    if shipped.is_none() && updated.is_none() {
+        return Err("rpyenv has no conda version table; run pyenv update".to_string());
+    }
+    let mut rows = shipped.unwrap_or_default();
+    for r in updated.unwrap_or_default() {
+        match rows.iter_mut().find(|s| s.name == r.name) {
+            Some(s) if matches!(s.verdict, Verdict::Ok(_) | Verdict::OkLatest(_)) => {}
+            Some(s) => *s = r,
+            None => rows.push(r),
         }
     }
-    let mut t = best.ok_or_else(|| "rpyenv has no conda version table; run pyenv update".to_string())?;
-    t.warnings = warnings;
-    Ok(t)
+    Ok(WinTable { rows, warnings })
 }
 ```
 
@@ -309,7 +329,7 @@ Make `LINUX_TSV` `pub(crate) static` (Task 3's unit tests read it).
 - [ ] **Step 5: Commit.**
 ```bash
 git add crates/pyenv/src/install/conda.rs crates/pyenv/tests/conda_windows_table.rs
-git commit -m "M7c task 2: read the Windows conda table, the newer of the shipped and updated copies"
+git commit -m "M7c task 2: read the Windows conda table, shipped rows winning over the updated copy"
 ```
 
 ---
@@ -335,7 +355,7 @@ git commit -m "M7c task 2: read the Windows conda table, the newer of the shippe
   - `pub fn tos(name: &str) -> bool`
   - `pub fn from_linux(linux: &[LinuxRow], p: &Published) -> Vec<LinuxRow>`
   - `pub fn refresh(old: &[LinuxRow], p: &Published) -> Vec<LinuxRow>`
-  - `pub fn pin_hashes(previous: &[LinuxRow], new: &mut [LinuxRow]) -> Vec<String>`
+  - `pub fn pin_hashes(previous: &[LinuxRow], new: &mut [LinuxRow], accept: &[String]) -> Vec<String>` (names in `accept` take the new hash and are not returned)
   - `pub fn lost(previous: &[LinuxRow], new: &[LinuxRow]) -> Vec<String>`
   - `pub fn add_newer(rows: &mut Vec<LinuxRow>, p: &Published) -> usize`
   - `pub fn render(rows: &[LinuxRow], by: &str, time: &str) -> String`
@@ -447,8 +467,12 @@ mod tests {
         let row = |sha: &str| format!("m3-1\tWindows-x86_64\tok M https://repo.anaconda.com/miniconda/M-Windows-x86_64.exe#{sha} miniconda verify_py3\n");
         let prev = crate::install::conda::parse_windows(&row(SHA_A), true).unwrap();
         let mut new = crate::install::conda::parse_windows(&row(SHA_B), true).unwrap();
-        assert_eq!(pin_hashes(&prev, &mut new), ["m3-1"]);
+        assert_eq!(pin_hashes(&prev, &mut new, &[]), ["m3-1"]);
         assert_eq!(new, prev);
+        // spec D8: an accepted name takes the publisher's new hash.
+        let mut accepted = crate::install::conda::parse_windows(&row(SHA_B), true).unwrap();
+        assert!(pin_hashes(&prev, &mut accepted, &["m3-1".to_string()]).is_empty());
+        assert!(sha_of(&accepted[0]) == Some(SHA_B));
     }
 
     #[test]
@@ -753,11 +777,12 @@ pub fn refresh(old: &[LinuxRow], p: &Published) -> Vec<LinuxRow> {
     }).collect()
 }
 
-/// §4.2 step 6, §4.3 step 1: a row whose hash differs from `previous` keeps the previous
-/// row. Returns the names, so the caller can report them and fail.
-pub fn pin_hashes(previous: &[LinuxRow], new: &mut [LinuxRow]) -> Vec<String> {
+/// §4.2 steps 6-7, §4.3 step 1: a row whose hash differs from `previous` keeps the
+/// previous row, unless its name is in `accept` (D8). Returns the kept names, so the caller
+/// can report them.
+pub fn pin_hashes(previous: &[LinuxRow], new: &mut [LinuxRow], accept: &[String]) -> Vec<String> {
     let mut changed = Vec::new();
-    for r in new.iter_mut() {
+    for r in new.iter_mut().filter(|r| !accept.contains(&r.name)) {
         if let (Some(now), Some(old)) = (sha_of(r), previous.iter().find(|o| o.name == r.name)) {
             if let Some(pinned) = sha_of(old) {
                 if pinned != now {
@@ -877,8 +902,9 @@ git commit -m "M7c task 3: build the Windows conda table from the publishers' pa
 
 ```rust
 //! CI's Windows conda table (M7c design §4.2): `cargo run -p pyenv --example
-//! conda_windows_table -- <linux.tsv> <windows.tsv>`. Reads the publishers, rebuilds
-//! <windows.tsv> from <linux.tsv>'s x86_64 rows, keeps every pinned hash (§4.2 step 6).
+//! conda_windows_table -- <linux.tsv> <windows.tsv> [--accept <name>[,<name>...]]`. Reads
+//! the publishers, rebuilds <windows.tsv> from <linux.tsv>'s x86_64 rows, keeps every pinned
+//! hash (§4.2 step 6) except the rows a maintainer accepts (§4.2 step 7, D8).
 //! Exit 0: written. 1: written, but some rows changed hash or stopped installing (named on
 //! stderr, starting `changed hash, kept the pinned one:` / `no longer installable:`).
 //! 2: the publishers couldn't be read; nothing written.
@@ -886,8 +912,12 @@ use pyenv::install::{conda, condacatalog as cc, fetch::Fetcher};
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let [linux_path, win_path] = args.as_slice() else {
-        eprintln!("usage: conda_windows_table <linux.tsv> <windows.tsv>");
+    let (paths, accept): (Vec<String>, Vec<String>) = match args.iter().position(|a| a == "--accept") {
+        Some(i) => (args[..i].to_vec(), args.get(i + 1).map(|v| v.split(',').map(str::to_string).collect()).unwrap_or_default()),
+        None => (args.clone(), Vec::new()),
+    };
+    let [linux_path, win_path] = paths.as_slice() else {
+        eprintln!("usage: conda_windows_table <linux.tsv> <windows.tsv> [--accept <name>[,<name>...]]");
         std::process::exit(2);
     };
     let linux = conda::parse_linux(&std::fs::read_to_string(linux_path).expect("linux.tsv")).expect("linux.tsv parses");
@@ -899,7 +929,13 @@ fn main() {
         Err(e) => { eprintln!("{e}"); std::process::exit(2) }
     };
     let mut rows = cc::from_linux(&linux, &published);
-    let changed = cc::pin_hashes(&previous, &mut rows);
+    let unknown: Vec<&String> = accept.iter().filter(|a| !previous.iter().any(|r| &r.name == *a)).collect();
+    if !unknown.is_empty() {
+        eprintln!("--accept names rows the previous table doesn't have: {unknown:?}");
+        std::process::exit(2);
+    }
+    let changed = cc::pin_hashes(&previous, &mut rows, &accept);
+    if !accept.is_empty() { println!("accepted the publisher's current hash for: {}", accept.join(" ")) }
     let lost = cc::lost(&previous, &rows);
     std::fs::write(win_path, cc::render(&rows, "ci", &cc::now())).expect("write windows.tsv");
     let mut count = std::collections::BTreeMap::new();
@@ -919,6 +955,8 @@ fn main() {
 - [ ] **Step 3: Check the table against the probe.** Run `python -I C:\tmp\m7c_probe.py C:\Users\JM\repos\OWN\rpyenv` again and compare: every name the probe calls `ok` must be `ok` or `ok-latest` in `windows.tsv`, and the URL-swap rows must include the 8 twins/re-releases where a Windows file exists. Record the per-family counts for spec §3 ("plan Task 4 reports the final per-family counts").
 
 - [ ] **Step 4: Prove the pin works on the real table.** Copy `windows.tsv` to `C:\tmp\m7c_win_pinned.tsv`, change one `ok` row's hash to 64 `0`s with a Python one-liner, rerun the example with that copy as `<windows.tsv>`: expected exit 1, stderr `changed hash, kept the pinned one: <that row>`, and the file still holds the zeros for it. Delete only `C:\tmp\m7c_win_pinned.tsv`.
+
+- [ ] **Step 4b: Prove `--accept`.** With the same zero-hash copy: `… -- crates/pyenv/conda/linux.tsv C:\tmp\m7c_win_pinned.tsv --accept <that row>` → exit 0 and the row now holds the publisher's hash; `--accept no-such-name` → exit 2. Then delete the copy. Add a short "Accepting a changed conda hash" paragraph to `CONTRIBUTING.md` if it exists, else to the README's maintainer notes (read both; pick the one that already has maintainer content): when CI fails with `changed hash, kept the pinned one`, check why (release notes, the publisher's announcement, `Get-AuthenticodeSignature` on the new installer), then run the example with `--accept <name>` and open a PR saying why.
 
 - [ ] **Step 5: Wire the sync job.** In `.github/workflows/sync-python-build.yml`, step "Rebuild the conda table" (read the whole job first; Rust is already set up for its later `cargo build --workspace`; if the toolchain step comes later, move it before this step). After the Linux line add:
 
@@ -957,7 +995,7 @@ git commit -m "M7c task 4: CI builds and pins the Windows conda table (crates/py
 
 **Interfaces:**
 - Consumes: `conda::{windows_table, linux_table, WIN_TABLE}`, Task 3's `read_published`, `sources`, `from_linux`, `refresh`, `pin_hashes`, `add_newer`, `render`, `now`.
-- Produces: `<root>\.conda_versions.tsv`; output lines `:: [Info] ::  conda: <n> installable versions (<k> new)`, `:: [Warning] :: conda: changed hash, kept the pinned one: <names>`, `:: [Warning] :: conda: <source error>; kept the previous table`.
+- Produces: `<root>\.conda_versions.tsv`; output lines `:: [Info] ::  conda: <n> installable versions (<k> new)`, `:: [Warning] :: conda: the publisher changed <names> after rpyenv pinned them; they won't install until an rpyenv release carries the reviewed hash` (exit 0, spec D8), `:: [Warning] :: conda: <source error>; kept the previous table`.
 
 - [ ] **Step 1: Write the failing tests** (Windows-only file; reuse its fake python.org server helper and add conda routes from Task 3 Step 5):
 
@@ -982,10 +1020,10 @@ fn a_failed_conda_read_keeps_the_previous_table() {
 }
 
 #[test]
-fn a_changed_hash_is_kept_named_and_fails_update() {
+fn a_changed_hash_is_kept_named_and_update_warns() {
     // Shipped table has miniforge3-26.7.2-0 with hash A; the sidecar serves hash B.
-    // Expect: exit 1; written table still has A for it; stdout names it after
-    // "changed hash, kept the pinned one:".
+    // Expect (spec D8): exit 0; written table still has A for it; stdout has
+    // ":: [Warning] :: conda: the publisher changed miniforge3-26.7.2-0 after rpyenv pinned them".
 }
 ```
 
@@ -1005,6 +1043,7 @@ Write each body fully, following the file's existing helpers (fixture root, `pye
             conda_failed = true;
         }
         Ok(p) => {
+            // D8: the merged table (reviewed rows win) is both the base and the pin baseline.
             let (base, previous) = match conda::windows_table(&ctx.root) {
                 Ok(t) => (condacatalog::refresh(&t.rows, &p), t.rows),
                 Err(_) => match conda::linux_table() {
@@ -1013,7 +1052,7 @@ Write each body fully, following the file's existing helpers (fixture root, `pye
                 },
             };
             let mut rows = base;
-            let changed = condacatalog::pin_hashes(&previous, &mut rows);
+            let changed = condacatalog::pin_hashes(&previous, &mut rows, &[]);
             let added = condacatalog::add_newer(&mut rows, &p);
             let path = ctx.root.join(conda::WIN_TABLE);
             let tmp = ctx.root.join(format!("{}.tmp", conda::WIN_TABLE));
@@ -1026,14 +1065,14 @@ Write each body fully, following the file's existing helpers (fixture root, `pye
             let installable = rows.iter().filter(|r| matches!(r.verdict, conda::Verdict::Ok(_) | conda::Verdict::OkLatest(_))).count();
             o.out(format!(":: [Info] ::  conda: {installable} installable versions ({added} new)"));
             if !changed.is_empty() {
-                o.out(format!(":: [Warning] :: conda: changed hash, kept the pinned one: {}", changed.join(" ")));
-                conda_failed = true;
+                // D8: a warning, exit 0: the user can't act on it; a release can.
+                o.out(format!(":: [Warning] :: conda: the publisher changed {} after rpyenv pinned them; they won't install until an rpyenv release carries the reviewed hash", changed.join(" ")));
             }
         }
     }
 ```
 
-and at the end, before returning `o` after the `Scanned` line: `if conda_failed && !ignore { return o.with_code(1) }`. A changed hash fails even with `--ignore`? No: `--ignore` is pyenv-win's "ignore download errors"; a changed hash is not a download error. Use `if conda_failed_hash || (conda_failed_read && !ignore)`; keep two booleans, `read_failed` and `hash_changed`.
+and at the end, before returning `o` after the `Scanned` line: `if conda_failed && !ignore { return o.with_code(1) }` (only a failed read sets `conda_failed`; a changed hash never fails `update`, spec D8).
 
 - [ ] **Step 4: Run.** `cargo test -p pyenv --test cli_update_win` → PASS (all, old and new).
 
@@ -1427,7 +1466,7 @@ doc = false
 #[test] fn a_tos_row_sets_the_variable_and_prints_the_notice() {}
 // row with CONDA_PLUGINS_AUTO_ACCEPT_TOS=true: log "tos: true"; stdout has TERMS_NOTICE's first words.
 
-#[test] fn a_hash_mismatch_is_refused_and_leaves_nothing() {}
+#[test] fn a_hash_mismatch_is_refused_and_leaves_nothing() {} // also asserts spec §4.4's extra line: "if the publisher replaced this installer, a later rpyenv release will carry the reviewed hash"
 #[test] fn an_installer_failure_deletes_the_folder() {}          // FAKECONDA_EXIT=3
 #[test] fn a_failed_import_check_deletes_the_folder() {}         // FAKECONDA_PYTHON_EXIT=1
 #[test] fn force_reinstall_keeps_envs() {}                       // envs\e1\x before, -f, still there
@@ -1557,6 +1596,8 @@ fn install_one(job: &CondaJob, say: &mut dyn FnMut(&str)) -> Result<Done, Instal
     let mut txn = Txn::begin_for(&versions, name, Flavor::PyenvWin).map_err(msg)?;
     let (url, sha) = install.url.split_once('#').ok_or_else(|| msg(format!("{name}: no SHA-256")))?;
     let file = format!("{}.exe", install.package);
+    // Spec §4.4 (D8): a hash failure gets one more line. Match the mismatch error text
+    // `fetch` produces (read fetch.rs's Check::Sha256 failure message) rather than every error.
     let fetched = fetch_package(
         &Package::Zip { file, url: url.to_string(), sha256: sha.to_string() },
         name, &job.root.join("install_cache"), job.fetcher,
@@ -1565,7 +1606,11 @@ fn install_one(job: &CondaJob, say: &mut dyn FnMut(&str)) -> Result<Done, Instal
             say(&format!(":: [Downloading] ::  From {from}"));
             say(&format!(":: [Downloading] ::  To   {}", to.display()));
         },
-    )?;
+    )
+    .map_err(|e| match e {
+        InstallError::Message(m) if is_hash_mismatch(&m) => msg(format!("{m}\nif the publisher replaced this installer, a later rpyenv release will carry the reviewed hash")),
+        e => e,
+    })?;
     if install.env.iter().any(|(k, _)| k == "CONDA_PLUGINS_AUTO_ACCEPT_TOS") {
         say(crate::commands::install::TERMS_NOTICE);
     }
