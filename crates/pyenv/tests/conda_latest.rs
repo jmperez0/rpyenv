@@ -21,7 +21,8 @@ fn install(url: &str) -> Install {
 #[test]
 fn latest_installers_get_the_publishers_hash_or_are_refused() {
     let html = include_str!("fixtures/conda/miniconda.html");
-    let s = start(vec![
+    let s =
+        start(vec![
         ("/miniconda/", vec![Reply::Body(html.as_bytes().to_vec())]),
         (
             "/miniforge/releases/latest",
@@ -33,6 +34,13 @@ fn latest_installers_get_the_publishers_hash_or_are_refused() {
             "/miniforge/releases/download/26.7.2-0/Miniforge3-26.7.2-0-Linux-x86_64.sh.sha256",
             vec![Reply::Body(
                 format!("{SHA}  Miniforge3-26.7.2-0-Linux-x86_64.sh\n").into_bytes(),
+            )],
+        ),
+        (
+            "/miniforge/releases/download/26.7.2-0/Miniforge3-26.7.2-0-Windows-x86_64.exe.sha256",
+            vec![Reply::Body(
+                format!("{SHA}  Miniforge3-26.7.2-0-Windows-x86_64.exe
+").into_bytes(),
             )],
         ),
     ]);
@@ -60,4 +68,20 @@ fn latest_installers_get_the_publishers_hash_or_are_refused() {
     // aarch64 has no `.sha256` on the server: refused.
     let e = latest_source("miniforge3-latest", &install(forge), "Linux-aarch64", &f).unwrap_err();
     assert!(e.contains("Miniforge3-26.7.2-0-Linux-aarch64.sh"), "{e}");
+    // A Windows arch reads the `.exe` asset (M7c design §4.3 step 3).
+    let forge_win = forge.replace("Linux-x86_64.sh", "Windows-x86_64.exe");
+    let got = latest_source(
+        "miniforge3-latest",
+        &install(&forge_win),
+        "Windows-x86_64",
+        &f,
+    )
+    .unwrap();
+    assert_eq!(
+        got.url,
+        format!(
+            "{}/miniforge/releases/download/26.7.2-0/Miniforge3-26.7.2-0-Windows-x86_64.exe#{SHA}",
+            s.url("")
+        )
+    );
 }

@@ -312,7 +312,7 @@ pub fn family(name: &str) -> &str {
 /// A conda name's release and Python as numbers, for ranking: `miniconda3-3.14-26.7.1-1` is
 /// release 26.7.1-1 for Python 3.14, `miniconda3-4.7.12` and `anaconda3-2026.07-1` name only a
 /// release. None for a name with a part that isn't a number.
-fn release_key(name: &str) -> Option<(Vec<u64>, Vec<u64>)> {
+pub(crate) fn release_key(name: &str) -> Option<(Vec<u64>, Vec<u64>)> {
     let rest = name.strip_prefix(family(name))?.strip_prefix('-')?;
     let nums =
         |s: &str| -> Option<Vec<u64>> { s.split(['.', '-']).map(|p| p.parse().ok()).collect() };
@@ -441,6 +441,11 @@ pub fn latest_source(name: &str, i: &Install, arch: &str, f: &Fetcher) -> Result
     let refuse = |file: &str, source: &str| {
         format!("python-build: {name}: the publisher's SHA-256 for {file} couldn't be read from {source}, so rpyenv won't install it")
     };
+    let ext = if arch.starts_with("Windows") {
+        "exe"
+    } else {
+        "sh"
+    };
     let mut out = i.clone();
     if name.starts_with("miniconda") {
         let file = i.url.rsplit('/').next().unwrap_or_default().to_string();
@@ -465,8 +470,8 @@ pub fn latest_source(name: &str, i: &Install, arch: &str, f: &Fetcher) -> Result
                 && t.bytes()
                     .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
         })
-        .ok_or_else(|| refuse(&format!("Miniforge3-{arch}.sh"), &latest))?;
-    let file = format!("Miniforge3-{tag}-{arch}.sh");
+        .ok_or_else(|| refuse(&format!("Miniforge3-{arch}.{ext}"), &latest))?;
+    let file = format!("Miniforge3-{tag}-{arch}.{ext}");
     let base = format!("{miniforge}/releases/download/{tag}");
     let sums = format!("{base}/{file}.sha256");
     let sha = f
