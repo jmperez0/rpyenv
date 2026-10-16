@@ -106,6 +106,44 @@ fn a_miniconda_definition_installs_in_place_and_adds_pip() {
     );
 }
 
+/// A caller with another conda env active: conda follows CONDA_PREFIX, so neither the
+/// installer nor `conda install pip` may see it (M7c ruling R18, now on Linux too).
+// allowlist D-116
+#[test]
+fn the_callers_conda_env_reaches_neither_the_installer_nor_conda_install() {
+    let f = Fixture::new();
+    let (s, sha) = serve(&installer("3.12"));
+    let def = def_file(
+        &f,
+        &s,
+        &sha,
+        "miniconda3-t",
+        "miniconda",
+        "export CONDA_PLUGINS_AUTO_ACCEPT_TOS=true\n",
+    );
+    let lp = f.base.join("fake.log").display().to_string();
+    let r = run(
+        &f,
+        &["install", &def],
+        &[
+            ("FAKECONDA_LOG", &lp),
+            ("CONDA_PREFIX", "/elsewhere/env"),
+            ("CONDA_DEFAULT_ENV", "e1"),
+            ("PYTHONPATH", "/x"),
+            ("CONDA_CHANNEL_ALIAS", "https://mirror.example"),
+        ],
+    );
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    let l = log(&f);
+    assert!(l.contains("installer env: unset unset unset"), "{l}");
+    assert!(
+        l.contains("conda env: unset unset unset alias=https://mirror.example"),
+        "conda's own settings still apply: {l}"
+    );
+    // The definition's own variable still gets through.
+    assert!(l.contains("tos: true"), "{l}");
+}
+
 #[test]
 fn an_anaconda_definition_runs_no_conda_install() {
     let f = Fixture::new();

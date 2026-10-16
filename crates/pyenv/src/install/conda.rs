@@ -522,6 +522,50 @@ pub fn evaluate(def: &Path, arch: &str) -> Result<Verdict, String> {
     }
 }
 
+/// Variables that would point a conda installer, `conda install` or an import check at another
+/// conda or Python (M7c ruling R18; Linux since the follow-up to PR #29): the activation state
+/// `conda activate` sets (conda follows `CONDA_PREFIX`, so a caller's active env would become
+/// the target), and Python's own path settings. conda's configuration variables
+/// (`CONDA_CHANNEL_ALIAS`, `CONDA_SSL_VERIFY`, `CONDA_PKGS_DIRS`, ...) stay: a company mirror
+/// or certificate set that way must still apply.
+pub(crate) fn scrubbed(name: &str) -> bool {
+    let up = name.to_ascii_uppercase();
+    let numbered = |prefix: &str| {
+        up.strip_prefix(prefix)
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+    };
+    numbered("CONDA_PREFIX_")
+        || numbered("CONDA_STACKED_")
+        || matches!(
+            up.as_str(),
+            "CONDA_PREFIX"
+                | "CONDA_DEFAULT_ENV"
+                | "CONDA_SHLVL"
+                | "CONDA_PROMPT_MODIFIER"
+                | "CONDA_EXE"
+                | "CONDA_PYTHON_EXE"
+                | "_CE_M"
+                | "_CE_CONDA"
+                | "PYTHONHOME"
+                | "PYTHONPATH"
+                | "PYTHONSTARTUP"
+                | "PYTHONUSERBASE"
+                | "VIRTUAL_ENV"
+        )
+}
+
+/// `cmd` without the user's conda or Python environment, then the row's own variables.
+pub(crate) fn clean_env(cmd: &mut std::process::Command, row_env: &[(String, String)]) {
+    for (k, _) in std::env::vars_os() {
+        if scrubbed(&k.to_string_lossy()) {
+            cmd.env_remove(&k);
+        }
+    }
+    for (k, v) in row_env {
+        cmd.env(k, v);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -729,5 +773,48 @@ mod tests {
             Ok(Verdict::Unsupported(format!("no sha256 in {URL}")))
         );
         let _ = std::fs::remove_dir_all(&d);
+    }
+    #[test]
+    fn the_conda_and_python_environment_is_scrubbed() {
+        for n in [
+            "CONDA_PREFIX",
+            "conda_default_env",
+            "_CE_M",
+            "_ce_conda",
+            "PYTHONHOME",
+            "pythonpath",
+            "PYTHONSTARTUP",
+            "PYTHONUSERBASE",
+            "VIRTUAL_ENV",
+        ] {
+            assert!(scrubbed(n), "{n}");
+        }
+        for n in [
+            "CONDA_PREFIX_1",
+            "CONDA_PREFIX_12",
+            "CONDA_STACKED_2",
+            "CONDA_SHLVL",
+            "CONDA_PROMPT_MODIFIER",
+            "CONDA_EXE",
+            "CONDA_PYTHON_EXE",
+        ] {
+            assert!(scrubbed(n), "{n}");
+        }
+        // conda's own settings stay: a company mirror, certificate or cache must still apply.
+        for n in [
+            "PATH",
+            "PYTHONUTF8",
+            "CONDAX",
+            "HOME",
+            "CONDA_CHANNEL_ALIAS",
+            "CONDA_SSL_VERIFY",
+            "CONDA_PKGS_DIRS",
+            "CONDA_ENVS_DIRS",
+            "CONDA_PLUGINS_AUTO_ACCEPT_TOS",
+            "CONDA_PREFIX_X",
+            "CONDA_PREFIX_",
+        ] {
+            assert!(!scrubbed(n), "{n}");
+        }
     }
 }

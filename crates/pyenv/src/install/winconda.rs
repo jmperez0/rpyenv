@@ -153,30 +153,6 @@ pub fn wait_or_kill(
     }
 }
 
-/// Variables that would point the installer, `conda install` or the import check at another
-/// conda or Python (M7c Task 8 review I2, ruling R18).
-fn scrubbed(name: &str) -> bool {
-    let up = name.to_ascii_uppercase();
-    up.starts_with("CONDA_")
-        || up.starts_with("_CE_")
-        || matches!(
-            up.as_str(),
-            "PYTHONHOME" | "PYTHONPATH" | "PYTHONSTARTUP" | "PYTHONUSERBASE" | "VIRTUAL_ENV"
-        )
-}
-
-/// `cmd` without the user's conda or Python environment, then the row's own variables.
-fn clean_env(cmd: &mut Command, row_env: &[(String, String)]) {
-    for (k, _) in std::env::vars_os() {
-        if scrubbed(&k.to_string_lossy()) {
-            cmd.env_remove(&k);
-        }
-    }
-    for (k, v) in row_env {
-        cmd.env(k, v);
-    }
-}
-
 /// The last `n` lines of the install log, for an error message.
 fn tail(log: &Path, n: usize) -> String {
     let text = std::fs::read_to_string(log).unwrap_or_default();
@@ -324,7 +300,7 @@ fn install_one(job: &CondaJob, say: &mut dyn FnMut(&str)) -> Result<Done, Instal
     }
     #[cfg(not(windows))]
     cmd.arg(d_arg);
-    clean_env(&mut cmd, &install.env);
+    conda::clean_env(&mut cmd, &install.env);
     // The install log (spec §5, review M1): every step appends its output here.
     let log = job.root.join("install_cache").join(format!("{name}.log"));
     let _ = std::fs::create_dir_all(job.root.join("install_cache"));
@@ -361,7 +337,7 @@ fn install_one(job: &CondaJob, say: &mut dyn FnMut(&str)) -> Result<Done, Instal
         c.args(args)
             .env("PATH", path_env(&target))
             .stdin(Stdio::null());
-        clean_env(&mut c, &install.env);
+        conda::clean_env(&mut c, &install.env);
         append_log(
             &log,
             &format!("== {name}: {} {}\n", exe.display(), args.join(" ")),
@@ -474,25 +450,6 @@ mod tests {
             refused_char(Path::new("C:\\Users\\jm\\x"), "miniforge3"),
             None
         );
-    }
-    #[test]
-    fn the_conda_and_python_environment_is_scrubbed() {
-        for n in [
-            "CONDA_PREFIX",
-            "conda_default_env",
-            "_CE_M",
-            "_ce_conda",
-            "PYTHONHOME",
-            "pythonpath",
-            "PYTHONSTARTUP",
-            "PYTHONUSERBASE",
-            "VIRTUAL_ENV",
-        ] {
-            assert!(scrubbed(n), "{n}");
-        }
-        for n in ["PATH", "PYTHONUTF8", "CONDAX", "HOME"] {
-            assert!(!scrubbed(n), "{n}");
-        }
     }
     #[test]
     fn wait_or_kill_ends_a_child_when_asked() {
