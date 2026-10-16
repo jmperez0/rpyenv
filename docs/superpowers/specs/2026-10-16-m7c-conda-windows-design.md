@@ -59,29 +59,37 @@ re-releases, so plan Task 2 reports the final per-family counts from the real bu
 
 ### 4.1 Format
 
-`windows.tsv`, UTF-8, LF:
+`windows.tsv`, UTF-8, LF, in `linux.tsv`'s line grammar (`<name>\t<arch>\t<verdict>`,
+read by the same parser) with the arch `Windows-x86_64` (amended 2026-10-16, while
+planning: one parser for both tables):
 
 ```
 # generated 2026-10-16T09:30:00Z by ci
-# <name>\t<verdict>
-miniforge3-26.7.2-0	ok https://github.com/conda-forge/miniforge/releases/download/26.7.2-0/Miniforge3-26.7.2-0-Windows-x86_64.exe#<sha256> miniforge
-miniconda3-latest	ok-latest https://repo.anaconda.com/miniconda/Miniconda3-latest-Windows-x86_64.exe miniconda CONDA_PLUGINS_AUTO_ACCEPT_TOS=true
-anaconda3-2021.04	ok https://repo.anaconda.com/archive/Anaconda3-2021.04-Windows-x86_64.exe#<sha256> anaconda
-mambaforge-pypy3	unsupported no published SHA-256
-anaconda-1.5.1	no-binary
+# <name>\t<arch>\t<verdict>
+miniforge3-26.7.2-0	Windows-x86_64	ok Miniforge3-26.7.2-0-Windows-x86_64 https://github.com/conda-forge/miniforge/releases/download/26.7.2-0/Miniforge3-26.7.2-0-Windows-x86_64.exe#<sha256> miniconda verify_py3
+miniconda3-latest	Windows-x86_64	ok-latest Miniconda3-latest-Windows-x86_64 https://repo.anaconda.com/miniconda/Miniconda3-latest-Windows-x86_64.exe miniconda verify_py3_latest CONDA_PLUGINS_AUTO_ACCEPT_TOS=true
+anaconda3-2021.04	Windows-x86_64	ok Anaconda3-2021.04-Windows-x86_64 https://repo.anaconda.com/archive/Anaconda3-2021.04-Windows-x86_64.exe#<sha256> anaconda verify_py3
+mambaforge-pypy3	Windows-x86_64	unsupported no published SHA-256
+anaconda-1.5.1	Windows-x86_64	no-binary Anaconda
 ```
 
 - Verdicts as Linux's: `ok`, `ok-latest`, `no-binary`, `unsupported <reason>`.
-- The third field of `ok`/`ok-latest` is the kind (`anaconda`, `miniconda`, `miniforge`),
-  which picks the post-install step (§5). A trailing `CONDA_PLUGINS_AUTO_ACCEPT_TOS=true`,
-  as in `linux.tsv`, marks the rows whose installer gets that variable (§5 step 4).
+- `ok`/`ok-latest` carry Linux's fields: package (the installer's file stem), URL, step,
+  verify, then exported variables. The step (`anaconda` or `miniconda`) picks the
+  post-install step (§5); it is copied from the Linux row, and upstream gives Miniforge
+  `miniconda`. The verify field is kept for the grammar; Windows checks `python.exe`
+  instead (§5 step 6). A trailing `CONDA_PLUGINS_AUTO_ACCEPT_TOS=true`, as in `linux.tsv`,
+  marks the rows whose installer gets that variable (§5 step 4).
 - The first line's `generated` time and source (`ci` or `update`) decide which copy wins
   (§4.4).
 
 ### 4.2 Built by CI
 
-`ci/conda_tables.py windows` (new mode beside the Linux one), run by the sync job's
-existing "Rebuild the conda table" step, so one PR carries both tables:
+The builder is Rust (`install/condacatalog.rs`), shared with `pyenv update` (§4.3), run
+in CI as `cargo run --example conda_windows_table` by the sync job's existing "Rebuild
+the conda table" step, so one PR carries both tables (amended 2026-10-16, while
+planning: one implementation of the page readers and naming rules instead of a Python
+and a Rust copy):
 
 1. Read the publishers once: both repo.anaconda.com listing pages (file → SHA-256), and
    Miniforge's GitHub releases (asset names, and the text of each Windows `.sha256`).
@@ -98,11 +106,18 @@ existing "Rebuild the conda table" step, so one PR carries both tables:
    x86_64 `miniconda3` rows carry it, measured with `grep` on `linux.tsv`).
 5. Fail the job, naming the rows, if a Linux `ok` row ends `no-binary` on Windows and the
    previous `windows.tsv` had it `ok` (a file disappeared or a page changed layout).
+6. **A changed hash is never taken by CI either** (added 2026-10-16 after a side-agent
+   note: without it, "pinned at review" held only if a reviewer spotted one changed line
+   in a weekly PR). A row whose publisher hash differs from the previous `windows.tsv`
+   keeps the previous hash; the rest of the table is written, so new releases still
+   arrive; the PR body names each such row under "changed hash, kept the pinned one";
+   and the job fails. The same function (`condacatalog::pin_hashes`) applies §4.3 step 1's
+   rule in `pyenv update`.
 
 ### 4.3 Rebuilt by `pyenv update`
 
 On Windows, after the CPython cache, `pyenv update` rebuilds the conda table with the
-same reads as §4.2 step 1, in Rust (`install/condacatalog.rs`):
+same reads as §4.2 step 1, by the same module (`install/condacatalog.rs`):
 
 1. Start from the newer of the two copies (§4.4). Re-read every `ok` row's hash from the
    publisher; a hash that differs from the copy's is **not** taken silently: `update`
@@ -157,7 +172,8 @@ Called where `winpkg::install_pypy` is, for names `conda::is_conda_name` accepts
    - Rows carrying the variable: it is set for the installer and step 5, after
      M7b's one-line terms notice.
    - Ctrl+C: rpyenv ends the installer process, waits for it, and deletes the folder.
-5. **Post-install, `miniconda` kind only,** as upstream's `build_package_miniconda`:
+5. **Post-install, rows whose step is `miniconda`** (Miniconda and Miniforge, as
+   upstream), as upstream's `build_package_miniconda`:
    `Scripts\conda.exe install --yes pip conda=<installed conda version>`.
 6. **Verify:** `python.exe -c "import sys, ssl"` with §6's `PATH`; a DLL that can't load
    fails the install here.
@@ -176,6 +192,12 @@ A version or env folder with `conda-meta\` (`venv::is_conda`). Envs are
 `venv.rs`'s Linux spellings get Windows ones: `bin/conda` → `Scripts\conda.exe`, and
 `conda` run in an env resolves to its install's `Scripts\conda.exe`.
 
+**A bare family name** (`pyenv install miniforge3`, `pyenv latest -k miniconda3`)
+resolves to the family's newest installable row, ranked as the M7b refusal hint ranks
+(`conda::newest_installable`: conda release, then Python). pyenv-win's resolver only
+reads CPython codes, so without this the most common spelling would fail (added
+2026-10-16, while planning).
+
 ### 6.2 The child's `PATH`
 
 `win_child_path` adds, for a conda tree, conda's activation order in place of
@@ -186,8 +208,15 @@ A version or env folder with `conda-meta\` (`venv::is_conda`). Envs are
 ```
 
 For installs and envs alike (each env has its own `Library\bin`). The child's
-environment only, never the caller's (parent §15.1 point 2). `pyenv activate` for a conda
-env puts the same six entries on the shell's `PATH`.
+environment only, never the caller's (parent §15.1 point 2).
+
+`pyenv activate <install>/envs/<name>` sets `PYENV_VERSION`, `VIRTUAL_ENV` and
+`CONDA_DEFAULT_ENV`, as on Linux; it never touches `PATH` (pyenv-virtualenv doesn't), so
+the shims' launch plan supplies the six folders. What Windows needs is
+`venv::base_prefix` to recognize conda trees: an install with `Scripts\conda.exe` is its
+own base, an env (`conda-meta\`, no `Scripts\conda.exe`) has `<env>\..\..` as base
+(amended 2026-10-16, while planning: the earlier sentence said `activate` sets `PATH`;
+it doesn't, on either OS).
 
 ### 6.3 Which executables get shims
 
@@ -212,8 +241,9 @@ given `-n`, as upstream, which sets no `CONDA_PREFIX`.
 
 ## 7. Packaging
 
-- `.github/workflows/build.yml`: copy `crates/pyenv/conda/windows.tsv` into the Windows
-  build output; `installer/rpyenv.wxs`: a `ShareCondaFolder` with one file component.
+- `installer/rpyenv.wxs`: `share\conda` under `INSTALLFOLDER` with one file component,
+  sourced from `$(RepoDir)\crates\pyenv\conda\windows.tsv` as the MSI already sources
+  `README.md` (`build.yml` unchanged).
 - The Linux tarball is unchanged (D7).
 - `crates/pyenv/conda/windows.tsv` is committed, so a release built from a tag ships the
   table that PR review saw.
@@ -230,7 +260,7 @@ given `-n`, as upstream, which sets no `CONDA_PREFIX`.
 - The ownership rule on the three installs: shim and skip counts, and no `default.list`
   name gets a shim. Each install's `conda-meta` is saved as a test fixture.
 
-**Unit tests** (Rust and `ci/test_conda_tables.py`), each able to fail:
+**Unit tests** (Rust), each able to fail:
 
 - URL swap: Linux row → Windows URL; `repo.continuum.io` rewritten; missing file →
   `no-binary`.
