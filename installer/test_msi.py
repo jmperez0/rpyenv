@@ -111,6 +111,7 @@ def per_user(msi: Path) -> None:
     msiexec(f'/i "{msi}"')
     check((USER_DIR / "bin" / "pyenv.exe").is_file(), "pyenv.exe in LocalAppData\\Programs")
     check((USER_DIR / "completions" / "pyenv.pwsh").is_file(), "completions installed")
+    check((USER_DIR / "share" / "conda" / "windows.tsv").is_file(), "conda table installed")
     check(low(USER_DIR / "bin") in user_path(), f"bin on the user PATH: {user_path()}")
     check(user_path()[:1] == [low(SHIMS)], f"shims first on the user PATH: {user_path()}")
     check((ROOT / ".rpyenv-setup").is_file(), "setup ran (marker)")
@@ -287,6 +288,7 @@ def scope_refusal(msi: Path, next_msi: Path) -> None:
 def all_users(msi: Path, next_msi: Path) -> None:
     msiexec(f'/i "{msi}" ALLUSERS=1 MSIINSTALLPERUSER=""')
     check((MACHINE_DIR / "bin" / "pyenv.exe").is_file(), "pyenv.exe in Program Files")
+    check((MACHINE_DIR / "share" / "conda" / "windows.tsv").is_file(), "conda table installed")
     check(low(MACHINE_DIR / "bin") in machine_path(), f"bin on the machine PATH: {machine_path()}")
     stub = reg(winreg.HKEY_LOCAL_MACHINE, ACTIVE_SETUP, "StubPath") or ""
     check(stub.lower().endswith('pyenv.exe" setup'), f"Active Setup StubPath: {stub!r}")

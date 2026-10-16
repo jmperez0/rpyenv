@@ -32,9 +32,15 @@ Expect ($props['ARPNOMODIFY'] -eq '1') 'ARPNOMODIFY=1'
 Expect (-not (("$($props['SecureCustomProperties'])" -split ';') -contains 'MIGRATE')) 'no MIGRATE option (reserved)'
 
 $files = (Rows 'SELECT `FileName` FROM `File`') | ForEach-Object { ($_[0] -split '\|')[-1] }
-foreach ($f in 'pyenv.exe', 'pyenv-shim.exe', 'pyenv-shimw.exe', 'pyenv.pwsh', 'pyenv.bash', 'pyenv.zsh', 'pyenv.fish') {
+foreach ($f in 'pyenv.exe', 'pyenv-shim.exe', 'pyenv-shimw.exe', 'pyenv.pwsh', 'pyenv.bash', 'pyenv.zsh', 'pyenv.fish', 'windows.tsv') {
     Expect ($files -contains $f) "file $f"
 }
+
+# M7c design D3: the conda table lands in <INSTALLFOLDER>\share\conda, next to bin\.
+$dirs = @{}
+foreach ($r in (Rows 'SELECT `Directory`, `Directory_Parent`, `DefaultDir` FROM `Directory`')) { $dirs[$r[0]] = $r }
+Expect ($dirs.ContainsKey('ShareCondaFolder') -and $dirs['ShareCondaFolder'][1] -eq 'ShareFolder' -and $dirs['ShareCondaFolder'][2] -eq 'conda' -and
+        $dirs.ContainsKey('ShareFolder') -and $dirs['ShareFolder'][1] -eq 'INSTALLFOLDER' -and $dirs['ShareFolder'][2] -eq 'share') 'share\conda under INSTALLFOLDER'
 
 $environment = Rows 'SELECT `Name`, `Value` FROM `Environment`'
 $paths = @($environment | Where-Object { $_[0] -match 'PATH$' })

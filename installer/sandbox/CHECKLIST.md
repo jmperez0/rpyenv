@@ -41,6 +41,9 @@ Things that are the Sandbox, not the MSI:
      and contains `…\AppData\Local\Programs\rpyenv\bin\`; `Get-ExecutionPolicy -Scope
      CurrentUser` is RemoteSigned and `$PROFILE` has the `pyenv init - pwsh` line (the
      checkbox: `pyenv setup --allow-scripts`).
+   - `…\rpyenv\share\conda\windows.tsv` exists. With a scratch `PYENV_ROOT` (no
+     `.versions_cache.xml`), `pyenv install --list` shows `miniforge3-…` and `miniconda3-…`
+     lines.
 2. **Uninstall from Settings, Apps.**
    - Expect: it completes. `…\Programs\rpyenv` is gone, both user PATH entries are gone,
      the CurrentUser execution policy is Undefined again, the profile line is gone, and

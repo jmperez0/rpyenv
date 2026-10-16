@@ -61,6 +61,10 @@
       <Directory Id="INSTALLFOLDER" Name="rpyenv">
         <Directory Id="BinFolder" Name="bin" />
         <Directory Id="CompletionsFolder" Name="completions" />
+        <!-- M7c design D3: the Windows conda table, read from <bin>\..\share\conda. -->
+        <Directory Id="ShareFolder" Name="share">
+          <Directory Id="ShareCondaFolder" Name="conda" />
+        </Directory>
       </Directory>
     </StandardDirectory>
 
@@ -77,6 +81,7 @@
       <Component Directory="CompletionsFolder"><File Source="$(RepoDir)\completions\pyenv.bash" /></Component>
       <Component Directory="CompletionsFolder"><File Source="$(RepoDir)\completions\pyenv.zsh" /></Component>
       <Component Directory="CompletionsFolder"><File Source="$(RepoDir)\completions\pyenv.fish" /></Component>
+      <Component Directory="ShareCondaFolder"><File Source="$(RepoDir)\crates\pyenv\conda\windows.tsv" /></Component>
       <Component Directory="INSTALLFOLDER"><File Source="$(RepoDir)\LICENSE" Name="LICENSE.txt" /></Component>
       <Component Directory="INSTALLFOLDER"><File Source="$(RepoDir)\README.md" /></Component>
     </ComponentGroup>
