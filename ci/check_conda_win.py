@@ -79,6 +79,10 @@ def check(root, name, pyenv):
     for rel in ("python.exe", "conda-meta"):
         if not os.path.exists(os.path.join(prefix, rel)):
             raise Failed(f"step 1: {rel} missing under {prefix}")
+    # The in-progress marker sits beside the folder (the installers refuse a non-empty one, M7c design §3).
+    marker = os.path.join(root, "versions", ".rpyenv-incomplete-" + name)
+    if os.path.exists(marker):
+        raise Failed(f"step 1: {marker} left after the install")
     # 2
     for exe in ("python.exe", "pip.exe", "conda.exe"):
         if not os.path.isfile(os.path.join(shims, exe)):
@@ -99,6 +103,8 @@ def check(root, name, pyenv):
     must(root, name, 4, [pyenv, "install", "-f", name], env, INSTALL_TIMEOUT)
     if not os.path.isfile(os.path.join(prefix, "envs", "ci-env", "python.exe")):
         raise Failed(r"step 4: install -f lost envs\ci-env")
+    if os.path.exists(marker):
+        raise Failed(f"step 4: {marker} left after install -f")
     # 5
     must(root, name, 5, [pyenv, "uninstall", "-f", name], env)
     if os.path.exists(prefix):
