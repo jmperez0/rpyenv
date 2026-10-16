@@ -172,9 +172,17 @@ fn a_conda_name_installs_in_place_with_the_silent_flags() {
     let target = t.version(FORGE);
     assert!(target.join("python.exe").is_file());
     assert!(!target.join(".rpyenv-incomplete").exists());
+    assert!(!t
+        .root
+        .join("versions")
+        .join(format!(".rpyenv-incomplete-{FORGE}"))
+        .exists());
     let log = t.log();
     let want = format!("args: {SILENT} /D={}", target.display());
     assert!(log.lines().any(|l| l == want), "{want}\n{log}");
+    // Final review C1, M7c design §3: the installer refuses a non-empty folder, so the folder
+    // is empty when it starts and the in-progress marker sits beside it.
+    assert!(log.lines().any(|l| l == "target: empty"), "{log}");
     assert!(log.lines().any(|l| l == "marker: yes"), "{log}");
     // Miniforge's step is upstream's miniconda step: pip, pinned to the installed conda.
     assert!(
@@ -551,6 +559,46 @@ fn install_list_without_the_database_lists_the_conda_names_alone() {
         .unwrap_or_else(|| panic!("{out:?}"));
     assert_eq!(&out[at..], [FORGE, FORGE_OLD, CONDA, CONDA_OLD]);
     assert!(!out.contains(&"3.12.1"));
+}
+
+/// The fake models M7c design §3's measurement (Windows Sandbox, 2026-10-16): a `/D=` folder
+/// holding a file makes the installer exit 2 and write nothing; an empty or absent folder is
+/// installed into.
+#[test]
+fn the_fake_installer_refuses_a_folder_that_is_not_empty() {
+    let scratch = tempfile::tempdir().unwrap();
+    let exe = scratch.path().join("Fake-Windows-x86_64.exe");
+    std::fs::copy(env!("CARGO_BIN_EXE_fake-conda-installer"), &exe).unwrap();
+    let log = scratch.path().join("fake.log");
+    let run = |d: &std::path::Path| {
+        use std::os::windows::process::CommandExt;
+        std::process::Command::new(&exe)
+            .args(SILENT.split(' '))
+            .raw_arg(format!("/D={}", d.display()))
+            .env("FAKECONDA_LOG", &log)
+            .stdin(std::process::Stdio::null())
+            .status()
+            .unwrap()
+            .code()
+    };
+    let marked = scratch.path().join("marked");
+    std::fs::create_dir_all(&marked).unwrap();
+    std::fs::write(marked.join(".rpyenv-incomplete"), "").unwrap();
+    assert_eq!(run(&marked), Some(2));
+    let left: Vec<_> = std::fs::read_dir(&marked)
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(left, [".rpyenv-incomplete"]);
+    let text = std::fs::read_to_string(&log).unwrap();
+    assert!(text.lines().any(|l| l == "target: not empty"), "{text}");
+    let empty = scratch.path().join("empty");
+    std::fs::create_dir_all(&empty).unwrap();
+    assert_eq!(run(&empty), Some(0));
+    assert!(empty.join("python.exe").is_file());
+    let absent = scratch.path().join("absent");
+    assert_eq!(run(&absent), Some(0));
+    assert!(absent.join("python.exe").is_file());
 }
 
 /// Review I1: Ctrl+C must end the NSIS stub's children too, and only then may the folder go.

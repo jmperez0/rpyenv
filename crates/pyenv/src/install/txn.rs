@@ -9,14 +9,23 @@ use std::path::{Path, PathBuf};
 /// was interrupted and isn't complete.
 pub const MARKER: &str = ".rpyenv-incomplete";
 
+/// The marker of a Windows conda install, beside the target rather than in it:
+/// `versions\.rpyenv-incomplete-<name>`. conda's NSIS installers refuse a non-empty `/D=`
+/// folder (M7c design §3, measured), so the target stays empty until the installer runs.
+pub fn sibling_marker(dir: &Path) -> PathBuf {
+    let name = dir.file_name().unwrap_or_default().to_string_lossy();
+    dir.with_file_name(format!("{MARKER}-{name}"))
+}
+
 /// "Installed" for `pyenv install`, minus interrupted installs (plan M2b Decision 9): upstream
-/// pyenv's `bin/` test, or pyenv-win's "the folder exists".
+/// pyenv's `bin/` test, or pyenv-win's "the folder exists". Either marker, in the folder or
+/// beside it, makes the version incomplete.
 pub fn is_complete_for(dir: &Path, flavor: Flavor) -> bool {
     let present = match flavor {
         Flavor::Pyenv => dir.join("bin").is_dir(),
         Flavor::PyenvWin => dir.is_dir(),
     };
-    present && !dir.join(MARKER).exists()
+    present && !dir.join(MARKER).exists() && !sibling_marker(dir).exists()
 }
 
 /// The Linux flavor's test (M2a's callers).
@@ -44,6 +53,8 @@ pub struct Txn {
     old: Option<PathBuf>,
     placed: bool,
     conda: bool,
+    /// This transaction wrote `sibling_marker(target)` (a Windows conda install).
+    sibling: bool,
     done: bool,
 }
 
@@ -90,9 +101,21 @@ impl Txn {
         // installing this name).
         let target = versions.join(name);
         let old = versions.join(format!(".old-{name}"));
+        let sibling = sibling_marker(&target);
+        if sibling.exists() {
+            // A Windows conda install was killed (M7c design §5): the target, if any, is its
+            // unfinished tree. The marker goes once the tree is gone, and before `.old` is put
+            // back below, so a good tree never sits beside a marker.
+            let _ = std::fs::remove_dir_all(&target);
+            if target.symlink_metadata().is_err() {
+                let _ = std::fs::remove_file(&sibling);
+            }
+        }
         if old.symlink_metadata().is_ok() {
             if target.symlink_metadata().is_err() {
-                let _ = std::fs::rename(&old, &target);
+                if !sibling.exists() {
+                    let _ = std::fs::rename(&old, &target);
+                }
             } else if is_complete_for(&target, flavor) {
                 if is_link(&old) {
                     // A linked version set aside by `-f` (final review M2): never reached
@@ -130,6 +153,7 @@ impl Txn {
             old: None,
             placed: false,
             conda: false,
+            sibling: false,
             done: false,
         })
     }
@@ -152,6 +176,14 @@ impl Txn {
         // The marker goes in before the move, so placing is one atomic rename and a failed
         // marker write changes nothing.
         std::fs::write(staged_prefix.join(MARKER), "")?;
+        self.set_aside(&target)?;
+        std::fs::rename(staged_prefix, &target)?;
+        self.placed = true;
+        Ok(())
+    }
+
+    /// Renames an existing `target` to `.old-<name>`, refusing to overwrite a leftover one.
+    fn set_aside(&mut self, target: &Path) -> std::io::Result<()> {
         if target.symlink_metadata().is_ok() {
             let old = self.versions.join(format!(".old-{}", self.name));
             if old.symlink_metadata().is_ok() {
@@ -160,29 +192,51 @@ impl Txn {
                     old.display()
                 )));
             }
-            std::fs::rename(&target, &old)?;
+            std::fs::rename(target, &old)?;
             self.old = Some(old);
         }
-        std::fs::rename(staged_prefix, &target)?;
-        self.placed = true;
         Ok(())
     }
 
     /// M7b design §4.3 step 5: conda can't be moved after installing, so it installs into
     /// `versions/<name>` itself. As `place` does, an existing version is set aside; the target
-    /// is then an empty folder holding the marker, before the installer runs.
+    /// is then an empty folder, before the installer runs. On Linux the marker is in it. On
+    /// Windows conda's NSIS installer refuses a non-empty folder (M7c design §3, measured), so
+    /// the folder stays empty and the marker is `sibling_marker`, written after the previous
+    /// version is set aside and before the empty folder appears: a crash at any point leaves
+    /// either a marked target or a state `begin_for` restores.
     pub fn place_empty(&mut self) -> std::io::Result<()> {
-        let empty = self.stage.join("prefix");
-        std::fs::create_dir_all(&empty)?;
         self.conda = true;
-        self.place(&empty)
+        if self.flavor == Flavor::Pyenv {
+            let empty = self.stage.join("prefix");
+            std::fs::create_dir_all(&empty)?;
+            return self.place(&empty);
+        }
+        let target = self.target();
+        self.set_aside(&target)?;
+        std::fs::write(sibling_marker(&target), "")?;
+        self.sibling = true;
+        std::fs::create_dir(&target)?;
+        self.placed = true;
+        Ok(())
+    }
+
+    /// The marker this transaction wrote: beside the target or in it.
+    fn marker(&self) -> PathBuf {
+        if self.sibling {
+            sibling_marker(&self.target())
+        } else {
+            self.target().join(MARKER)
+        }
     }
 
     /// Completes the install. The previous version's `envs/` and site-packages entries are
     /// carried over first; if that fails, the previous tree is kept at `.old-<name>`. A previous
     /// version that is a link is never followed: only the link is removed.
     pub fn commit(mut self) -> std::io::Result<()> {
-        std::fs::remove_file(self.target().join(MARKER))?;
+        // The only step that can fail goes first: once the marker is gone, a crash leaves a
+        // complete target, and `begin_for` finishes the carry-over.
+        std::fs::remove_file(self.marker())?;
         if let Some(old) = self.old.take() {
             if is_link(&old) {
                 // The previous "version" was a link (a junction, or a symlink): carrying over
@@ -395,8 +449,14 @@ impl Drop for Txn {
         if self.placed {
             let _ = std::fs::remove_dir_all(&target);
         }
+        if self.sibling && target.symlink_metadata().is_err() {
+            let _ = std::fs::remove_file(sibling_marker(&target));
+        }
         if let Some(old) = self.old.take() {
-            let _ = std::fs::rename(&old, &target);
+            // Never beside a marker: `begin_for` would take it for an unfinished tree.
+            if !sibling_marker(&target).exists() {
+                let _ = std::fs::rename(&old, &target);
+            }
         }
         let _ = std::fs::remove_dir_all(&self.stage);
     }
@@ -534,5 +594,180 @@ mod tests {
         carry_envs(&old, &new).unwrap();
         assert!(new.join("envs/b/from").is_file());
         assert!(!old.join("envs").exists());
+    }
+
+    fn entries(d: &Path) -> Vec<String> {
+        let mut v: Vec<String> = std::fs::read_dir(d)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        v.sort();
+        v
+    }
+
+    fn win(versions: &Path, name: &str) -> Txn {
+        Txn::begin_for(versions, name, Flavor::PyenvWin).unwrap()
+    }
+
+    /// Final review C1, M7c design §3: the installer's `/D=` folder is empty when it runs; the
+    /// marker is beside it until commit, which then carries `envs\` from the previous copy.
+    #[test]
+    fn a_windows_conda_target_is_empty_and_marked_beside_until_commit() {
+        let t = tempfile::tempdir().unwrap();
+        let versions = t.path().join("versions");
+        let target = versions.join("m");
+        touch(&target.join("envs/work/x"), "mine");
+        let mut txn = win(&versions, "m");
+        txn.place_empty().unwrap();
+        assert!(target.is_dir());
+        assert!(entries(&target).is_empty(), "{:?}", entries(&target));
+        assert!(sibling_marker(&target).is_file());
+        assert_eq!(
+            sibling_marker(&target),
+            versions.join(".rpyenv-incomplete-m")
+        );
+        assert!(!is_complete_for(&target, Flavor::PyenvWin));
+        // The installer writes its tree.
+        touch(&target.join("python.exe"), "new");
+        touch(&target.join("conda-meta/history"), "");
+        txn.commit().unwrap();
+        assert!(is_complete_for(&target, Flavor::PyenvWin));
+        assert_eq!(entries(&versions), ["m"]);
+        assert_eq!(
+            std::fs::read_to_string(target.join("envs/work/x")).unwrap(),
+            "mine"
+        );
+    }
+
+    /// Spec D7: Linux is unchanged, the marker is in the target.
+    #[test]
+    fn a_linux_conda_target_holds_the_marker() {
+        let t = tempfile::tempdir().unwrap();
+        let versions = t.path().join("versions");
+        let target = versions.join("m");
+        let mut txn = Txn::begin(&versions, "m").unwrap();
+        txn.place_empty().unwrap();
+        assert_eq!(entries(&target), [MARKER]);
+        assert!(!sibling_marker(&target).exists());
+        touch(&target.join("bin/python"), "");
+        txn.commit().unwrap();
+        assert!(is_complete(&target));
+        assert_eq!(entries(&versions), ["m"]);
+    }
+
+    #[test]
+    fn a_failed_windows_conda_install_restores_the_previous_copy_and_drops_the_marker() {
+        let t = tempfile::tempdir().unwrap();
+        let versions = t.path().join("versions");
+        let target = versions.join("m");
+        touch(&target.join("python.exe"), "old");
+        let mut txn = win(&versions, "m");
+        txn.place_empty().unwrap();
+        touch(&target.join("python.exe"), "new");
+        drop(txn);
+        assert_eq!(
+            std::fs::read_to_string(target.join("python.exe")).unwrap(),
+            "old"
+        );
+        assert!(is_complete_for(&target, Flavor::PyenvWin));
+        assert_eq!(entries(&versions), ["m"]);
+    }
+
+    #[test]
+    fn a_failed_fresh_windows_conda_install_leaves_nothing() {
+        let t = tempfile::tempdir().unwrap();
+        let versions = t.path().join("versions");
+        let mut txn = win(&versions, "m");
+        txn.place_empty().unwrap();
+        touch(&versions.join("m/python.exe"), "new");
+        drop(txn);
+        assert!(entries(&versions).is_empty(), "{:?}", entries(&versions));
+    }
+
+    /// Recovery, sibling only: killed after the marker was written, before the folder appeared.
+    #[test]
+    fn begin_drops_a_lone_sibling_marker() {
+        let t = tempfile::tempdir().unwrap();
+        let versions = t.path().join("versions");
+        touch(&versions.join(".rpyenv-incomplete-m"), "");
+        let txn = win(&versions, "m");
+        assert!(!versions.join(".rpyenv-incomplete-m").exists());
+        assert!(!versions.join("m").exists());
+        drop(txn);
+        assert!(entries(&versions).is_empty(), "{:?}", entries(&versions));
+    }
+
+    /// Recovery, sibling and target: the target is the killed installer's unfinished tree.
+    #[test]
+    fn begin_drops_an_unfinished_tree_marked_beside() {
+        let t = tempfile::tempdir().unwrap();
+        let versions = t.path().join("versions");
+        touch(&versions.join("m/python.exe"), "half");
+        touch(&versions.join(".rpyenv-incomplete-m"), "");
+        assert!(!is_complete_for(&versions.join("m"), Flavor::PyenvWin));
+        let txn = win(&versions, "m");
+        assert!(!versions.join("m").exists());
+        assert!(!versions.join(".rpyenv-incomplete-m").exists());
+        drop(txn);
+        assert!(entries(&versions).is_empty(), "{:?}", entries(&versions));
+    }
+
+    /// Recovery, sibling, target and `.old`: the previous copy comes back.
+    #[test]
+    fn begin_restores_the_old_copy_over_a_tree_marked_beside() {
+        let t = tempfile::tempdir().unwrap();
+        let versions = t.path().join("versions");
+        touch(&versions.join("m/python.exe"), "half");
+        touch(&versions.join(".old-m/python.exe"), "old");
+        touch(&versions.join(".rpyenv-incomplete-m"), "");
+        let txn = win(&versions, "m");
+        assert_eq!(
+            std::fs::read_to_string(versions.join("m/python.exe")).unwrap(),
+            "old"
+        );
+        assert!(is_complete_for(&versions.join("m"), Flavor::PyenvWin));
+        drop(txn);
+        assert_eq!(entries(&versions), ["m"]);
+    }
+
+    /// Recovery, sibling and `.old` without a target: killed between the set-aside and the
+    /// empty folder.
+    #[test]
+    fn begin_restores_the_old_copy_beside_a_lone_sibling_marker() {
+        let t = tempfile::tempdir().unwrap();
+        let versions = t.path().join("versions");
+        touch(&versions.join(".old-m/python.exe"), "old");
+        touch(&versions.join(".rpyenv-incomplete-m"), "");
+        let txn = win(&versions, "m");
+        assert_eq!(
+            std::fs::read_to_string(versions.join("m/python.exe")).unwrap(),
+            "old"
+        );
+        drop(txn);
+        assert_eq!(entries(&versions), ["m"]);
+    }
+
+    /// A stale sibling never blocks a later install: the next install runs and completes.
+    #[test]
+    fn a_stale_sibling_marker_does_not_block_the_next_install() {
+        let t = tempfile::tempdir().unwrap();
+        let versions = t.path().join("versions");
+        touch(&versions.join(".rpyenv-incomplete-m"), "");
+        let mut txn = win(&versions, "m");
+        txn.place_empty().unwrap();
+        assert!(entries(&versions.join("m")).is_empty());
+        touch(&versions.join("m/python.exe"), "new");
+        txn.commit().unwrap();
+        assert!(is_complete_for(&versions.join("m"), Flavor::PyenvWin));
+        assert_eq!(entries(&versions), ["m"]);
+        // And for a CPython install of the same name.
+        touch(&versions.join(".rpyenv-incomplete-m"), "");
+        let mut txn = win(&versions, "m");
+        let stage = txn.stage_dir().join("p");
+        touch(&stage.join("python.exe"), "cpython");
+        txn.place(&stage).unwrap();
+        txn.commit().unwrap();
+        assert!(is_complete_for(&versions.join("m"), Flavor::PyenvWin));
+        assert_eq!(entries(&versions), ["m"]);
     }
 }
