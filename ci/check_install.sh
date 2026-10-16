@@ -70,9 +70,17 @@ if [ "$conda" = 1 ]; then
   [ ! -e "$root/shims/curl" ] || { echo "::error::conda's curl got a shim"; exit 1; }
   PYENV_ROOT="$root" "$PYENV_BIN" virtualenv "$v" ci-env
   [ -d "$p/envs/ci-env/conda-meta" ] || { echo "::error::no conda env at $p/envs/ci-env"; exit 1; }
+  # A conda env the caller has active (an empty decoy outside the install) must not be the
+  # target of the install's own `conda install pip conda=<v>` step: conda follows
+  # CONDA_PREFIX, so rpyenv must not pass it on (M7c ruling R18, now on Linux too).
+  decoy="$(dirname "$root")/decoy-env"
+  "$p/bin/conda" create --yes --quiet -p "$decoy" >/dev/null
+  before=$(ls "$decoy/conda-meta")
   # `install -f` over a real installer's tree (which creates its own empty envs/) keeps the
   # env: the final review's Critical. The download comes from $root/cache when it is there.
-  PYENV_ROOT="$root" "$PYENV_BIN" install -f "$v"
+  CONDA_PREFIX="$decoy" CONDA_DEFAULT_ENV=decoy-env CONDA_SHLVL=1 \n    PYENV_ROOT="$root" "$PYENV_BIN" install -f "$v"
+  after=$(ls "$decoy/conda-meta")
+  [ "$before" = "$after" ] || { echo "::error::pyenv install changed the caller's active conda env $decoy"; diff <(echo "$before") <(echo "$after"); exit 1; }
   [ -d "$p/envs/ci-env/conda-meta" ] || { echo "::error::install -f lost the conda env at $p/envs/ci-env"; exit 1; }
   left=$(find "$root/versions" -maxdepth 1 \( -name '.tmp-*' -o -name '.old-*' \))
   [ -z "$left" ] || { echo "::error::staging left behind after install -f: $left"; exit 1; }
