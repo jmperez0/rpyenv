@@ -54,6 +54,12 @@ terms. Miniforge has no such note.
 
 **Shims.** Conda's bundled system tools get no shims, as with upstream.
 
+**Your active conda env is left alone.** The installer and its `conda install pip` step
+run without the variables `conda activate` sets (`CONDA_PREFIX` and the rest) and
+without Python's path variables, so an env you have active is never the target.
+Upstream pyenv passes them on. conda's settings, such as `CONDA_CHANNEL_ALIAS` for a
+company mirror or `CONDA_SSL_VERIFY`, still apply.
+
 ## Conda on Windows
 
 Conda on Windows is new after v0.1.0.
@@ -71,6 +77,9 @@ Conda on Windows is new after v0.1.0.
 - **Log.** Each install writes its output to `install_cache\<name>.log`. If the install
   fails, the error names that file.
 - **Ctrl+C** ends the installer and all its child processes.
+- **Your active conda env is left alone**, as on Linux: the installer and its steps run
+  without the variables `conda activate` sets. conda's settings, such as
+  `CONDA_CHANNEL_ALIAS`, still apply.
 - **Reinstall.** `pyenv install -f` keeps the install's `envs\` folder.
 
 ### The version table
