@@ -7,30 +7,41 @@
 //! 2: the publishers couldn't be read; nothing written.
 use pyenv::install::{conda, condacatalog as cc, fetch::Fetcher};
 
+fn die(msg: String) -> ! {
+    eprintln!("{msg}");
+    std::process::exit(2)
+}
+
 fn main() {
+    const USAGE: &str =
+        "usage: conda_windows_table <linux.tsv> <windows.tsv> [--accept <name>[,<name>...]]";
     let args: Vec<String> = std::env::args().skip(1).collect();
     let (paths, accept): (Vec<String>, Vec<String>) =
         match args.iter().position(|a| a == "--accept") {
-            Some(i) => (
-                args[..i].to_vec(),
-                args.get(i + 1)
-                    .map(|v| v.split(',').map(str::to_string).collect())
-                    .unwrap_or_default(),
-            ),
+            Some(i) => match args.get(i + 1).filter(|v| !v.is_empty()) {
+                Some(v) => (
+                    args[..i].to_vec(),
+                    v.split(',').map(str::to_string).collect(),
+                ),
+                None => die(USAGE.to_string()),
+            },
             None => (args.clone(), Vec::new()),
         };
     let [linux_path, win_path] = paths.as_slice() else {
-        eprintln!(
-            "usage: conda_windows_table <linux.tsv> <windows.tsv> [--accept <name>[,<name>...]]"
-        );
-        std::process::exit(2);
+        die(USAGE.to_string())
     };
-    let linux = conda::parse_linux(&std::fs::read_to_string(linux_path).expect("linux.tsv"))
-        .expect("linux.tsv parses");
-    let previous = std::fs::read_to_string(win_path)
-        .ok()
-        .map(|t| conda::parse_windows(&t, true).expect("the previous windows.tsv parses"))
-        .unwrap_or_default();
+    let linux = std::fs::read_to_string(linux_path)
+        .map_err(|e| format!("{linux_path}: {e}"))
+        .and_then(|t| conda::parse_linux(&t).map_err(|e| format!("{linux_path}: {e}")))
+        .unwrap_or_else(|e| die(e));
+    // Only a missing file means "no previous table"; one that is there but unreadable or
+    // unparseable stops the run, or its pinned hashes would be silently dropped.
+    let previous = match std::fs::read_to_string(win_path) {
+        Ok(t) => conda::parse_windows(&t, true)
+            .unwrap_or_else(|e| die(format!("{win_path}: the previous table doesn't parse: {e}"))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(e) => die(format!("{win_path}: {e}")),
+    };
     let published = match cc::read_published(&Fetcher::direct(), &cc::sources()) {
         Ok(p) => p,
         Err(e) => {
