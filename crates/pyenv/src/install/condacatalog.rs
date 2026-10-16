@@ -138,18 +138,25 @@ pub fn read_published(f: &Fetcher, s: &Sources) -> Result<Published, String> {
                 let Some((url, sidecar)) = assets.get(i) else {
                     break;
                 };
-                let sha = sidecar
-                    .then(|| {
-                        f.get_text(&format!("{url}.sha256"))
-                            .ok()
-                            .and_then(|t| conda::sha_file(&t))
-                    })
-                    .flatten();
+                // A listed sidecar that can't be read fails the whole read (M7c design D9).
+                let sha = if *sidecar {
+                    let side = format!("{url}.sha256");
+                    match f.get_text(&side) {
+                        Ok(t) => conda::sha_file(&t)
+                            .map(Some)
+                            .ok_or_else(|| format!("{side}: not a SHA-256 file")),
+                        Err(e) => Err(format!("{side}: {}", e.message)),
+                    }
+                } else {
+                    Ok(None)
+                };
                 shas.lock().unwrap().push((url.clone(), sha));
             });
         }
     });
-    p.extend(shas.into_inner().unwrap());
+    for (url, sha) in shas.into_inner().unwrap() {
+        p.insert(url, sha?);
+    }
     Ok(p)
 }
 
@@ -752,5 +759,25 @@ mod tests {
         for u in [&s.miniconda, &s.archive, &s.miniforge, &s.releases] {
             assert!(u.starts_with("http://127.0.0.1:9"), "{u}");
         }
+    }
+
+    /// `swap_url` finds no twin (the Linux URL names another file); the name is matched instead.
+    #[test]
+    fn from_linux_falls_back_to_the_file_named_backwards() {
+        let rows = parse_linux(&format!(
+            "miniconda3-3.13-26.1.0-1	Linux-x86_64	ok M https://repo.anaconda.com/miniconda/Other-Linux-x86_64.sh#{SHA_B} miniconda verify_py3
+"
+        ))
+        .unwrap();
+        let p = published(&[(
+            "https://repo.anaconda.com/miniconda/Miniconda3-py313_26.1.0-1-Windows-x86_64.exe",
+            Some(SHA_A),
+        )]);
+        let w = from_linux(&rows, &p);
+        assert!(
+            matches!(&w[0].verdict, Verdict::Ok(i) if i.url.ends_with(&format!("py313_26.1.0-1-Windows-x86_64.exe#{SHA_A}"))),
+            "{:?}",
+            w[0]
+        );
     }
 }
