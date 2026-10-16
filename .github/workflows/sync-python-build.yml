@@ -96,8 +96,11 @@ jobs:
           win=$?
           set -e
           cat "$RUNNER_TEMP/conda-win.err" | tee -a "$log"
-          if [ "$win" = 2 ]; then
-            git checkout -- crates/pyenv/conda/windows.tsv
+          # 0 and 1 are the example's answers; 2 (publishers unreadable) and anything else (a
+          # build failure, a panic = 101) discard the whole step, so "left unchanged" is true.
+          if [ "$win" != 0 ] && [ "$win" != 1 ]; then
+            git checkout -- crates/pyenv/conda/
+            git clean -fdq -- crates/pyenv/conda
             exit 1
           fi
           # 1: the table is written (new releases arrive) but a hash changed or a row stopped
