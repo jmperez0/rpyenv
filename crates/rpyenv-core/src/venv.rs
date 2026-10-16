@@ -108,6 +108,19 @@ pub fn is_conda_win_install(dir: &Path) -> bool {
     dir.join("conda-meta").is_dir() && dir.join("Scripts").join("conda.exe").is_file()
 }
 
+/// The install a conda env on Windows belongs to: `versions\<install>\envs\<env>` gives
+/// `versions\<install>`. `None` for an install, or a folder not under `envs\`. No
+/// canonicalize (`\\?\` paths break pyenv-win's).
+pub fn conda_win_env_install(dir: &Path) -> Option<PathBuf> {
+    if !dir.join("conda-meta").is_dir() || is_conda_win_install(dir) {
+        return None;
+    }
+    dir.parent()
+        .filter(|e| e.file_name().is_some_and(|n| n == "envs"))
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
+}
+
 /// The libdir an old virtualenv keeps `orig-prefix.txt` in: `Lib` (jython), `lib-python`
 /// (pypy) or `lib`.
 fn libdir(dir: &Path) -> Option<PathBuf> {
@@ -180,11 +193,7 @@ pub fn base_prefix(ctx: &Ctx, name: &str) -> Result<PathBuf, VenvError> {
             if is_conda_win_install(&p) {
                 Some(p.clone())
             } else if p.join("conda-meta").is_dir() {
-                // An env: versions\<install>\envs\<env>. No canonicalize (`\\?\` paths).
-                p.parent()
-                    .filter(|e| e.file_name().is_some_and(|n| n == "envs"))
-                    .and_then(Path::parent)
-                    .map(Path::to_path_buf)
+                conda_win_env_install(&p)
             } else {
                 read_cfg(&p, Flavor::PyenvWin).and_then(|c| c.home)
             }

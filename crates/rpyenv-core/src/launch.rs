@@ -328,6 +328,11 @@ pub fn win_child_path(ctx: &Ctx, names: &[String], appdata: Option<&OsStr>) -> O
             for d in crate::venv::conda_win_dirs(&v) {
                 add(d.as_os_str());
             }
+            // conda keeps the base's `condabin` on an activated env's PATH, so `conda` stays
+            // reachable; not its `Scripts`, which would leak the base's tools (§6.2).
+            if let Some(install) = crate::venv::conda_win_env_install(&v) {
+                add(install.join("condabin").as_os_str());
+            }
         } else {
             add(v.as_os_str());
             add(v.join("Scripts").as_os_str());
@@ -957,6 +962,42 @@ mod tests {
         fs::create_dir_all(ctx.versions_dir().join("3.12.0")).unwrap();
         let cp = win_child_path(&ctx, &["3.12.0".to_string()], None);
         assert!(!cp.to_string_lossy().contains("Library"));
+    }
+
+    /// A conda env's PATH: its six folders, then its install's `condabin`, then the rest;
+    /// `pyenv exec conda` finds the install's launcher (M7c design §6.2). The env name's `/`
+    /// is a separator only on Windows.
+    #[cfg(windows)]
+    #[test]
+    fn win_child_path_gives_a_conda_env_its_installs_condabin() {
+        let (_t, mut ctx) = win_ctx(&["miniforge3-x"]);
+        ctx.path = Some("C:\\Windows".into());
+        let install = ctx.versions_dir().join("miniforge3-x");
+        fs::create_dir_all(install.join("conda-meta")).unwrap();
+        exe(&install.join("Scripts").join("conda.exe"));
+        exe(&install.join("condabin").join("conda.bat"));
+        let env = install.join("envs").join("e1");
+        fs::create_dir_all(env.join("conda-meta")).unwrap();
+        exe(&env.join("python.exe"));
+        let names = ["miniforge3-x/envs/e1".to_string()];
+        let got = win_child_path(&ctx, &names, None);
+        // The name is joined as typed, so the env folder keeps its `/` (as it did before).
+        let typed = ctx.versions_dir().join("miniforge3-x/envs/e1");
+        let mut want: Vec<String> = crate::venv::conda_win_dirs(&typed)
+            .iter()
+            .map(|d| d.display().to_string())
+            .collect();
+        want.push(install.join("condabin").display().to_string());
+        assert_eq!(
+            got.to_string_lossy(),
+            format!("{};C:\\Windows;", want.join(";"))
+        );
+        // `exec conda` resolves to the install's launcher; a bare install adds no condabin.
+        ctx.pyenv_version = Some("miniforge3-x/envs/e1".to_string());
+        let p = plan(&ctx, Mode::Exec, "conda", vec![], &ExecEnv::default()).unwrap();
+        assert_eq!(p.program, install.join("condabin").join("conda.bat"));
+        let base = win_child_path(&ctx, &["miniforge3-x".to_string()], None);
+        assert!(!base.to_string_lossy().contains("condabin"));
     }
 
     /// The shims folder leaves the child's PATH however it is spelled: with a trailing `\`,
