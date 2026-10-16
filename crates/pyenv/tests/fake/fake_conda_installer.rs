@@ -2,10 +2,12 @@
 //! - `*-Windows-x86_64.exe`: the NSIS installer. Reads the raw command line as NSIS does
 //!   (`GetCommandLineW`; `/D=` is everything after the last ` /D=`, M7c design §3) and checks
 //!   `/S` first and that the `/D=` tail is not quoted; appends `args: <raw tail>`,
-//!   `marker: yes|no` (`<D>\.rpyenv-incomplete`), `tos: …` to `%FAKECONDA_LOG%`; exits
-//!   `%FAKECONDA_EXIT%` before writing anything when set; else writes the tree (Task 1's
-//!   measurement): `python.exe` and `Scripts\conda.exe` (copies of itself), `conda-meta\`
-//!   records for python and conda, empty `envs\` and `Library\bin\`.
+//!   `target: absent|empty|not empty`, `marker: yes|no` (the sibling marker
+//!   `<D>\..\.rpyenv-incomplete-<name>`), `tos: …` to `%FAKECONDA_LOG%`. As the real
+//!   installers do (M7c design §3, measured), it exits 2 and writes nothing when `<D>` exists
+//!   and is not empty. It exits `%FAKECONDA_EXIT%` before writing anything when set; else
+//!   writes the tree (Task 1's measurement): `python.exe` and `Scripts\conda.exe` (copies of
+//!   itself), `conda-meta\` records for python and conda, empty `envs\` and `Library\bin\`.
 //! - `python.exe`: logs `python: <args>`, exits `%FAKECONDA_PYTHON_EXIT%` (default 0).
 //! - `conda.exe`: `--version` prints `conda 25.1.1`; `install …` logs `conda: <args>`, exits
 //!   `%FAKECONDA_INSTALL_EXIT%` (default 0).
@@ -124,19 +126,29 @@ fn main() {
         std::process::exit(2);
     };
     log(&format!("args: {tail}"));
+    let target = match std::fs::read_dir(&d).map(|mut rd| rd.next().is_none()) {
+        Err(_) => "absent",
+        Ok(true) => "empty",
+        Ok(false) => "not empty",
+    };
+    log(&format!("target: {target}"));
+    let sibling = d.with_file_name(format!(
+        ".rpyenv-incomplete-{}",
+        d.file_name().unwrap_or_default().to_string_lossy()
+    ));
     log(&format!(
         "marker: {}",
-        if d.join(".rpyenv-incomplete").exists() {
-            "yes"
-        } else {
-            "no"
-        }
+        if sibling.exists() { "yes" } else { "no" }
     ));
     log(&env_line());
     log(&format!(
         "tos: {}",
         std::env::var("CONDA_PLUGINS_AUTO_ACCEPT_TOS").unwrap_or_else(|_| "unset".into())
     ));
+    // constructor's `OnDirectoryLeave` (silent mode too): "Directory ... is not empty".
+    if target == "not empty" {
+        std::process::exit(2);
+    }
     if std::env::var_os("FAKECONDA_EXIT").is_some() {
         std::process::exit(code("FAKECONDA_EXIT"));
     }

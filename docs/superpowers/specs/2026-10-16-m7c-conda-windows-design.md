@@ -58,6 +58,7 @@ an rpyenv extension, recorded in the parity allowlist.
 | What a silent install registers | `installer/sandbox/conda-probe.ps1` in Windows Sandbox (Windows 11, build 26300, 2026-10-16): `reg export` of HKCU and `HKLM\SOFTWARE`, user and machine `PATH`, both Start-menu trees and the profile's top-level folders, before and after each of the three installers run with §5 step 4's flags (Miniforge3-26.7.2-0, Miniconda3-py313_26.7.1-1, Anaconda3-2026.07-1) | No `Uninstall` key (27 under HKLM before and after, none under HKCU), no key or value naming the install, user and machine `PATH` unchanged, Start menus unchanged. The raw diff is not empty: the Sandbox's first shell activity (Explorer, IdentityCRL, MuiCache) shows up in the first run, and Windows' MuiCache records the installer's own file name. The one trace outside the install is the profile folder `~\.conda`, created by the first run (Anaconda; the other two found it there). `uninstall` stays "delete the folder". |
 | Does `/S` block | Same probe: `Start-Process -PassThru`, `WaitForExit`, then `python.exe` present and no process left under the target | Yes for all three: at exit `python.exe` existed and no process ran from the target (Miniforge 205 s, Miniconda 145 s, Anaconda 1024 s), exit code 0. |
 | Characters the installers refuse in `/D=` | Same script, one install per character into `C:\probe\c<code>-a<char>b`: Miniforge and Miniconda for 27 characters, Anaconda for those either refused (and `)`, `]`, `}`, Cyrillic) | Refused by all three (exit code 2 and no `python.exe`; whether a folder is left behind was not measured, the probe deleted the target before listing; 1 to 3 s for Miniforge and Miniconda, 13 to 78 s for Anaconda): `^ % ! = & ( ) ; , ' # $ @ ~ [ ] { }` and characters outside Latin-1 (`Ж`, `中`). Refused by Miniforge only: space. Accepted by all that were tried: letters, digits, `_ - . +` and Latin-1 letters (`é`, `ü`). Anaconda was not tried with `_ - . + é ü`. Letters and digits are accepted by the `c<code>-a?b` folder-name pattern of every trial, not by separate trials. The probe passed `/D=<target>` as the raw tail of the command line, unquoted (Windows PowerShell 5.1 `Start-Process` joins unquoted); "Miniconda and Anaconda accept space" holds only for that form, so Task 8 must pass `/D=` the same way (`raw_arg` on Windows). |
+| A `/D=` folder that exists (final review C1) | `C:\tmp\m7c_c1_probe.ps1` in Windows Sandbox (build 10.0.26100.9457, 2026-10-16), one run each, §5 step 4's flags, target `C:\probe\<case>-<family>`: A created empty first, B as A plus an empty `.rpyenv-incomplete` in it, C absent (Miniforge only; Task 1 covered the others) | B (a file in the folder): exit 2 from all three (2 to 14 s), no `python.exe`, the folder holds only the marker, no log anywhere. A (empty) and C (absent): exit 0 and a full tree from all three. So the folder must be empty when the installer runs, and the in-progress marker sits beside it (§5 step 4). |
 | `import ssl` after install | `python.exe -c "import sys, ssl"` on each tree | Exit 0 for all three (Anaconda: Python 3.14.6, OpenSSL 3.5.7; Miniconda: 3.13.15, 3.5.7; Miniforge: 3.14.7, 3.6.4). |
 | Shim counts by §6.3's rule | `C:\tmp\m7c_shims_ref.py`, written from §6.3's text alone, over each install's file tree and `conda-meta` | Miniforge 18 shimmed, 56 skipped; Miniconda 30 and 36; Anaconda 196 and 191. Miniforge's 18 are the fixture `miniforge3-expected-shims.txt`. |
 
@@ -202,8 +203,11 @@ Called where `winpkg::install_pypy` is, for names `conda::is_conda_name` accepts
 4. **Run the installer in place:**
    `<file>.exe /S /InstallationType=JustMe /AddToPath=0 /RegisterPython=0 /NoRegistry=1 /NoShortcuts=1 /D=<target>`
    (parent §15.1 resolution 2; `/D=` last and unquoted, as NSIS requires).
-   - Into the final folder, through `txn.rs`'s conda mode: the completion marker is
-     written last, and a folder without it counts as not installed (M7b §4.3).
+   - Into the final folder, through `txn.rs`'s conda mode. The folder is empty when the
+     installer starts, because the installers refuse a non-empty one (§3). The in-progress
+     marker is therefore beside it, `versions\.rpyenv-incomplete-<name>`, from before the
+     empty folder appears until the install is complete; a folder with it counts as not
+     installed (M7b §4.3, where Linux keeps the marker inside).
    - Rows carrying the variable: it is set for the installer and step 5, after
      M7b's one-line terms notice.
    - Ctrl+C: rpyenv ends the installer process, waits for it, and deletes the folder.
@@ -212,7 +216,7 @@ Called where `winpkg::install_pypy` is, for names `conda::is_conda_name` accepts
    `Scripts\conda.exe install --yes pip conda=<installed conda version>`.
 6. **Verify:** `python.exe -c "import sys, ssl"` with §6's `PATH`; a DLL that can't load
    fails the install here.
-7. **Finish:** marker, then rehash.
+7. **Finish:** remove the marker, then rehash.
 
 On failure at steps 4 to 6 the folder is deleted, the installer's output is kept in the
 install log, and the error names the step. `install -f` carries only `envs\` and names
