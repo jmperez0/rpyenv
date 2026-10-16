@@ -919,7 +919,7 @@ Each milestone gets its own implementation plan.
    `pyenv setup`, and `pyenv migrate`; Linux tarball and install script;
    release workflow.
 
-7. **M7a PyPy** (spec docs/superpowers/specs/2026-10-14-m7a-pypy-design.md); **M7b Anaconda, Miniconda and Miniforge on Linux** (spec docs/superpowers/specs/2026-10-15-m7b-conda-linux-design.md); M7c the same on Windows (see §15.1).
+7. **M7a PyPy** (spec docs/superpowers/specs/2026-10-14-m7a-pypy-design.md); **M7b Anaconda, Miniconda and Miniforge on Linux** (spec docs/superpowers/specs/2026-10-15-m7b-conda-linux-design.md); **M7c Anaconda, Miniconda and Miniforge on Windows** (spec docs/superpowers/specs/2026-10-16-m7c-conda-windows-design.md; see also §15.1).
 8. **M8 Missing Linux build dependencies** (a later release, see §15.2).
 9. **M9 Shared admin-managed versions** (only if needed, see §15.3).
 
@@ -995,6 +995,7 @@ each milestone.
      anchor; if kept, it may only list where files and their published hashes
      are, never the hashes themselves.
    - **For PyPy, superseded by M7a (2026-10-14):** tables built in CI from upstream's definitions (evaluated with stubs, no network) and from pypy.org's versions.json and checksum page, cross-checked, and embedded in rpyenv; a Windows release newer than the table reads the checksum page at install time. rpyenv publishes no catalog; `RPYENV_CATALOG_URL` stays unused.
+   - **For conda on Windows, superseded by M7c (2026-10-16):** a shipped, updatable table rebuilt from the publishers; hashes pinned (spec D2-D4).
    - **PyPy on Windows is x64 only:** PyPy 8.0.0 (Python 3.12) ships Windows
      binaries only for x64.
 2. **Conda silent install:**

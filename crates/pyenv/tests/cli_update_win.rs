@@ -424,6 +424,7 @@ fn a_failed_index_page_writes_nothing_and_exits_1_or_0_with_ignore() {
 
 /// M7c design §4.3: `update` reads the publishers and adds a release newer than the shipped
 /// table's newest, as an `ok` row.
+// allowlist D-111
 #[test]
 fn update_writes_the_conda_table_with_newer_releases() {
     let f = Fixture::new();

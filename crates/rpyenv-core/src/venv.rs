@@ -310,6 +310,7 @@ mod tests {
         d
     }
 
+    // allowlist D-115
     #[test]
     fn windows_conda_installs_are_their_own_base() {
         let t = tempfile::tempdir().unwrap();
@@ -344,6 +345,7 @@ mod tests {
     }
 
     /// The env's `/` becomes `\`, which only Windows reads as a separator.
+    // allowlist D-115
     #[cfg(windows)]
     #[test]
     fn windows_conda_envs_point_at_their_install() {

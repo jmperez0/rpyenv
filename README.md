@@ -53,7 +53,35 @@ the child's exit code, and leaves your console as it found it.
     installer run and no registry writes.
   - Linux: compiled from source, as pyenv does.
 - **Official PyPy builds.** PyPy installs from PyPy's official binaries: on Linux (x64, aarch64) under upstream's names (`pyenv install pypy3.11`), on Windows (x64) under pyenv-win's codes after `pyenv update` (`pyenv install pypy3.11-v7.3.20-win64`). Each download is checked against the SHA-256 PyPy publishes. PyPy source builds, nightlies, distribution-specific definitions and third-party builds (older definitions that download someone else's portable PyPy) are not supported.
-- **Conda distributions.** Anaconda, Miniconda and Miniforge install on Linux (x64, aarch64) under upstream's names (`pyenv install miniforge3-<release>`), each installer checked against its published SHA-256. Miniconda 25.x prints a note that its defaults channel is under Anaconda's terms (Miniforge isn't). `-latest` names are checked against a hash read from the same publisher at install time, which catches a broken download but not a compromised publisher, so pick a numbered version for a hash upstream pyenv reviewed. `pyenv install miniconda3` on its own resolves through upstream's `latest` sort to an old MD5-only release (e.g. `miniconda3-4.7.12`) that rpyenv refuses; the refusal names the newest release that installs (e.g. `miniconda3-3.14-26.7.1-1`). Conda's bundled system tools get no shims, as with upstream. Windows: not yet (M7c).
+- **Conda distributions.** Anaconda, Miniconda and Miniforge install on Linux (x64, aarch64) under upstream's names (`pyenv install miniforge3-<release>`), each installer checked against its published SHA-256. Miniconda 25.x prints a note that its defaults channel is under Anaconda's terms (Miniforge isn't). `-latest` names are checked against a hash read from the same publisher at install time, which catches a broken download but not a compromised publisher, so pick a numbered version for a hash upstream pyenv reviewed. `pyenv install miniconda3` on its own resolves through upstream's `latest` sort to an old MD5-only release (e.g. `miniconda3-4.7.12`) that rpyenv refuses; the refusal names the newest release that installs (e.g. `miniconda3-3.14-26.7.1-1`). Conda's bundled system tools get no shims, as with upstream. Windows is below.
+  - **Conda on Windows (x64; ARM64 runs the x64 installers under emulation).** The names are the ones Linux uses
+    (`pyenv install miniforge3-26.7.2-0`, `miniconda3-3.13-25.9.1-3`, `anaconda3-2026.07-1`). A bare family
+    (`pyenv install miniforge3`) installs its newest installable release. rpyenv runs the official installer
+    silently, into `versions\<name>`, with no registry entries, no shortcuts and no `PATH` change. Each download is
+    checked against its publisher's SHA-256. Each install writes its output to `install_cache\<name>.log`, and a
+    failure names that file. Ctrl+C ends the installer and all its children. `pyenv install -f` keeps `envs\`.
+  - **The version table.** The MSI ships a reviewed table, so `pyenv install <conda name>`, `pyenv install --list` and
+    `pyenv latest -k` work right after install. `pyenv update` rebuilds a newer one from the publishers and prints
+    `conda: <n> installable versions (<k> new)`. It adds new releases only. If a publisher has changed the hash of an
+    installer rpyenv already pinned, `update` keeps the pinned hash and warns; that name won't install until an rpyenv
+    release carries the reviewed hash. If a conda site can't be read, `update` warns, keeps the previous table and exits 0.
+  - **What the hashes mean.** A hash added by `pyenv update` comes from the publisher's page at that moment, so it
+    catches a broken download but not a compromised publisher. A hash shipped with rpyenv was pinned when its pull
+    request was reviewed. `-latest` names work like `update`: the hash is read at install time.
+  - **Path characters.** The installers refuse some characters in the target folder, so rpyenv refuses them before
+    downloading: `^ % ! = & ( ) ; , ' # $ @ ~ [ ] { }` for all installers, and characters outside Latin-1
+    (inferred from two measured characters). Miniforge also refuses a space. For that, use a `miniconda3` version, or
+    set `PYENV_ROOT`, `PYENV` and `PYENV_HOME` to a folder without spaces.
+  - **Shims and `PATH`.** Shims follow conda package ownership: `python`, `pip`, `conda` and other Python tools get
+    one; `curl`, `cygpath` and conda's other system tools don't. Commands run through a shim or `pyenv exec` see conda's
+    own `PATH` order (`Library\bin` and the rest), and an env keeps its install's `condabin`, so `pyenv exec conda`
+    works there. Run `conda create -n <env>` through the shim, then `pyenv shell <install>/envs/<env>` or
+    `pyenv activate <install>/envs/<env>`.
+  - **Terms.** Miniconda 25 and later accepts Anaconda's terms only during the install, as upstream does, and rpyenv
+    prints a note first. Later use of the defaults channel asks you once.
+  - **Not supported on Windows.** `conda activate` (it needs conda's shell hook), `activate.d` scripts (some
+    packages, e.g. GDAL, set variables there), and `conda install` from a selected env: without `-n` it targets the
+    base, as upstream, which sets no `CONDA_PREFIX`.
 - **Built in instead of plugins:**
   - virtualenvs (replaces `pyenv-virtualenv`, and works natively on Windows
     too)

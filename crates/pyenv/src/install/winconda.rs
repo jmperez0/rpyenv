@@ -49,6 +49,7 @@ pub fn resolve_name(rows: &[LinuxRow], wanted: &str) -> String {
 }
 
 /// How long ending the installer's tree may take before the install gives up waiting.
+#[cfg(windows)]
 const END_TREE_SECS: u64 = 15;
 
 /// The installer's process tree (M7c Task 8 review I1). On Windows a job without breakaway

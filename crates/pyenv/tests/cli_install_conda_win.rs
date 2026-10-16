@@ -163,6 +163,7 @@ fn lines(r: &common::Run) -> Vec<&str> {
     r.stdout.lines().collect()
 }
 
+// allowlist D-110
 #[test]
 fn a_conda_name_installs_in_place_with_the_silent_flags() {
     let t = T::std();
@@ -466,6 +467,7 @@ fn a_bare_family_installs_its_newest_installable_release() {
     assert_eq!(t.s.hits(FORGE_PATH), 1);
 }
 
+// allowlist D-110
 #[test]
 fn install_list_shows_installable_conda_names_after_cpython() {
     let t = T::std();
@@ -480,6 +482,7 @@ fn install_list_shows_installable_conda_names_after_cpython() {
     assert_eq!(&out[at..], ["3.12.1", FORGE, FORGE_OLD, CONDA, CONDA_OLD]);
 }
 
+// allowlist D-110
 #[test]
 fn latest_known_resolves_a_conda_family() {
     let t = T::std();
