@@ -322,6 +322,9 @@ fn resolve_deps(
     let os = std::fs::read_to_string(os_path).ok();
     let manager = os.as_deref().and_then(deps::Manager::from_os_release);
     let tty = at_terminal(get);
+    // An explicit route wins at a terminal too (ruling R9): no prompt, but no `-y` or
+    // `sudo -n` either, because apt and sudo can ask the user themselves there.
+    let interactive = tty && chosen.is_none();
     let is_root = run_probe(get, "id", &["-u"]).is_some_and(|(_, out, _)| out.trim() == "0");
     // Package lists: apt can't find a package on a minimal image without them (§5.3).
     let lists = if cfg!(debug_assertions) {
@@ -335,6 +338,7 @@ fn resolve_deps(
     // `sudo` is probed only when an install may be offered or run.
     let mut sudo_probe: Option<(bool, Option<(bool, String)>)> = None;
     let mut installed = false;
+    let mut last_failed = false;
     loop {
         let after = if installed && cfg!(debug_assertions) {
             get("RPYENV_TEST_PREFLIGHT_AFTER")
@@ -371,6 +375,7 @@ fn resolve_deps(
                     SudoUse::Allowed if !tty && sudo_n.as_ref().is_some_and(|(ok, _)| !ok) => {
                         Err("sudo needs a password and there is no terminal to ask it")
                     }
+                    _ if installed && last_failed => Err("the last install command failed"),
                     _ if installed => Err("the last install left these missing"),
                     s => {
                         let with_sudo = !matches!(s, SudoUse::Root);
@@ -389,7 +394,7 @@ fn resolve_deps(
                 }
             }
         };
-        let route = if tty {
+        let route = if interactive {
             // The prompt shows the commands joined by `&&`, as a shell would run them.
             let shown = offer.clone().map(|cmds| {
                 let mut one: Vec<String> = Vec::new();
@@ -438,6 +443,7 @@ fn resolve_deps(
         };
         match (route, offer) {
             (Route::Install, Ok(cmds)) => {
+                last_failed = false;
                 for argv in cmds {
                     // Without a terminal, sudo must not ask (`-n`).
                     let argv: Vec<String> = if !tty && argv.first().is_some_and(|a| a == "sudo") {
@@ -454,17 +460,23 @@ fn resolve_deps(
                     if !tty {
                         c.stdin(std::process::Stdio::null());
                     }
-                    if !c.status().is_ok_and(|s| s.success()) {
+                    let ok = c.status().is_ok_and(|s| s.success());
+                    // Ctrl+C reached the command too: end the run before any hint.
+                    if interrupted() {
+                        return Err(130);
+                    }
+                    if !ok {
+                        last_failed = true;
                         say("pyenv: the install command failed");
                         if let Some(h) = os.as_deref().and_then(deps::rhel_crb_hint) {
                             say(&format!(
                                 "pyenv: some packages live in the CRB repository: {h}"
                             ));
                         }
-                        if manager == Some(deps::Manager::Apt) {
+                        if manager == Some(deps::Manager::Apt) && !apt_update {
                             say("pyenv: if apt couldn't find a package, run sudo apt-get update first");
                         }
-                        if !tty {
+                        if !interactive {
                             return Err(1);
                         }
                         break;

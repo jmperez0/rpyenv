@@ -365,7 +365,7 @@ fn a_failed_install_reprompts_without_i_and_builds_nothing() {
     );
     assert!(
         r.stderr
-            .contains("  [i] not offered: the last install left these missing\n"),
+            .contains("  [i] not offered: the last install command failed\n"),
         "{}",
         r.stderr
     );
@@ -424,7 +424,7 @@ fn at_a_terminal_enter_prints_and_stops() {
 
 /// Review focus 3.
 #[test]
-fn eof_or_interrupt_at_the_prompt_builds_nothing() {
+fn eof_at_the_prompt_builds_nothing() {
     let f = Fixture::new();
     plugin_def(&f);
     stubs(&f, 0);
@@ -558,4 +558,193 @@ fn a_python2_definition_keeps_todays_behavior() {
         "{}",
         r.stderr
     );
+}
+
+/// Ruling R9: an explicit route wins at a terminal; nothing is asked.
+#[test]
+fn an_explicit_route_at_a_terminal_does_not_prompt() {
+    let f = Fixture::new();
+    plugin_def(&f);
+    stubs(&f, 0);
+    let r = run_input(
+        &f,
+        &["install", "--deps=system", "3.12.99"],
+        &[
+            ("RPYENV_TEST_TTY", "1"),
+            ("RPYENV_TEST_PREFLIGHT", "libuuid"),
+        ],
+        "",
+    );
+    assert_eq!(r.code, 1, "{}", r.stderr);
+    assert!(
+        !r.stderr.contains("How should rpyenv get them?"),
+        "{}",
+        r.stderr
+    );
+    assert!(
+        r.stderr
+            .contains("pyenv: cannot build Python: missing build dependencies:\n"),
+        "{}",
+        r.stderr
+    );
+    assert!(
+        r.stderr.contains("\n  sudo apt-get install uuid-dev\n"),
+        "{}",
+        r.stderr
+    );
+    assert!(!installed(&f));
+    assert_eq!(log(&f), "");
+}
+
+#[test]
+fn a_successful_install_at_a_terminal_then_builds() {
+    let f = Fixture::new();
+    plugin_def(&f);
+    stubs(&f, 0);
+    let r = run_input(
+        &f,
+        &["install", "3.12.99"],
+        &[
+            ("RPYENV_TEST_TTY", "1"),
+            ("RPYENV_TEST_PREFLIGHT", "openssl"),
+            ("RPYENV_TEST_PREFLIGHT_AFTER", ""),
+        ],
+        "i\n",
+    );
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert!(f.root.join("versions/3.12.99/bin/python3.12").is_file());
+    let l = log(&f);
+    assert_eq!(
+        l.lines().collect::<Vec<_>>(),
+        [
+            "sudo apt-get install libssl-dev",
+            "apt-get install libssl-dev"
+        ]
+    );
+    assert!(!sudo_raw(&f).contains("-n apt-get"), "{}", sudo_raw(&f));
+    assert_eq!(r.stderr.matches("How should rpyenv get them?").count(), 1);
+}
+
+#[test]
+fn an_install_that_leaves_items_missing_ends_without_looping() {
+    let f = Fixture::new();
+    plugin_def(&f);
+    stubs(&f, 0);
+    // At a terminal: the second prompt has no `i`; the second `i` is refused; Enter stops.
+    let r = run_input(
+        &f,
+        &["install", "3.12.99"],
+        &[
+            ("RPYENV_TEST_TTY", "1"),
+            ("RPYENV_TEST_PREFLIGHT", "openssl"),
+            ("RPYENV_TEST_PREFLIGHT_AFTER", "libuuid"),
+        ],
+        "i\ni\n\n",
+    );
+    assert_eq!(r.code, 1, "{}", r.stderr);
+    assert_eq!(r.stderr.matches("How should rpyenv get them?").count(), 2);
+    assert!(
+        r.stderr
+            .contains("  [i] not offered: the last install left these missing\n"),
+        "{}",
+        r.stderr
+    );
+    assert!(r.stderr.contains("pyenv: answer p\n"), "{}", r.stderr);
+    assert_eq!(log(&f).matches("apt-get install").count(), 2, "one install");
+    assert!(!installed(&f));
+    // Without a terminal: exactly one install command, then it stops.
+    let f = Fixture::new();
+    plugin_def(&f);
+    stubs(&f, 0);
+    let r = run(
+        &f,
+        &["install", "--deps=install", "3.12.99"],
+        &[
+            ("RPYENV_TEST_PREFLIGHT", "openssl"),
+            ("RPYENV_TEST_PREFLIGHT_AFTER", "libuuid"),
+        ],
+    );
+    assert_eq!(r.code, 1, "{}", r.stderr);
+    assert!(
+        r.stderr
+            .contains("pyenv: can't install the packages: the last install left these missing\n"),
+        "{}",
+        r.stderr
+    );
+    assert_eq!(
+        r.stderr.matches("pyenv: running:").count(),
+        1,
+        "{}",
+        r.stderr
+    );
+    assert_eq!(
+        log(&f).matches("apt-get install").count(),
+        2,
+        "sudo line and apt line"
+    );
+    assert!(!installed(&f));
+}
+
+#[test]
+fn a_failed_apt_update_stops_the_install() {
+    let f = Fixture::new();
+    plugin_def(&f);
+    stubs(&f, 0);
+    let l = log_path(&f).display().to_string();
+    stub(
+        &f,
+        "apt-get",
+        &format!("echo \"apt-get $*\" >> '{l}'\n[ \"$1\" = update ] && exit 100\nexit 0"),
+    );
+    let empty = f.base.join("nolists");
+    std::fs::create_dir_all(&empty).unwrap();
+    let empty = empty.display().to_string();
+    let r = run(
+        &f,
+        &["install", "--deps=install", "3.12.99"],
+        &[
+            ("RPYENV_TEST_PREFLIGHT", "openssl"),
+            ("RPYENV_TEST_APT_LISTS", &empty),
+        ],
+    );
+    assert_eq!(r.code, 1, "{}", r.stderr);
+    let out = log(&f);
+    assert!(out.contains("apt-get update\n"), "{out}");
+    assert!(!out.contains("install"), "{out}");
+    assert!(
+        r.stderr.contains("pyenv: the install command failed\n"),
+        "{}",
+        r.stderr
+    );
+    // The update was part of the command, so the hint to run it is not repeated.
+    assert!(
+        !r.stderr.contains("run sudo apt-get update first"),
+        "{}",
+        r.stderr
+    );
+    assert!(!installed(&f));
+}
+
+#[test]
+fn root_without_a_terminal_installs_without_sudo() {
+    let f = Fixture::new();
+    plugin_def(&f);
+    stubs(&f, 0);
+    stub(&f, "id", "echo 0");
+    let r = run(
+        &f,
+        &["install", "--deps=install", "3.12.99"],
+        &[
+            ("RPYENV_TEST_PREFLIGHT", "openssl"),
+            ("RPYENV_TEST_PREFLIGHT_AFTER", ""),
+        ],
+    );
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    let l = log(&f);
+    assert_eq!(
+        l.lines().collect::<Vec<_>>(),
+        ["apt-get install -y libssl-dev"]
+    );
+    assert!(!l.contains("sudo"), "{l}");
+    assert!(installed(&f));
 }
