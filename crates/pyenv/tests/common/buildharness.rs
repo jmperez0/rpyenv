@@ -100,6 +100,7 @@ pub fn build_at(
         opts,
         env: &list,
         fetcher: &fetcher,
+        store: None,
     };
     let mut txn = Txn::begin(&root.join("versions"), "3.12.99").unwrap();
     let mut said = Vec::new();

@@ -8,7 +8,8 @@ use crate::install::fetch::Fetcher;
 use crate::install::pypy::{self, Verdict};
 use crate::install::txn::{is_complete, Txn};
 use crate::install::{
-    default_packages, interrupted, preflight, prompt, watch_interrupt, InstallError, Reply,
+    catalog, default_packages, interrupted, preflight, prompt, store, watch_interrupt,
+    InstallError, Reply,
 };
 use crate::output::Output;
 use rpyenv_core::ctx::Ctx;
@@ -278,15 +279,28 @@ fn old_preflight(get: &dyn Fn(&str) -> Option<String>, patch: bool) -> Result<()
     }
 }
 
-/// M8 design §5: detect, then print (system) or install (install) until nothing is missing.
-/// `Ok(())` when the build may start; `Err(exit code)` otherwise.
+/// What `resolve_deps` settled. `cont`: the prompt's `[c]`, so the builder warns at the end
+/// instead of failing. `store`: the build store's entries to link (`[b]`, `--deps=build`).
+struct Resolution {
+    cont: bool,
+    store: Vec<store::Entry>,
+}
+
+/// Builds catalog keys into the store (`store::ensure` with the job's setup).
+type StoreBuild<'a> = dyn FnMut(&[&'static str], &mut dyn FnMut(&str)) -> Result<Vec<store::Entry>, InstallError>
+    + 'a;
+
+/// M8 design §5: detect, then print (system), install (install) or build into the store
+/// (build) until nothing is missing. `Ok` when the build may start; `Err(exit code)` otherwise.
 fn resolve_deps(
     get: &dyn Fn(&str) -> Option<String>,
     version: &str,
     minor: u32,
     patch: bool,
     flag: Option<&str>,
-) -> Result<bool, i32> {
+    root: &Path,
+    build: &mut StoreBuild,
+) -> Result<Resolution, i32> {
     use crate::install::deps::{self, Route, SudoUse};
     use crate::install::Reply;
     // The flag wins over the variable; a bad value names where it came from (review M10).
@@ -308,15 +322,8 @@ fn resolve_deps(
         },
         None => None,
     };
-    if let Some(r @ (Route::Build | Route::Prebuilt)) = chosen {
-        let w = if r == Route::Build {
-            "build"
-        } else {
-            "prebuilt"
-        };
-        say(&format!(
-            "pyenv: the {w} route comes in a later rpyenv release"
-        ));
+    if chosen == Some(Route::Prebuilt) {
+        say("pyenv: the prebuilt route comes in a later rpyenv release");
         return Err(1);
     }
     let os_path = if cfg!(debug_assertions) {
@@ -347,6 +354,18 @@ fn resolve_deps(
     let mut sudo_probe: Option<(bool, Option<(bool, String)>)> = None;
     let mut installed = false;
     let mut last_failed = false;
+    // The build route (M8 design §6): what the store supplied counts as present (ruling P6).
+    let root_ok: Result<(), String> = if store::plain_path(root) {
+        Ok(())
+    } else {
+        Err(format!(
+            "PYENV_ROOT has a space or a shell character in its path ({})",
+            root.display()
+        ))
+    };
+    let mut tools: Option<preflight::Tools> = None;
+    let mut supplied: Vec<&'static str> = Vec::new();
+    let mut store_entries: Vec<store::Entry> = Vec::new();
     loop {
         let after = if installed && cfg!(debug_assertions) {
             get("RPYENV_TEST_PREFLIGHT_AFTER")
@@ -360,17 +379,28 @@ fn resolve_deps(
                 get(k)
             }
         };
-        let missing = preflight::check3(&probe_env, patch, minor);
+        let mut missing = preflight::check3(&probe_env, patch, minor);
+        missing.retain(|d| !supplied.contains(&d.lib));
         // Ctrl+C killed the probing compilers, so `missing` may be false: no prompt, no
         // report and no install after it (final review M1).
         if interrupted() {
             return Err(130);
         }
         if missing.is_empty() {
-            return Ok(false);
+            return Ok(Resolution {
+                cont: false,
+                store: store_entries,
+            });
         }
         // `[c]`: only optional libraries are missing (M8a follow-up).
         let continue_offered = !missing.iter().any(|d| deps::is_hard(d.lib));
+        // `[b]` and `--deps=build`: the build tools are probed only then, once (they spawn
+        // perl and the compiler).
+        let plan = (interactive || chosen == Some(Route::Build)).then(|| {
+            let t = *tools.get_or_insert_with(|| preflight::build_tools(get));
+            deps::build_plan(&missing, minor, &t, root_ok.clone(), manager)
+        });
+        let build_offered = plan.as_ref().is_some_and(|p| p.blocked.is_none());
         if (tty || chosen == Some(Route::Install)) && sudo_probe.is_none() {
             let has_sudo = run_probe(get, "sudo", &["--version"]).is_some();
             let sudo_n = if has_sudo {
@@ -426,7 +456,7 @@ fn resolve_deps(
                 &missing,
                 manager,
                 shown,
-                None,
+                plan.as_ref(),
                 crb.as_deref(),
                 continue_offered,
             ) {
@@ -437,14 +467,13 @@ fn resolve_deps(
                     Reply::Interrupted => return Err(130),
                     Reply::Eof => return Err(1),
                     Reply::Line(l) => {
-                        match deps::choice(&l, offer.is_ok(), false, continue_offered) {
+                        match deps::choice(&l, offer.is_ok(), build_offered, continue_offered) {
                             Some(r) => break r,
-                            None => say(match (offer.is_ok(), continue_offered) {
-                                (true, true) => "pyenv: answer p, i or c",
-                                (true, false) => "pyenv: answer p or i",
-                                (false, true) => "pyenv: answer p or c",
-                                (false, false) => "pyenv: answer p",
-                            }),
+                            None => say(&deps::answer_hint(
+                                offer.is_ok(),
+                                build_offered,
+                                continue_offered,
+                            )),
                         }
                     }
                 }
@@ -464,11 +493,54 @@ fn resolve_deps(
             ) {
                 say(&l);
             }
-            return if hard_missing { Err(1) } else { Ok(false) };
+            return if hard_missing {
+                Err(1)
+            } else {
+                Ok(Resolution {
+                    cont: false,
+                    store: Vec::new(),
+                })
+            };
         };
         match (route, offer) {
+            (Route::Build, _) => {
+                let Some(p) = plan else {
+                    return Err(1);
+                };
+                // Without the prompt, every module is required (D5): refuse before building
+                // anything when one can't be built here (rulings P3-P5).
+                if !interactive {
+                    if let Some(why) = &p.blocked {
+                        say(&format!("pyenv: --deps=build can't run: {why}"));
+                        return Err(1);
+                    }
+                    if !p.not.is_empty() {
+                        for (n, why) in &p.not {
+                            say(&format!("pyenv: --deps=build can't build {n} here: {why}"));
+                        }
+                        return Err(1);
+                    }
+                }
+                match build(&p.keys, &mut |s: &str| say(s)) {
+                    Ok(e) => {
+                        store_entries.extend(e);
+                        supplied.extend(p.libs.iter().copied());
+                    }
+                    Err(InstallError::Interrupted) => return Err(130),
+                    Err(InstallError::Message(m)) => {
+                        say(&m);
+                        return Err(1);
+                    }
+                    Err(InstallError::Failed) => return Err(1),
+                }
+            }
             // The builder warns at the end instead of rolling back (`RPYENV_DEPS_MODE=continue`).
-            (Route::Continue, _) => return Ok(true),
+            (Route::Continue, _) => {
+                return Ok(Resolution {
+                    cont: true,
+                    store: store_entries,
+                })
+            }
             (Route::Install, Ok(cmds)) => {
                 last_failed = false;
                 for argv in cmds {
@@ -743,22 +815,70 @@ pub fn install(ctx: &Ctx, args: &[&str]) -> Output {
             job_env.push(("RPYENV_DEPS_MODE".into(), "lenient".into()));
         }
         let job_get = |k: &str| builder::get(&job_env, k);
+        // python-build reads a cache only when it is a directory; `pyenv install` supplies
+        // `$PYENV_ROOT/cache` when PYTHON_BUILD_CACHE_PATH is empty (reference "Cache"). The
+        // store downloads with the same mirror and cache settings.
+        let cache = match get_os(&job_env, "PYTHON_BUILD_CACHE_PATH") {
+            Some(p) => Some(PathBuf::from(p)),
+            None => Some(ctx.root.join("cache")),
+        }
+        .filter(|c| c.is_dir());
+        let fetcher = Fetcher::from_env(&job_get, cache);
         // A binary install (PyPy) compiles nothing, so it needs no build dependencies.
         let compiles = parsed
             .packages
             .iter()
             .any(|p| p.steps.iter().any(|s| s == "standard" || s == "python"));
+        let minor = parsed
+            .packages
+            .iter()
+            .flat_map(|p| p.steps.iter())
+            .find_map(|s| crate::install::stdlib::minor_of_step(s));
+        let mut store_entries: Vec<store::Entry> = Vec::new();
         if compiles && job_get("RPYENV_SKIP_PREFLIGHT").as_deref() != Some("1") {
             let patch = f.patch || needs_patch(&found, &parsed);
-            let minor = parsed
-                .packages
-                .iter()
-                .flat_map(|p| p.steps.iter())
-                .find_map(|s| crate::install::stdlib::minor_of_step(s));
+            let abs_root = std::path::absolute(&ctx.root).unwrap_or_else(|_| ctx.root.clone());
+            let snapshot = job_env.clone();
+            let mut build = |keys: &[&'static str],
+                             say: &mut dyn FnMut(&str)|
+             -> Result<Vec<store::Entry>, InstallError> {
+                let rows = catalog::table(&|k: &str| builder::get(&snapshot, k))
+                    .map_err(InstallError::Message)?;
+                let has_files =
+                    |d: &str| std::fs::read_dir(d).is_ok_and(|mut r| r.next().is_some());
+                let openssldir =
+                    store::system_openssldir(&|p: &str| Path::new(p).is_file(), &has_files)
+                        .map(PathBuf::from)
+                        .unwrap_or_else(|| store::ca_dir(&abs_root));
+                store::ensure(
+                    &store::Build {
+                        root: &abs_root,
+                        rows: &rows,
+                        definition: &parsed,
+                        env: &snapshot,
+                        fetcher: &fetcher,
+                        openssldir,
+                        verbose: f.verbose,
+                    },
+                    keys,
+                    say,
+                )
+            };
             let ok = match minor {
-                Some(m) => resolve_deps(&job_get, &name, m, patch, f.deps.as_deref()),
-                // CPython 2.x keeps today's check (plan ruling P2).
-                None => old_preflight(&job_get, patch).map(|()| false),
+                Some(m) => resolve_deps(
+                    &job_get,
+                    &name,
+                    m,
+                    patch,
+                    f.deps.as_deref(),
+                    &abs_root,
+                    &mut build,
+                ),
+                // CPython 2.x keeps today's check (plan ruling P2 of M8a).
+                None => old_preflight(&job_get, patch).map(|()| Resolution {
+                    cont: false,
+                    store: Vec::new(),
+                }),
             };
             match ok {
                 Err(code) => {
@@ -768,15 +888,21 @@ pub fn install(ctx: &Ctx, args: &[&str]) -> Output {
                     status = status.max(code);
                     break;
                 }
-                // `[c]`: build without the optional libraries; the builder warns at the end.
-                Ok(true) => {
-                    job_env.retain(|(k, _)| k != "RPYENV_DEPS_MODE");
-                    job_env.push(("RPYENV_DEPS_MODE".into(), "continue".into()));
+                Ok(r) => {
+                    // `[c]`: build without the optional libraries; the builder warns at the end.
+                    if r.cont {
+                        job_env.retain(|(k, _)| k != "RPYENV_DEPS_MODE");
+                        job_env.push(("RPYENV_DEPS_MODE".into(), "continue".into()));
+                    }
+                    store_entries = r.store;
                 }
-                Ok(false) => {}
             }
         }
-        let job_get = |k: &str| builder::get(&job_env, k);
+        let linked = (!store_entries.is_empty()).then(|| {
+            store::link(store_entries, minor.unwrap_or(u32::MAX), &|p: &Path| {
+                std::fs::read_to_string(p).ok()
+            })
+        });
         let mut txn = match Txn::begin(&ctx.versions_dir(), &name) {
             Ok(t) => t,
             Err(m) => {
@@ -785,14 +911,6 @@ pub fn install(ctx: &Ctx, args: &[&str]) -> Output {
                 break;
             }
         };
-        // python-build reads a cache only when it is a directory; `pyenv install` supplies
-        // `$PYENV_ROOT/cache` when PYTHON_BUILD_CACHE_PATH is empty (reference "Cache").
-        let cache = match get_os(&job_env, "PYTHON_BUILD_CACHE_PATH") {
-            Some(p) => Some(PathBuf::from(p)),
-            None => Some(ctx.root.join("cache")),
-        }
-        .filter(|c| c.is_dir());
-        let fetcher = Fetcher::from_env(&job_get, cache);
         if f.patch && stdin_patch.is_none() {
             let mut buf = Vec::new();
             let _ = std::io::stdin().read_to_end(&mut buf);
@@ -810,6 +928,7 @@ pub fn install(ctx: &Ctx, args: &[&str]) -> Output {
             },
             env: &job_env,
             fetcher: &fetcher,
+            store: linked.as_ref(),
         };
         match builder::run(&job, &mut txn, &mut |s: &str| say(s)) {
             Ok(()) => {

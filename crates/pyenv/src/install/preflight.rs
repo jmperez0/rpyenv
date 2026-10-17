@@ -349,6 +349,16 @@ pub fn report_deps_with(
         lines.push("Install them with:".to_string());
         lines.push(format!("  {cmd}"));
     }
+    // M8b: the way out without root (not when the compiler or make itself is missing).
+    if refuse
+        && !missing
+            .iter()
+            .any(|d| matches!(d.lib, "compiler" | "make" | "patch"))
+    {
+        lines.push(
+            "Without root, pyenv install --deps=build compiles them from source.".to_string(),
+        );
+    }
     if refuse {
         lines.push("To build anyway, set RPYENV_SKIP_PREFLIGHT=1.".to_string());
     }
@@ -1574,8 +1584,25 @@ mod tests {
                 "  uuid (can't link -luuid)",
                 "Install them with:",
                 "  sudo apt-get install uuid-dev",
+                "Without root, pyenv install --deps=build compiles them from source.",
                 "To build anyway, set RPYENV_SKIP_PREFLIGHT=1.",
             ]
+        );
+        // M8b: no build-route hint when the compiler itself is missing (the route needs it).
+        let cc = [Dep {
+            name: "C compiler",
+            required: true,
+            missing: Missing::Program("cc".into()),
+            lib: "compiler",
+        }];
+        let no_cc = report_deps(&cc, Some(os), false, true);
+        assert!(
+            !no_cc.iter().any(|l| l.contains("--deps=build")),
+            "{no_cc:?}"
+        );
+        assert_eq!(
+            no_cc.last().map(String::as_str),
+            Some("To build anyway, set RPYENV_SKIP_PREFLIGHT=1.")
         );
         let warn = report_deps(&d, Some(os), true, false);
         assert_eq!(
