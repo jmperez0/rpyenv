@@ -751,7 +751,9 @@ pub fn check3(env: &dyn Fn(&str) -> Option<String>, needs_patch: bool, minor: u3
             .map(|(_, s)| s);
         let mut found = false;
         'h: for h in l.headers {
-            let src = format!("#include <{h}>\nint main(void) {{ return 0; }}\n");
+            // stdio.h first: Fedora's readline.h uses FILE without including it.
+            let src =
+                format!("#include <stdio.h>\n#include <{h}>\nint main(void) {{ return 0; }}\n");
             let mut alts: Vec<Vec<String>> = l
                 .links
                 .iter()

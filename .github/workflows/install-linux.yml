@@ -16,6 +16,7 @@ on:
       - "crates/pyenv/conda/**"
       - "crates/pyenv/build.rs"
       - "ci/check_install.sh"
+      - "ci/check_deps.sh"
       - ".github/workflows/install-linux.yml"
   schedule:
     - cron: "17 3 * * *"
@@ -64,7 +65,7 @@ jobs:
       - name: Build dependencies (upstream's install-prerequisites list)
         run: |
           sudo apt-get update -q
-          sudo apt-get install -yq make build-essential libssl-dev zlib1g-dev libbz2-dev libreadline-dev libsqlite3-dev curl git llvm libncurses5-dev libncursesw5-dev xz-utils tk-dev libxml2-dev libxmlsec1-dev libffi-dev liblzma-dev libzstd-dev ccache
+          sudo apt-get install -yq make build-essential libssl-dev zlib1g-dev libbz2-dev libreadline-dev libsqlite3-dev curl git llvm libncurses5-dev libncursesw5-dev xz-utils tk-dev libxml2-dev libxmlsec1-dev libffi-dev liblzma-dev libzstd-dev ccache libgdbm-dev libgdbm-compat-dev uuid-dev libcrypt-dev libnsl-dev libtirpc-dev pkg-config ca-certificates
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ github.workspace }}/.ccache
@@ -170,3 +171,46 @@ jobs:
           PYENV_ROOT="$RUNNER_TEMP/root" target/release/pyenv install "$v"
       - name: Check the install
         run: bash ci/check_install.sh "$RUNNER_TEMP/root" "$VERSION" target/release/pyenv
+
+  # M8a design §9: the dependency check against real distributions. A container holds only a
+  # compiler and make; `pyenv install` with no flags must fail and print a package command;
+  # running that command must make detection come back empty; then (full legs) `--deps=install`
+  # builds a CPython whose every standard-library module imports. A pull request runs Ubuntu and
+  # Fedora in full and detection only on the other four; the scheduled run, and a manual one,
+  # build on all six. pyenv is the release's static musl build: a glibc binary from this runner
+  # would not start on Rocky 9.
+  deps:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    name: deps (${{ matrix.distro }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { distro: debian, image: "debian:stable-slim", full: false }
+          - { distro: ubuntu, image: "ubuntu:24.04", full: true }
+          - { distro: fedora, image: "fedora:41", full: true }
+          - { distro: rocky, image: "rockylinux:9", full: false }
+          - { distro: tumbleweed, image: "opensuse/tumbleweed", full: false }
+          - { distro: arch, image: "archlinux:latest", full: false }
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, 2026-10-02
+        with:
+          toolchain: "1.96"
+          targets: x86_64-unknown-linux-musl
+      - run: sudo apt-get update -q && sudo apt-get install -yq musl-tools
+      - run: cargo build --release --target x86_64-unknown-linux-musl -p pyenv -p pyenv-shim
+      - name: ${{ matrix.image }}
+        env:
+          IMAGE: ${{ matrix.image }}
+          DISTRO: ${{ matrix.distro }}
+          FULL: ${{ matrix.full || github.event_name != 'pull_request' }}
+        run: |
+          bin="$PWD/target/x86_64-unknown-linux-musl/release"
+          args=()
+          if [ "$FULL" != true ]; then args+=(-e DETECT_ONLY=1); fi
+          # Ubuntu's full leg also removes uuid-dev once and requires the check to fail.
+          if [ "$DISTRO" = ubuntu ]; then args+=(-e DISCRIMINATE=1); fi
+          docker run --rm "${args[@]}" -v "$PWD:/w:ro" -v "$bin:/in:ro" -w /root "$IMAGE" \
+            bash -c "cp /in/pyenv /in/pyenv-shim . && bash /w/ci/check_deps.sh $DISTRO"

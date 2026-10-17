@@ -183,7 +183,8 @@ static LIBS: &[Lib] = &[
         key: "libnsl",
         headers: &["rpcsvc/yp_prot.h"],
         links: &[&["-lnsl", "-ltirpc"]],
-        pkg_config: None,
+        // yp_prot.h includes <rpc/rpc.h>, which libtirpc keeps in /usr/include/tirpc.
+        pkg_config: Some("libtirpc"),
         packages: [
             "libnsl-dev libtirpc-dev",
             "libnsl2-devel libtirpc-devel",
