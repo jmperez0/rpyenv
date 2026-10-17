@@ -14,6 +14,7 @@ on:
       - "crates/pyenv/python-build/**"
       - "crates/pyenv/pypy/**"
       - "crates/pyenv/conda/**"
+      - "crates/pyenv/deps/**"
       - "crates/pyenv/build.rs"
       - "ci/check_install.sh"
       - "ci/check_deps.sh"
@@ -186,11 +187,13 @@ jobs:
   # six; the nightly run keeps the pull request's set. On Sundays Ubuntu also builds the newest
   # 3.14 and a build without uuid-dev under RPYENV_SKIP_PREFLIGHT=1. Fedora builds the newest
   # 3.13: its tk-devel is Tk 9, which 3.12 can't build against. pyenv is the release's static
-  # musl build: a glibc binary from this runner would not start on Rocky 9.
+  # musl build: a glibc binary from this runner would not start on Rocky 9. Two more
+  # legs (`build: true`) run M8b's build route on Ubuntu and Fedora with no `-dev` package at all
+  # (`ci/check_deps.sh` BUILD=1).
   deps:
     runs-on: ubuntu-latest
-    timeout-minutes: 75
-    name: deps (${{ matrix.distro }})
+    timeout-minutes: 90
+    name: deps (${{ matrix.distro }}${{ matrix.build && ', build' || '' }})
     strategy:
       fail-fast: false
       matrix:
@@ -201,6 +204,13 @@ jobs:
           - { distro: rocky, image: "rockylinux:9", full: false, version: "3.12.14" }
           - { distro: tumbleweed, image: "opensuse/tumbleweed", full: false, version: "3.12.14" }
           - { distro: arch, image: "archlinux:latest", full: false, version: "3.12.14" }
+          - { distro: ubuntu, image: "ubuntu:24.04", full: true, version: "3.12.14", build: true }
+          - { distro: fedora, image: "fedora:44", full: true, version: "3.12.14", build: true }
+          # Spec §9: the build route on all six, weekly (and on a manual run).
+          - { distro: debian, image: "debian:stable-slim", full: true, version: "3.12.14", build: true, weekly_only: true }
+          - { distro: rocky, image: "rockylinux:9", full: true, version: "3.12.14", build: true, weekly_only: true }
+          - { distro: tumbleweed, image: "opensuse/tumbleweed", full: true, version: "3.12.14", build: true, weekly_only: true }
+          - { distro: arch, image: "archlinux:latest", full: true, version: "3.12.14", build: true, weekly_only: true }
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, 2026-10-02
@@ -210,19 +220,22 @@ jobs:
       - run: sudo apt-get update -q && sudo apt-get install -yq musl-tools
       - run: cargo build --release --target x86_64-unknown-linux-musl -p pyenv -p pyenv-shim
       - name: ${{ matrix.image }}
+        if: ${{ !matrix.weekly_only || github.event.schedule == '41 4 * * 0' || github.event_name == 'workflow_dispatch' }}
         env:
           IMAGE: ${{ matrix.image }}
           DISTRO: ${{ matrix.distro }}
           VERSION: ${{ matrix.version }}
           FULL: ${{ matrix.full || github.event.schedule == '41 4 * * 0' || github.event_name == 'workflow_dispatch' }}
           WEEKLY: ${{ github.event.schedule == '41 4 * * 0' }}
+          BUILD: ${{ matrix.build || false }}
         run: |
           bin="$PWD/target/x86_64-unknown-linux-musl/release"
           args=()
           if [ "$FULL" != true ]; then args+=(-e DETECT_ONLY=1); fi
+          if [ "$BUILD" = true ]; then args+=(-e BUILD=1); fi
           # Ubuntu's full leg also removes uuid-dev once and requires the check to fail; on
           # Sundays it builds the newest 3.14 and a build that lacks _uuid (M8 design §4.4).
-          if [ "$DISTRO" = ubuntu ]; then args+=(-e DISCRIMINATE=1); fi
-          if [ "$DISTRO" = ubuntu ] && [ "$WEEKLY" = true ]; then args+=(-e WEEKLY=1); fi
+          if [ "$DISTRO" = ubuntu ] && [ "$BUILD" != true ]; then args+=(-e DISCRIMINATE=1); fi
+          if [ "$WEEKLY" = true ] && { [ "$DISTRO" = ubuntu ] || [ "$BUILD" = true ]; }; then args+=(-e WEEKLY=1); fi
           docker run --rm "${args[@]}" -v "$PWD:/w:ro" -v "$bin:/in:ro" -w /root "$IMAGE" \
             bash -c "cp /in/pyenv /in/pyenv-shim . && bash /w/ci/check_deps.sh $DISTRO $VERSION"
