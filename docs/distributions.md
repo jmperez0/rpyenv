@@ -106,7 +106,8 @@ and links it into Python statically. Nothing is installed on the system.
 - **CA certificates:** a self-built OpenSSL reads the system's (`/etc/pki/tls` or `/etc/ssl`).
   When the system has none, it reads `$PYENV_ROOT/.rpyenv/ca/cert.pem`, a bundle rpyenv pins (curl's
   copy of Mozilla's list). `pyenv install` replaces that file when an rpyenv upgrade pins a
-  newer one.
+  newer one. rpyenv itself downloads without system certificates too: it then trusts Mozilla's
+  list compiled into it, and still checks every download's SHA-256.
 - **Updates:** each version built this way lists its libraries in `versions/<v>/.rpyenv-deps`.
   When an rpyenv upgrade pins a newer version of one of them, `pyenv install` prints one line
   per affected Python version, with the command that rebuilds it.
