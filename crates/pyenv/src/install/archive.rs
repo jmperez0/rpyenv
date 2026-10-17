@@ -81,6 +81,30 @@ pub fn extract(
     build_dir: &Path,
     name: &str,
 ) -> Result<PathBuf, String> {
+    extract_with(archive, kind, build_dir, name, false).map(|(dest, _)| dest)
+}
+
+/// Like `extract`, but a symbolic link whose target leaves the tree (libtirpc's `INSTALL`
+/// points at `/usr/share/automake-1.18/INSTALL`) is skipped instead of refusing the archive:
+/// it is not created, and the returned list names each one as `<path> -> <target>`. Hard
+/// links and unsafe paths are refused as in `extract`.
+pub fn extract_skipping_outside_links(
+    archive: &Path,
+    kind: Kind,
+    build_dir: &Path,
+    name: &str,
+) -> Result<(PathBuf, Vec<String>), String> {
+    extract_with(archive, kind, build_dir, name, true)
+}
+
+fn extract_with(
+    archive: &Path,
+    kind: Kind,
+    build_dir: &Path,
+    name: &str,
+    skip_outside_symlinks: bool,
+) -> Result<(PathBuf, Vec<String>), String> {
+    let mut skipped: Vec<String> = Vec::new();
     let Some(dest) = super::child_of(build_dir, name) else {
         return Err(format!("invalid package name: {name}"));
     };
@@ -112,6 +136,10 @@ pub fn extract(
                 } else {
                     link_stays_inside(&path, &target)
                 };
+                if !ok && !hard && skip_outside_symlinks {
+                    skipped.push(format!("{} -> {}", path.display(), target.display()));
+                    continue;
+                }
                 if !ok {
                     return Err(format!(
                         "unsafe link in {}: {} -> {}",
@@ -143,5 +171,82 @@ pub fn extract(
         _ => std::fs::rename(&scratch, &dest),
     };
     moved.map_err(|e| format!("{}: {e}", dest.display()))?;
-    Ok(dest)
+    Ok((dest, skipped))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tgz(entries: &[(&str, tar::EntryType, &str, &[u8])]) -> Vec<u8> {
+        let mut b = tar::Builder::new(flate2::write::GzEncoder::new(
+            Vec::new(),
+            flate2::Compression::fast(),
+        ));
+        for (path, ty, link, data) in entries {
+            let mut h = tar::Header::new_gnu();
+            h.set_entry_type(*ty);
+            h.set_mode(0o644);
+            h.set_size(data.len() as u64);
+            if !link.is_empty() {
+                h.set_link_name(link).unwrap();
+            }
+            b.append_data(&mut h, path, *data).unwrap();
+        }
+        b.into_inner().unwrap().finish().unwrap()
+    }
+
+    fn write(dir: &Path, bytes: &[u8]) -> PathBuf {
+        let p = dir.join("a.tar.gz");
+        std::fs::write(&p, bytes).unwrap();
+        p
+    }
+
+    fn outside_symlink() -> Vec<u8> {
+        tgz(&[
+            (
+                "lib-1/INSTALL",
+                tar::EntryType::Symlink,
+                "/usr/share/automake-1.18/INSTALL",
+                b"",
+            ),
+            ("lib-1/README", tar::EntryType::Regular, "", b"hello"),
+        ])
+    }
+
+    #[test]
+    fn extract_refuses_a_symlink_that_leaves_the_tree() {
+        let d = tempfile::tempdir().unwrap();
+        let a = write(d.path(), &outside_symlink());
+        let err = extract(&a, Kind::Gz, d.path(), "lib").unwrap_err();
+        assert!(err.contains("unsafe link"), "{err}");
+    }
+
+    #[test]
+    fn the_store_variant_skips_and_reports_a_symlink_that_leaves_the_tree() {
+        let d = tempfile::tempdir().unwrap();
+        let a = write(d.path(), &outside_symlink());
+        let (dest, skipped) =
+            extract_skipping_outside_links(&a, Kind::Gz, d.path(), "lib").unwrap();
+        assert_eq!(
+            skipped,
+            ["lib-1/INSTALL -> /usr/share/automake-1.18/INSTALL"]
+        );
+        assert!(std::fs::symlink_metadata(dest.join("INSTALL")).is_err());
+        assert_eq!(
+            std::fs::read_to_string(dest.join("README")).unwrap(),
+            "hello"
+        );
+    }
+
+    #[test]
+    fn the_store_variant_still_refuses_an_outside_hard_link() {
+        let d = tempfile::tempdir().unwrap();
+        let a = write(
+            d.path(),
+            &tgz(&[("lib-1/x", tar::EntryType::Link, "../../etc/passwd", b"")]),
+        );
+        let err = extract_skipping_outside_links(&a, Kind::Gz, d.path(), "lib").unwrap_err();
+        assert!(err.contains("unsafe link"), "{err}");
+    }
 }
