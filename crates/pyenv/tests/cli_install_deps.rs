@@ -845,36 +845,58 @@ sleep 30"
         ),
     );
     let owned = env(&f, &[("RPYENV_TEST_PREFLIGHT", "openssl")]);
-    let mut cmd = f.command(
-        std::path::Path::new(env!("CARGO_BIN_EXE_pyenv")),
-        &f.work,
-        &[],
-    );
-    for (k, v) in &owned {
-        cmd.env(k, v);
-    }
-    let mut child = cmd
-        .args(["install", "--deps=install", "3.12.99"])
-        .process_group(0)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let stderr = child.stderr.take().unwrap();
-    let reader = std::thread::spawn(move || {
-        let mut s = String::new();
-        std::io::Read::read_to_string(&mut { stderr }, &mut s).ok();
-        s
-    });
-    let start = Instant::now();
-    while !log(&f).contains("apt-get") {
+    // pyenv starts the stubs this test just wrote; another test's fork may still hold one
+    // open (ETXTBSY: "Text file busy", as in `Fixture::run`). Such an attempt ends before the
+    // stub logs anything: retry it, up to 50 times.
+    let mut attempt = 0;
+    let (mut child, reader) = loop {
+        attempt += 1;
+        let mut cmd = f.command(
+            std::path::Path::new(env!("CARGO_BIN_EXE_pyenv")),
+            &f.work,
+            &[],
+        );
+        for (k, v) in &owned {
+            cmd.env(k, v);
+        }
+        let mut child = cmd
+            .args(["install", "--deps=install", "3.12.99"])
+            .process_group(0)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stderr = child.stderr.take().unwrap();
+        let reader = std::thread::spawn(move || {
+            let mut s = String::new();
+            std::io::Read::read_to_string(&mut { stderr }, &mut s).ok();
+            s
+        });
+        let start = Instant::now();
+        let exited = loop {
+            if log(&f).contains("apt-get") {
+                break false;
+            }
+            if child.try_wait().unwrap().is_some() {
+                break true;
+            }
+            assert!(
+                start.elapsed() < Duration::from_secs(10),
+                "the stub never started"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        if !exited {
+            break (child, reader);
+        }
+        let err = reader.join().unwrap();
         assert!(
-            start.elapsed() < Duration::from_secs(10),
-            "the stub never started"
+            err.contains("Text file busy") && attempt < 50,
+            "pyenv ended before the stub started (attempt {attempt}): {err}"
         );
         std::thread::sleep(Duration::from_millis(20));
-    }
+    };
     common::sigint_group(child.id());
     let start = Instant::now();
     let status = loop {
