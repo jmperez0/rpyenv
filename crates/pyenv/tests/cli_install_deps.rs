@@ -1700,3 +1700,75 @@ fn the_build_route_hint_is_left_out_where_the_route_cannot_run() {
     );
     assert!(!r.stderr.contains("Without root"), "{}", r.stderr);
 }
+
+// allowlist D-126
+#[test]
+fn pyenv_install_warns_once_per_version_built_with_an_older_library() {
+    let f = Fixture::new();
+    plugin_def(&f);
+    stubs(&f, 0);
+    let cat = fake_catalog(&f).display().to_string();
+    f.file(
+        &f.root.join("versions/3.12.98/.rpyenv-deps"),
+        "definition 3.12.98\nlibuuid 9.8 catalog\n",
+    );
+    f.file(
+        &f.root.join("versions/3.12.97/.rpyenv-deps"),
+        "definition 3.12.97\nlibuuid 9.9 catalog\n",
+    );
+    let p = [
+        ("RPYENV_TEST_PREFLIGHT", ""),
+        ("RPYENV_TEST_CATALOG", cat.as_str()),
+    ];
+    let r = run(&f, &["install", "3.12.99"], &p);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    let want = "pyenv: 3.12.98 was built with libuuid 9.8; rpyenv now builds libuuid 9.9. To rebuild it: pyenv install -f 3.12.98\n";
+    assert_eq!(r.stderr.matches(want).count(), 1, "{}", r.stderr);
+    assert!(!r.stderr.contains("3.12.97 was built"), "{}", r.stderr);
+    // Listing versions is not installing: no warning.
+    let l = run(&f, &["install", "--list"], &p);
+    assert!(!l.stderr.contains("was built with"), "{}", l.stderr);
+}
+
+// allowlist D-127
+#[test]
+fn pyenv_install_replaces_an_outdated_ca_bundle() {
+    let f = Fixture::new();
+    plugin_def(&f);
+    stubs(&f, 0);
+    let pem = f.base.join("cacert-2099-01-01.pem");
+    f.file(
+        &pem,
+        "-----BEGIN CERTIFICATE-----\nnew\n-----END CERTIFICATE-----\n",
+    );
+    let sha = pyenv::install::checksum::sha256_file(&pem).unwrap();
+    let cat = f.base.join("catalog.tsv");
+    f.file(
+        &cat,
+        &format!("cacert\t2099-01-01\tfile://{}\t{sha}\n", pem.display()),
+    );
+    let bundle = f.root.join(".rpyenv/ca/cert.pem");
+    f.file(&bundle, "old\n");
+    let cat_s = cat.display().to_string();
+    let p = [
+        ("RPYENV_TEST_PREFLIGHT", ""),
+        ("RPYENV_TEST_CATALOG", cat_s.as_str()),
+    ];
+    let r = run(&f, &["install", "3.12.99"], &p);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert_eq!(
+        std::fs::read_to_string(&bundle).unwrap(),
+        std::fs::read_to_string(&pem).unwrap()
+    );
+    assert!(
+        r.stderr.contains(&format!(
+            "pyenv: updated the CA bundle in {} (2099-01-01)\n",
+            bundle.display()
+        )),
+        "{}",
+        r.stderr
+    );
+    // Up to date: nothing is fetched or said.
+    let again = run(&f, &["install", "-f", "3.12.99"], &p);
+    assert!(!again.stderr.contains("CA bundle"), "{}", again.stderr);
+}
