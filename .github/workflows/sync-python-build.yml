@@ -9,6 +9,7 @@ name: sync-python-build
 #     and the conda table (ci/conda_tables.py) from the vendored conda definitions
 #     (a failure in either is reported in the pull request and fails the run, but doesn't stop
 #     the CPython sync);
+#   - moves the build catalog (crates/pyenv/deps/catalog.tsv) to new upstream library releases (ci/deps_catalog.py);
 #   - regenerates the Linux parity goldens against the new pyenv;
 #   - runs cargo test, the differential cases and the upstream bats suite, and puts each
 #     result, pass or fail, in the pull request;
@@ -110,11 +111,24 @@ jobs:
           # fails (M7c design §4.2 steps 5-6). A changed hash alone keeps the pinned row, so the
           # table can be unchanged and no PR opened; the last step still fails.
           echo "conda_win_attention=$win" >> "$GITHUB_OUTPUT"
+      # M8 design §6.1: the build catalog follows upstream library releases. Like the tables
+      # above, a failure leaves crates/pyenv/deps as it was and fails the run at the end.
+      - name: Check the build catalog
+        id: catalog
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -o pipefail
+          if ! python3 ci/deps_catalog.py --catalog crates/pyenv/deps/catalog.tsv --write --report "$RUNNER_TEMP/catalog.md" 2>&1 | tee "$RUNNER_TEMP/catalog.log"; then
+            git checkout -- crates/pyenv/deps
+            exit 1
+          fi
       - name: Anything to propose?
         id: update
         run: |
-          if [ -z "$(git status --porcelain crates/pyenv/python-build crates/pyenv/pypy crates/pyenv/conda)" ]; then
-            echo "up to date with $TAG, pypy.org and the conda definitions"
+          if [ -z "$(git status --porcelain crates/pyenv/python-build crates/pyenv/pypy crates/pyenv/conda crates/pyenv/deps)" ]; then
+            echo "up to date with $TAG, pypy.org, the conda definitions and the build catalog's sources"
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
@@ -132,6 +146,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PYPY: ${{ steps.pypy.outcome }}
           CONDA: ${{ steps.conda.outcome }}
+          CATALOG: ${{ steps.catalog.outcome }}
           CONDA_WIN: ${{ steps.conda.outputs.conda_win_attention }}
         run: |
           r="$RUNNER_TEMP/results.md"
@@ -155,6 +170,7 @@ jobs:
           : > "$r"
           table "PyPy tables (ci/pypy_tables.py)" "$PYPY" crates/pyenv/pypy/ "$RUNNER_TEMP/pypy.log"
           table "conda table (ci/conda_tables.py)" "$CONDA" crates/pyenv/conda/ "$RUNNER_TEMP/conda.log"
+          table "build catalog (ci/deps_catalog.py)" "$CATALOG" crates/pyenv/deps/ "$RUNNER_TEMP/catalog.log"
           if [ "$CONDA_WIN" = "1" ]; then
             { echo "- **Windows conda table (crates/pyenv/conda/windows.tsv)**: needs attention"
               echo '  ```'; sed 's/^/  /' "$RUNNER_TEMP/conda-win.err"; echo '  ```'; } >> "$r"
@@ -185,17 +201,18 @@ jobs:
           PYTHON_BUILD: ${{ steps.update.outputs.python_build }}
           PYPY: ${{ steps.pypy.outcome }}
           CONDA: ${{ steps.conda.outcome }}
+          CATALOG: ${{ steps.catalog.outcome }}
           CONDA_WIN: ${{ steps.conda.outputs.conda_win_attention }}
         run: |
           branch="sync-python-build-$TAG"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -b "$branch"
-          git add crates/pyenv/python-build crates/pyenv/pypy crates/pyenv/conda parity/golden
+          git add crates/pyenv/python-build crates/pyenv/pypy crates/pyenv/conda crates/pyenv/deps parity/golden
           if [ "$PYTHON_BUILD" = "true" ]; then
             title="Sync python-build definitions with pyenv $TAG"
           else
-            title="Update the PyPy and conda tables"
+            title="Update the PyPy, conda and build-catalog tables"
           fi
           git commit -m "$title"
           git push -f origin "$branch"
@@ -227,6 +244,12 @@ jobs:
               echo '```'
               echo "The table keeps the pinned hash for a changed row (see the README's \"Accepting a changed conda hash\"); check why before accepting it."
             fi
+            if [ -s "$RUNNER_TEMP/catalog.md" ]; then
+              echo
+              echo "**Build catalog updates** (crates/pyenv/deps/catalog.tsv; each hash was computed from a fresh download, review it before merging):"
+              echo
+              cat "$RUNNER_TEMP/catalog.md"
+            fi
             echo
             echo "Checks run by the workflow:"
             echo
@@ -245,13 +268,15 @@ jobs:
       # A table step's failure, let through above so the CPython sync could still open its
       # pull request, still fails the run (a scheduled run's failure notifies the owner).
       - name: Fail when a table couldn't be rebuilt
-        if: steps.pypy.outcome == 'failure' || steps.conda.outcome == 'failure' || steps.conda.outputs.conda_win_attention == '1'
+        if: steps.pypy.outcome == 'failure' || steps.conda.outcome == 'failure' || steps.catalog.outcome == 'failure' || steps.conda.outputs.conda_win_attention == '1'
         env:
           PYPY: ${{ steps.pypy.outcome }}
           CONDA: ${{ steps.conda.outcome }}
+          CATALOG: ${{ steps.catalog.outcome }}
           CONDA_WIN: ${{ steps.conda.outputs.conda_win_attention }}
         run: |
           [ "$CONDA_WIN" != "1" ] || echo "::error::Windows conda table: a hash changed or a row stopped installing; see the PR body, or the step 'Rebuild the conda table' when no PR was opened"
           [ "$PYPY" = "success" ] || echo "::error::ci/pypy_tables.py failed; crates/pyenv/pypy was left unchanged. The step 'Rebuild the PyPy tables' has the log."
           [ "$CONDA" = "success" ] || echo "::error::ci/conda_tables.py failed; crates/pyenv/conda was left unchanged. The step 'Rebuild the conda table' has the log."
+          [ "$CATALOG" = "success" ] || echo "::error::ci/deps_catalog.py failed; crates/pyenv/deps was left unchanged. The step 'Check the build catalog' has the log."
           exit 1

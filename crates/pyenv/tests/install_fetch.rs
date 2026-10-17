@@ -136,6 +136,7 @@ fn a_server_error_is_retried() {
     assert_eq!(s.hits("/pkg-1.0.tar.gz"), 3);
 }
 
+// allowlist D-63
 #[test]
 fn not_found_is_final_and_reported() {
     let s = start(vec![]);
@@ -148,9 +149,16 @@ fn not_found_is_final_and_reported() {
     );
     assert_eq!(g.result, Err(InstallError::Failed));
     assert_eq!(s.hits("/pkg-1.0.tar.gz"), 1);
+    // The reason comes first, on stderr too (final review I2).
     assert_eq!(
-        g.said.last().unwrap(),
-        "error: failed to download pkg-1.0.tar.gz"
+        g.said[g.said.len() - 2..],
+        [
+            format!(
+                "pyenv: cannot download {}: HTTP 404",
+                s.url("/pkg-1.0.tar.gz")
+            ),
+            "error: failed to download pkg-1.0.tar.gz".to_string()
+        ]
     );
 }
 
@@ -281,6 +289,15 @@ fn three_server_errors_fail_after_exactly_three_attempts() {
     assert_eq!(
         g.said.last().unwrap(),
         "error: failed to download pkg-1.0.tar.gz"
+    );
+    // The last attempt's reason (final review I2).
+    assert!(
+        g.said.contains(&format!(
+            "pyenv: cannot download {}: HTTP 503",
+            s.url("/pkg-1.0.tar.gz")
+        )),
+        "{:?}",
+        g.said
     );
 }
 

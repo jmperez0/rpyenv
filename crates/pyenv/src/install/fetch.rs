@@ -65,10 +65,75 @@ enum Attempt {
     Final(String),
 }
 
+/// The certificates downloads trust on Linux.
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Roots {
+    /// The system's, through its platform verifier.
+    Platform,
+    /// Mozilla's root list compiled into rpyenv (Linux without CA certificates).
+    Mozilla,
+}
+
+/// Linux (allowlist D-128): the system's certificates when it has any, where its OpenSSL looks
+/// (`openssldir`, from `openssl version -d`), in the distributions' bundle files, or in
+/// `SSL_CERT_FILE`/`SSL_CERT_DIR` (the check `pyenv install` reports missing certificates
+/// with); else Mozilla's roots, so that a machine without them can still download (and get them
+/// through the build route, M8 design §6.5). Every download is SHA-256 checked either way.
+#[cfg(target_os = "linux")]
+pub(crate) fn linux_roots(
+    openssldir: Option<&str>,
+    cert_file: Option<&str>,
+    cert_dir: Option<&str>,
+    exists: &dyn Fn(&str) -> bool,
+    has_files: &dyn Fn(&str) -> bool,
+) -> Roots {
+    if super::preflight::ca_present(openssldir, cert_file, cert_dir, exists, has_files) {
+        Roots::Platform
+    } else {
+        Roots::Mozilla
+    }
+}
+
+/// The roots for this process, decided once.
+#[cfg(target_os = "linux")]
+fn roots() -> Roots {
+    static ROOTS: std::sync::OnceLock<Roots> = std::sync::OnceLock::new();
+    *ROOTS.get_or_init(|| {
+        let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+        let dir = std::process::Command::new("openssl")
+            .args(["version", "-d"])
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .and_then(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .split('"')
+                    .nth(1)
+                    .map(str::to_string)
+            });
+        let has_files = |d: &str| std::fs::read_dir(d).is_ok_and(|mut r| r.next().is_some());
+        linux_roots(
+            dir.as_deref(),
+            var("SSL_CERT_FILE").as_deref(),
+            var("SSL_CERT_DIR").as_deref(),
+            &|p| Path::new(p).is_file(),
+            &has_files,
+        )
+    })
+}
+
 fn agent() -> ureq::Agent {
-    let tls = ureq::tls::TlsConfig::builder()
-        .root_certs(ureq::tls::RootCerts::PlatformVerifier)
-        .build();
+    #[cfg(target_os = "linux")]
+    let certs = match roots() {
+        Roots::Platform => ureq::tls::RootCerts::PlatformVerifier,
+        Roots::Mozilla => ureq::tls::RootCerts::WebPki,
+    };
+    #[cfg(not(target_os = "linux"))]
+    let certs = ureq::tls::RootCerts::PlatformVerifier;
+    let tls = ureq::tls::TlsConfig::builder().root_certs(certs).build();
     ureq::Agent::config_builder()
         .tls_config(tls)
         .proxy(ureq::Proxy::try_from_env())
@@ -297,7 +362,8 @@ impl Fetcher {
         Ok(dest)
     }
 
-    /// Up to 3 attempts at one URL. Prints `error: failed to download` when the GET finally fails.
+    /// Up to 3 attempts at one URL. When the GET finally fails, prints the reason (final review
+    /// I2: a TLS failure must not hide in the log), then `error: failed to download <file>`.
     fn download(
         &self,
         url: &str,
@@ -307,6 +373,7 @@ impl Fetcher {
         say: &mut dyn FnMut(&str),
     ) -> Result<Outcome, InstallError> {
         let file_name = &req.file_name;
+        let mut last = String::new();
         for attempt in 1..=3u32 {
             if attempt > 1 {
                 std::thread::sleep(self.retry_delay * (attempt - 1));
@@ -344,15 +411,18 @@ impl Fetcher {
                 Attempt::Transient(e) => {
                     let _ = std::fs::remove_file(&part);
                     let _ = writeln!(log, "{url}: {e} (attempt {attempt} of 3)");
+                    last = e;
                 }
                 Attempt::Final(e) => {
                     let _ = std::fs::remove_file(&part);
                     let _ = writeln!(log, "{url}: {e}");
+                    say(&format!("pyenv: cannot download {url}: {e}"));
                     say(&format!("error: failed to download {file_name}"));
                     return Ok(Outcome::GetFailed);
                 }
             }
         }
+        say(&format!("pyenv: cannot download {url}: {last}"));
         say(&format!("error: failed to download {file_name}"));
         Ok(Outcome::GetFailed)
     }
@@ -598,6 +668,41 @@ mod tests {
         ] {
             assert_eq!(file_url_path(bad), None, "{bad}");
         }
+    }
+
+    // allowlist D-128
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn downloads_trust_mozillas_roots_only_when_the_system_has_no_certificates() {
+        let none = |_: &str| false;
+        assert_eq!(linux_roots(None, None, None, &none, &none), Roots::Mozilla);
+        // ca-certificates' bundle on Debian and Ubuntu.
+        let debian = |p: &str| p == "/etc/ssl/certs/ca-certificates.crt";
+        assert_eq!(
+            linux_roots(None, None, None, &debian, &none),
+            Roots::Platform
+        );
+        // The folder the system's OpenSSL names (`openssl version -d`).
+        let dir = |d: &str| d == "/opt/ssl/certs";
+        assert_eq!(
+            linux_roots(Some("/opt/ssl"), None, None, &none, &dir),
+            Roots::Platform
+        );
+        // SSL_CERT_FILE and SSL_CERT_DIR replace the system's places, as for OpenSSL.
+        let mine = |p: &str| p == "/home/u/ca.pem";
+        assert_eq!(
+            linux_roots(None, Some("/home/u/ca.pem"), None, &mine, &none),
+            Roots::Platform
+        );
+        assert_eq!(
+            linux_roots(None, Some("/home/u/missing.pem"), None, &debian, &none),
+            Roots::Mozilla
+        );
+        let certs = |d: &str| d == "/home/u/certs";
+        assert_eq!(
+            linux_roots(None, None, Some("/x:/home/u/certs"), &none, &certs),
+            Roots::Platform
+        );
     }
 
     #[test]

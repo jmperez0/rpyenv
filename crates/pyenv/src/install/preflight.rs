@@ -313,17 +313,19 @@ pub fn report_deps(
     root: bool,
     refuse: bool,
 ) -> Vec<String> {
-    report_deps_with(missing, os_release, root, refuse, false)
+    report_deps_with(missing, os_release, root, refuse, false, false)
 }
 
 /// As `report_deps`; `apt_update`: the apt package lists are empty, so the command starts
-/// with `apt-get update &&` (M8 design §5.3).
+/// with `apt-get update &&` (M8 design §5.3). `build_route`: `--deps=build` could run for this
+/// version and root (CPython 3.7 or later, a plain `PYENV_ROOT`: plan rulings P2, P5).
 pub fn report_deps_with(
     missing: &[Dep],
     os_release: Option<&str>,
     root: bool,
     refuse: bool,
     apt_update: bool,
+    build_route: bool,
 ) -> Vec<String> {
     use super::deps;
     let mut lines = Vec::new();
@@ -348,6 +350,18 @@ pub fn report_deps_with(
         lines.extend(os_release.and_then(|o| deps::crb_line(o, root)));
         lines.push("Install them with:".to_string());
         lines.push(format!("  {cmd}"));
+    }
+    // M8b: the way out without root, where the build route can run (not when the compiler or
+    // make itself is missing).
+    if refuse
+        && build_route
+        && !missing
+            .iter()
+            .any(|d| matches!(d.lib, "compiler" | "make" | "patch"))
+    {
+        lines.push(
+            "Without root, pyenv install --deps=build compiles them from source.".to_string(),
+        );
     }
     if refuse {
         lines.push("To build anyway, set RPYENV_SKIP_PREFLIGHT=1.".to_string());
@@ -687,6 +701,67 @@ pub(crate) fn ca_present(
     file || dir
 }
 
+/// What the build route needs besides a compiler and `make` (plan rulings P3, P4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Tools {
+    /// Perl with the core modules OpenSSL's `Configure` and libxcrypt's scripts load.
+    pub perl: bool,
+    /// The X11 headers and libX11, which Tk needs until M8c.
+    pub x11: bool,
+}
+
+/// The Perl modules OpenSSL's and libxcrypt's build scripts load that Fedora 44's
+/// `perl-interpreter` alone lacks (measured 2026-10-17; `perl-core` has them).
+pub const PERL_MODULES: [&str; 6] = [
+    "FindBin",
+    "lib",
+    "IPC::Cmd",
+    "File::Compare",
+    "File::Copy",
+    "Digest::SHA",
+];
+
+/// Probes for `Tools`. Debug builds: `RPYENV_TEST_BUILD_TOOLS` (a comma list of `perl`, `x11`)
+/// names the tools present instead.
+pub fn build_tools(env: &dyn Fn(&str) -> Option<String>) -> Tools {
+    if cfg!(debug_assertions) {
+        if let Some(list) = env("RPYENV_TEST_BUILD_TOOLS") {
+            let has = |t: &str| list.split(',').map(str::trim).any(|w| w == t);
+            return Tools {
+                perl: has("perl"),
+                x11: has("x11"),
+            };
+        }
+    }
+    let path = env("PATH");
+    let run = |program: &str, args: &[&str], input: &str, capture: bool| {
+        run_with_input(path.as_deref(), program, args, input, capture)
+    };
+    let mut perl_args: Vec<String> = PERL_MODULES.iter().map(|m| format!("-M{m}")).collect();
+    perl_args.push("-e1".into());
+    let perl_args: Vec<&str> = perl_args.iter().map(String::as_str).collect();
+    let perl = run("perl", &perl_args, "", false).is_some_and(|(ok, _)| ok);
+    let cc = probe_compiler(env, &run);
+    let tmp = probe_path();
+    let x11 = link_probe(
+        env,
+        &cc,
+        &|p, a| {
+            run(
+                p,
+                a,
+                "#include <X11/Xlib.h>\nint main(void) { return XOpenDisplay(0) != 0; }\n",
+                false,
+            )
+            .is_some_and(|(ok, _)| ok)
+        },
+        &["-lX11"],
+        &tmp.display().to_string(),
+    );
+    let _ = std::fs::remove_file(&tmp);
+    Tools { perl, x11 }
+}
+
 /// Runs `program` (its words split, as `$CC` may be `ccache gcc`) with `input` on stdin;
 /// `(success, stdout)` when it could be started. Stderr is dropped.
 fn run_with_input(
@@ -715,6 +790,9 @@ fn run_with_input(
         let _ = s.write_all(input.as_bytes());
     }
     let o = child.wait_with_output().ok()?;
+    // A probe killed by Ctrl+C: the caller's `interrupted()` check must see it (no race with
+    // the handler thread).
+    super::note_child_status(&o.status);
     Some((
         o.status.success(),
         String::from_utf8_lossy(&o.stdout).into_owned(),
@@ -932,6 +1010,27 @@ pub fn check3(env: &dyn Fn(&str) -> Option<String>, needs_patch: bool, minor: u3
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_build_tools_hook_names_the_tools_present() {
+        let env = |k: &str| (k == "RPYENV_TEST_BUILD_TOOLS").then(|| "x11".to_string());
+        assert_eq!(
+            build_tools(&env),
+            Tools {
+                perl: false,
+                x11: true
+            }
+        );
+        let none = |k: &str| (k == "RPYENV_TEST_BUILD_TOOLS").then(String::new);
+        assert_eq!(
+            build_tools(&none),
+            Tools {
+                perl: false,
+                x11: false
+            }
+        );
+        assert!(PERL_MODULES.contains(&"IPC::Cmd") && PERL_MODULES.contains(&"FindBin"));
+    }
 
     fn missing_only(names: &'static [&'static str]) -> impl Fn(&Probe) -> bool {
         move |p: &Probe| match p {
@@ -1495,6 +1594,31 @@ mod tests {
                 "To build anyway, set RPYENV_SKIP_PREFLIGHT=1.",
             ]
         );
+        // M8b: where the build route can run, the refusal names it.
+        let hint = report_deps_with(&d, Some(os), false, true, false, true);
+        assert_eq!(
+            hint[4..],
+            [
+                "Without root, pyenv install --deps=build compiles them from source.",
+                "To build anyway, set RPYENV_SKIP_PREFLIGHT=1.",
+            ]
+        );
+        // M8b: no build-route hint when the compiler itself is missing (the route needs it).
+        let cc = [Dep {
+            name: "C compiler",
+            required: true,
+            missing: Missing::Program("cc".into()),
+            lib: "compiler",
+        }];
+        let no_cc = report_deps_with(&cc, Some(os), false, true, false, true);
+        assert!(
+            !no_cc.iter().any(|l| l.contains("--deps=build")),
+            "{no_cc:?}"
+        );
+        assert_eq!(
+            no_cc.last().map(String::as_str),
+            Some("To build anyway, set RPYENV_SKIP_PREFLIGHT=1.")
+        );
         let warn = report_deps(&d, Some(os), true, false);
         assert_eq!(
             warn,
@@ -1505,7 +1629,7 @@ mod tests {
                 "  apt-get install uuid-dev",
             ]
         );
-        let upd = report_deps_with(&d, Some(os), false, false, true);
+        let upd = report_deps_with(&d, Some(os), false, false, true, false);
         assert_eq!(
             upd[3],
             "  sudo apt-get update && sudo apt-get install uuid-dev"

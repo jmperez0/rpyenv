@@ -34,6 +34,9 @@ pub struct Job<'a> {
     /// gets exactly this, minus the variables python-build unsets; lookups read it too.
     pub env: &'a [(OsString, OsString)],
     pub fetcher: &'a Fetcher,
+    /// The build store's libraries for this version (M8 design §6.3), when the build route
+    /// supplied any.
+    pub store: Option<&'a super::store::Linked>,
 }
 
 type R<T> = Result<T, InstallError>;
@@ -223,6 +226,11 @@ impl Plan {
         let ldflags = join(&[&format!("-L{p}/lib"), &rpath, &user_ld]);
         let libs = join(&[&format!("-L{p}/lib"), &rpath, &var("LIBS")]);
         let cppflags = join(&[&format!("-I{p}/include"), &var("CPPFLAGS")]);
+        // The store's flags come after every flag of the user's, `PYTHON_` variants included
+        // (plan ruling P8): the compiler and linker take the first match.
+        let store = job.store;
+        let store_ld = store.map(|s| s.ldflags.join(" ")).unwrap_or_default();
+        let store_cpp = store.map(|s| s.cppflags.join(" ")).unwrap_or_default();
         let py_cflags = if job.opts.debug {
             format!("-O0 {}", var("PYTHON_CFLAGS"))
         } else {
@@ -239,12 +247,37 @@ impl Plan {
         }
         configure_env.push((
             "CPPFLAGS".into(),
-            join(&[&cppflags, &var("PYTHON_CPPFLAGS")]),
+            join(&[&cppflags, &var("PYTHON_CPPFLAGS"), &store_cpp]),
         ));
-        configure_env.push(("LDFLAGS".into(), join(&[&ldflags, &var("PYTHON_LDFLAGS")])));
+        configure_env.push((
+            "LDFLAGS".into(),
+            join(&[&ldflags, &var("PYTHON_LDFLAGS"), &store_ld]),
+        ));
         let mut child_env = env.to_vec();
+        let cppflags = join(&[&cppflags, &store_cpp]);
+        let ldflags = join(&[&ldflags, &store_ld]);
         for (k, v) in [("CPPFLAGS", cppflags), ("LDFLAGS", ldflags), ("LIBS", libs)] {
             child_env.push((k.into(), v.into()));
+        }
+        if let Some(s) = store {
+            if !s.pkg_config_path.is_empty() {
+                let mut v: Vec<String> = s
+                    .pkg_config_path
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect();
+                v.extend(get(env, "PKG_CONFIG_PATH").filter(|x| !x.is_empty()));
+                child_env.push(("PKG_CONFIG_PATH".into(), v.join(":").into()));
+            }
+            if let Some(bin) = &s.path {
+                let path = get(env, "PATH").unwrap_or_default();
+                child_env.push(("PATH".into(), format!("{}:{path}", bin.display()).into()));
+            }
+            for (k, v) in &s.configure_env {
+                if var(k).is_empty() {
+                    configure_env.push((k.clone(), v.clone()));
+                }
+            }
         }
         let configure_cmd = get(env, "PYTHON_CONFIGURE")
             .filter(|v| !v.is_empty())
@@ -252,6 +285,10 @@ impl Plan {
         let mut configure = words(&configure_cmd);
         configure.push(format!("--prefix={p}"));
         configure.extend(array);
+        // Before the user's options, which win (ruling P8).
+        if let Some(s) = store {
+            configure.extend(s.configure.iter().cloned());
+        }
         configure.extend(words(&conf_opts));
         configure.extend(words(&py_conf_opts));
         let make_opts = match (get(env, "MAKEOPTS"), get(env, "MAKE_OPTS")) {
@@ -322,7 +359,7 @@ fn sigint(status: &ExitStatus) -> bool {
     status.signal() == Some(2)
 }
 
-fn logged(log: &BuildLog, cmd: &mut Command) -> R<()> {
+pub(crate) fn logged(log: &BuildLog, cmd: &mut Command) -> R<()> {
     if interrupted() {
         return Err(InstallError::Interrupted);
     }
@@ -538,9 +575,23 @@ if not ok:
 raise SystemExit(0 if ok else 1)
 ";
 
+/// What §4.4 also checks when the build route supplied Tcl and Tk (final review I1).
+pub(crate) struct StoreTcl<'a> {
+    /// `<root>/cache/deps`: Tcl's library must not lie under it.
+    pub cache: &'a Path,
+    /// Whether a path exists (the filesystem, or a fake in tests).
+    pub exists: &'a dyn Fn(&Path) -> bool,
+    /// Makes a throwaway virtual environment from the built interpreter and starts Tcl in it.
+    pub in_venv: &'a dyn Fn() -> bool,
+}
+
 /// M8 design §4.4: every module of the table imports, CA certificates exist, Tcl runs.
 /// `run(args)` runs the built interpreter: its success and its stdout.
-pub(crate) fn stdlib_failures(run: &dyn Fn(&[&str]) -> (bool, String), minor: u32) -> Vec<String> {
+pub(crate) fn stdlib_failures(
+    run: &dyn Fn(&[&str]) -> (bool, String),
+    minor: u32,
+    store_tcl: Option<&StoreTcl>,
+) -> Vec<String> {
     let mut out = Vec::new();
     for m in super::stdlib::modules(minor) {
         for i in m.imports {
@@ -565,8 +616,28 @@ pub(crate) fn stdlib_failures(run: &dyn Fn(&[&str]) -> (bool, String), minor: u3
             super::stdlib::CA_KEY
         ));
     }
-    if !run(&["-c", "import tkinter; tkinter.Tcl().eval('info library')"]).0 {
+    let (tcl_ok, tcl_out) = run(&[
+        "-c",
+        "import tkinter; print(tkinter.Tcl().eval('info library'))",
+    ]);
+    if !tcl_ok {
         out.push("tkinter (Tcl doesn't start; needs tk)".into());
+    } else if let Some(s) = store_tcl {
+        // M8 design §4.4: a store-built Tcl reads its library from outside the build cache
+        // (deleting the cache must not break it), and starts in a venv too (§6.3).
+        let lib = tcl_out.trim();
+        if Path::new(lib).starts_with(s.cache) {
+            out.push(format!(
+                "tkinter (Tcl's library {lib} is in the build cache; needs tk)"
+            ));
+        } else if !(s.exists)(Path::new(lib)) {
+            out.push(format!(
+                "tkinter (Tcl's library {lib} doesn't exist; needs tk)"
+            ));
+        }
+        if !(s.in_venv)() {
+            out.push("tkinter (Tcl doesn't start in a virtual environment; needs tk)".into());
+        }
     }
     out
 }
@@ -601,7 +672,51 @@ fn stdlib_check(
             Err(_) => (false, String::new()),
         }
     };
-    let fails = stdlib_failures(&run, minor);
+    // A throwaway venv from the built interpreter, where Tcl must start as well (§4.4).
+    let in_venv = || -> bool {
+        if interrupted() {
+            return true;
+        }
+        let tmp = get(job.env, "TMPDIR")
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| "/tmp".into());
+        let venv = Path::new(&tmp).join(format!("rpyenv-tcl-venv.{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&venv);
+        let quiet = |c: &mut Command| -> bool {
+            let st = c
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+            if st.as_ref().is_ok_and(sigint) {
+                sigint_seen.set(true);
+            }
+            st.is_ok_and(|s| s.success())
+        };
+        let ok = quiet(
+            command(python, &plan.env)
+                .args(["-m", "venv", "--without-pip"])
+                .arg(&venv),
+        ) && quiet(
+            command(venv.join("bin").join("python"), &plan.env)
+                .args(["-c", "import tkinter; tkinter.Tcl()"]),
+        );
+        let _ = std::fs::remove_dir_all(&venv);
+        ok
+    };
+    // These checks apply only when the store supplied Tcl/Tk (its script folders).
+    let exists = |p: &Path| p.exists();
+    let cache = job
+        .store
+        .filter(|s| !s.scripts.is_empty())
+        .and_then(|s| s.entries.iter().find(|e| e.key == "tcl"))
+        .and_then(|e| e.dir.parent());
+    let store_tcl = cache.map(|cache| StoreTcl {
+        cache,
+        exists: &exists,
+        in_venv: &in_venv,
+    });
+    let fails = stdlib_failures(&run, minor, store_tcl.as_ref());
     if interrupted() || sigint_seen.get() {
         return Err(InstallError::Interrupted);
     }
@@ -718,13 +833,13 @@ fn lenient_summary(
     format!(
         "pyenv: {name} was built without: {list}
   Add them: {add}, then pyenv install -f {name}{crb}
-  In a later rpyenv release this stops the build; choose now with --deps=install or
-  --deps=system (or RPYENV_BUILD_DEPS)."
+  In a later rpyenv release this stops the build; choose now with --deps=install,
+  --deps=build or --deps=system (or RPYENV_BUILD_DEPS)."
     )
 }
 
 /// `cp -fR src/. dst`: directories, regular files with their modes, and links as links.
-fn copy_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
+pub(crate) fn copy_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dst)?;
     for e in std::fs::read_dir(src)? {
         let e = e?;
@@ -854,6 +969,17 @@ pub fn run(job: &Job, txn: &mut Txn, say: &mut dyn FnMut(&str)) -> R<()> {
     let result = packages(job, txn, &plan, &build_path, &tmp, &log, say);
     match &result {
         Ok(()) => {
+            if let Some(s) = job.store {
+                let file = plan.prefix.join(super::record::FILE);
+                if let Err(e) =
+                    std::fs::write(&file, super::record::text(&job.found.name, &s.entries))
+                {
+                    say(&format!(
+                        "pyenv: warning: cannot write {}: {e}",
+                        file.display()
+                    ));
+                }
+            }
             if !job.opts.keep {
                 let _ = std::fs::remove_dir_all(&build_path);
             }
@@ -1137,6 +1263,24 @@ fn run_step(
                     ))
                 })?;
             }
+            // Tcl and Tk find their script folders beside the executable (M8 design §6.3).
+            if staging {
+                if let Some(s) = job.store {
+                    for d in &s.scripts {
+                        let to = plan
+                            .prefix
+                            .join("lib")
+                            .join(d.file_name().unwrap_or_default());
+                        copy_tree(d, &to).map_err(|e| {
+                            InstallError::Message(format!(
+                                "pyenv: cannot copy {} into {}: {e}",
+                                d.display(),
+                                to.display()
+                            ))
+                        })?;
+                    }
+                }
+            }
             Ok(())
         }
         // python-build's `build_package_pypy` (M7a design §4.3): the binary tree is copied as it
@@ -1268,7 +1412,7 @@ mod tests {
             let ok = !(args[1] == "import _uuid" || args[1].contains("get_default_verify_paths"));
             (ok, String::new())
         };
-        let f = stdlib_failures(&fails, 12);
+        let f = stdlib_failures(&fails, 12, None);
         assert!(
             f.contains(&"uuid (import _uuid failed; needs libuuid)".to_string()),
             "{f:?}"
@@ -1279,7 +1423,7 @@ mod tests {
             ),
             "{f:?}"
         );
-        assert!(stdlib_failures(&|_| (true, String::new()), 12).is_empty());
+        assert!(stdlib_failures(&|_| (true, String::new()), 12, None).is_empty());
     }
 
     /// Final review M3: a failed CA check names the file and directory the built Python looked
@@ -1297,7 +1441,7 @@ mod tests {
             }
         };
         assert_eq!(
-            stdlib_failures(&run, 13),
+            stdlib_failures(&run, 13, None),
             ["ssl certificates (no CA file /opt/openssl/ssl/cert.pem and no certificates in /opt/openssl/ssl/certs; needs ca-certificates, or set SSL_CERT_FILE or SSL_CERT_DIR)"]
         );
         // The script prints both places and honors the variables, as Python's own lookup does.
@@ -1307,6 +1451,152 @@ mod tests {
         ] {
             assert!(CA_CHECK.contains(want), "{want}");
         }
+    }
+
+    /// Plan ruling P8: every flag of the user's, `PYTHON_CPPFLAGS` and `PYTHON_LDFLAGS`
+    /// included, comes before the store's (the compiler and linker take the first match); the
+    /// store's configure arguments come before the user's options; the store's pkg-config
+    /// folders and pkgconf's `bin/` come first.
+    #[test]
+    fn the_users_flags_come_before_the_stores() {
+        let found = Found {
+            name: "3.12.99".into(),
+            text: String::new(),
+            origin: Origin::Builtin,
+        };
+        let definition = Definition::default();
+        let env: Vec<(OsString, OsString)> = [
+            ("CPPFLAGS", "-I/user/cpp"),
+            ("PYTHON_CPPFLAGS", "-I/user/pycpp"),
+            ("LDFLAGS", "-L/user/ld"),
+            ("PYTHON_LDFLAGS", "-L/user/pyld"),
+            ("CONFIGURE_OPTS", "--user-conf"),
+            ("PYTHON_CONFIGURE_OPTS", "--user-pyconf"),
+            ("PKG_CONFIG_PATH", "/user/pc"),
+            ("PATH", "/usr/bin"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.into(), v.into()))
+        .collect();
+        let store = super::super::store::Linked {
+            entries: Vec::new(),
+            cppflags: vec!["-I/store/inc".into()],
+            ldflags: vec!["-L/store/lib".into()],
+            pkg_config_path: vec![PathBuf::from("/store/pc")],
+            path: Some(PathBuf::from("/store/bin")),
+            configure: vec!["--with-openssl=/store/ssl".into()],
+            configure_env: Vec::new(),
+            scripts: Vec::new(),
+        };
+        let fetcher = Fetcher::from_env(&|_| None, None);
+        let job = Job {
+            found: &found,
+            definition: &definition,
+            prefix: PathBuf::from("/r/versions/3.12.99"),
+            opts: Options {
+                keep: false,
+                verbose: false,
+                debug: false,
+                stdin_patch: None,
+            },
+            env: &env,
+            fetcher: &fetcher,
+            store: Some(&store),
+        };
+        let plan = Plan::new(&job, job.prefix.clone()).unwrap();
+        let conf = |k: &str| {
+            plan.configure_env
+                .iter()
+                .rev()
+                .find(|(n, _)| n == k)
+                .map(|(_, v)| v.clone())
+                .unwrap_or_default()
+        };
+        let p = "/r/versions/3.12.99";
+        assert_eq!(
+            conf("CPPFLAGS"),
+            format!("-I{p}/include -I/user/cpp -I/user/pycpp -I/store/inc")
+        );
+        assert_eq!(
+            conf("LDFLAGS"),
+            format!("-L{p}/lib -Wl,-rpath,{p}/lib -L/user/ld -L/user/pyld -L/store/lib")
+        );
+        // The children's environment has no `PYTHON_` variants; the store still comes last.
+        assert_eq!(
+            get(&plan.env, "CPPFLAGS").unwrap(),
+            format!("-I{p}/include -I/user/cpp -I/store/inc")
+        );
+        assert_eq!(
+            get(&plan.env, "LDFLAGS").unwrap(),
+            format!("-L{p}/lib -Wl,-rpath,{p}/lib -L/user/ld -L/store/lib")
+        );
+        let at = |a: &str| plan.configure.iter().position(|x| x == a).unwrap();
+        assert!(
+            at("--with-openssl=/store/ssl") < at("--user-conf"),
+            "{:?}",
+            plan.configure
+        );
+        assert!(
+            at("--user-conf") < at("--user-pyconf"),
+            "{:?}",
+            plan.configure
+        );
+        assert_eq!(
+            get(&plan.env, "PKG_CONFIG_PATH").unwrap(),
+            "/store/pc:/user/pc"
+        );
+        assert_eq!(get(&plan.env, "PATH").unwrap(), "/store/bin:/usr/bin");
+    }
+
+    /// M8 design §4.4's last clause (final review I1): when the build route supplied Tcl/Tk,
+    /// Tcl's `info library` exists outside the build cache, and Tcl starts in a venv.
+    #[test]
+    fn a_store_built_tcl_must_read_its_library_outside_the_cache_and_start_in_a_venv() {
+        let says = |lib: &'static str| {
+            move |args: &[&str]| -> (bool, String) {
+                if args[1].contains("tkinter.Tcl") {
+                    (true, format!("{lib}\n"))
+                } else {
+                    (true, String::new())
+                }
+            }
+        };
+        let cache = Path::new("/r/cache/deps");
+        let real = [
+            "/r/.rpyenv/tcltk/tcl-8.6.18/tcl8.6",
+            "/r/versions/3.12.15/lib/tcl8.6",
+        ];
+        let exists = |p: &Path| real.iter().any(|r| p == Path::new(r));
+        let venv_ok = || true;
+        let venv_fails = || false;
+        let good = StoreTcl {
+            cache,
+            exists: &exists,
+            in_venv: &venv_ok,
+        };
+        for lib in real {
+            let f = stdlib_failures(&says(lib), 12, Some(&good));
+            assert!(f.is_empty(), "{lib}: {f:?}");
+        }
+        assert_eq!(
+            stdlib_failures(&says("/r/cache/deps/tcl-8.6.18-abc/lib/tcl8.6"), 12, Some(&good)),
+            ["tkinter (Tcl's library /r/cache/deps/tcl-8.6.18-abc/lib/tcl8.6 is in the build cache; needs tk)"]
+        );
+        assert_eq!(
+            stdlib_failures(&says("/r/.rpyenv/tcltk/gone/tcl8.6"), 12, Some(&good)),
+            ["tkinter (Tcl's library /r/.rpyenv/tcltk/gone/tcl8.6 doesn't exist; needs tk)"]
+        );
+        let no_venv = StoreTcl {
+            cache,
+            exists: &exists,
+            in_venv: &venv_fails,
+        };
+        assert_eq!(
+            stdlib_failures(&says(real[0]), 12, Some(&no_venv)),
+            ["tkinter (Tcl doesn't start in a virtual environment; needs tk)"]
+        );
+        // Without the store, neither where Tcl's library is nor venvs are checked.
+        assert!(stdlib_failures(&says("/usr/share/tcltk/tcl8.6"), 12, None).is_empty());
     }
 
     #[test]
@@ -1322,8 +1612,8 @@ VERSION_ID=\"12\"
             lenient_summary("3.12.14", &fails, 12, Some(os), false),
             "pyenv: 3.12.14 was built without: tkinter, uuid
   Add them: sudo apt-get install tk-dev uuid-dev, then pyenv install -f 3.12.14
-  In a later rpyenv release this stops the build; choose now with --deps=install or
-  --deps=system (or RPYENV_BUILD_DEPS)."
+  In a later rpyenv release this stops the build; choose now with --deps=install,
+  --deps=build or --deps=system (or RPYENV_BUILD_DEPS)."
         );
         let root = lenient_summary("3.12.14", &fails, 12, Some(os), true);
         assert!(

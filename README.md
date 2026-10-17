@@ -248,7 +248,7 @@ nothing. `pyenv init --install pwsh` adds just the profile line.
    Anaconda, Miniconda and Miniforge on Linux (M7b, done) and on Windows (M7c, next
    release).
 8. **M8 Missing Linux build dependencies.** Install them through the
-   package manager, or compile them without root access.
+   package manager (M8a, done), or compile them without root access (M8b, next release).
 9. **M9 Shared versions** that an administrator manages for all users, if
    the need appears.
 

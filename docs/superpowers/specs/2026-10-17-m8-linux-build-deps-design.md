@@ -36,7 +36,7 @@ python.org's builds.
 | D10 | Fonts in a no-root Tk | Tk built without Xft in the no-root case: fewer libraries, plainer fonts (accepted in review of §6). |
 | D11 | Tcl/Tk version | 8.6 for every source build, as CPython's own builds. Tk 9 only through the prebuilt route. |
 | D12 | Parity | Upstream pyenv has none of this. Each user-visible difference gets an allowlist entry. |
-| D13 | Scripts that set nothing (user, after a side-agent note) | **Phased.** Until M8b ships, a run with no terminal and neither `--deps` nor `RPYENV_BUILD_DEPS` keeps today's rule: the compiler, `make`, OpenSSL and zlib stop the build; every other missing library only warns, and the build goes on. The run ends with a summary naming what is missing, the command that adds it, and the notice that a later release makes this stop the build. **M8b** makes the script default strict (`system`), because from then on a script without root can answer with `--deps=build`. Chosen over strict everywhere (breaks today's Dockerfiles on upgrade, while a script without root could only fail), lenient for good (scripts never get every module), a policy per pyenv root (Dockerfiles make fresh roots), automatic installs as root (installs packages nobody approved) and splitting libraries by weight (still breaks on the newly checked gdbm, uuid and crypt). |
+| D13 | Scripts that set nothing (user, after a side-agent note) | **Phased.** Until M8b ships, a run with no terminal and neither `--deps` nor `RPYENV_BUILD_DEPS` keeps today's rule: the compiler, `make`, OpenSSL and zlib stop the build; every other missing library only warns, and the build goes on. The run ends with a summary naming what is missing, the command that adds it, and the notice that a later release makes this stop the build. **M8c** makes the script default strict (`system`), because from then on a script without root can always answer with `--deps=build` (moved from M8b by the user on 2026-10-17: M8b can't build X11, so a script without root on a machine without X11 headers could not pass). Chosen over strict everywhere (breaks today's Dockerfiles on upgrade, while a script without root could only fail), lenient for good (scripts never get every module), a policy per pyenv root (Dockerfiles make fresh roots), automatic installs as root (installs packages nobody approved) and splitting libraries by weight (still breaks on the newly checked gdbm, uuid and crypt). |
 
 ## 3. Parts
 
@@ -45,8 +45,8 @@ M8 ships in four parts. Each has its own plan and pull request and is useful on 
 | Part | Delivers | Needs |
 |---|---|---|
 | **M8a** detect and install | The complete detection (§4); the prompt and the `system` and `install` routes (§5); the check after the build (§4.4) | M2's pre-flight check |
-| **M8b** build from source | The catalog, the store and static builds of every library except X11 (§6) | M8a |
-| **M8c** X11 from source | The X11 client libraries in the catalog, for the no-root case (§6.4) | M8b |
+| **M8b** build from source | The catalog, the store and static builds of every library except X11 (§6); scripts stay lenient (D13) | M8a |
+| **M8c** X11 from source | The X11 client libraries in the catalog, for the no-root case (§6.4); scripts become strict (D13) | M8b |
 | **M8d** prebuilt CPython | The `prebuilt` route (§7) | M8a |
 | later | Alpine/musl | M8b |
 
@@ -90,8 +90,9 @@ After CPython is built, before the version counts as installed:
 - every module on the list for this version imports;
 - `ssl.get_default_verify_paths()` names a CA file that exists or a CA directory that
   holds certificates (no network);
-- `import tkinter` and `tkinter.Tcl()` work without a display, and Tcl's `info library`
-  lies inside the version (when the build route supplied Tcl/Tk).
+- `import tkinter` and `tkinter.Tcl()` work without a display; when the build route supplied
+  Tcl/Tk, Tcl's `info library` is outside the build cache, and Tcl also starts in a virtual
+  environment made from the version.
 
 A failure names the module and the library. It fails the install as any build error
 does.
@@ -131,14 +132,14 @@ How should rpyenv get them?
 `pyenv install --deps=system|install|build|prebuilt` or `RPYENV_BUILD_DEPS` with the
 same values; then every module is required, as at a terminal. `install` uses `sudo -n`
 and fails with a clear message when `sudo` needs a password. With neither set, D13's
-phased rule applies: until M8b, only the compiler, `make`, OpenSSL and zlib stop the
+phased rule applies: until M8c, only the compiler, `make`, OpenSSL and zlib stop the
 build, and the run ends with this summary when anything else is missing:
 
 ```
 pyenv: 3.12.14 was built without: tkinter, uuid
   Add them: sudo apt-get install tk-dev uuid-dev, then pyenv install -f 3.12.14
-  In a later rpyenv release this stops the build; choose now with --deps=install or
-  --deps=system (or RPYENV_BUILD_DEPS).
+  In a later rpyenv release this stops the build; choose now with --deps=install,
+  --deps=build or --deps=system (or RPYENV_BUILD_DEPS).
 ```
 
 ### 5.3 Distribution details
@@ -165,7 +166,13 @@ for the conda table.
   `lib/*.a`, `lib/pkgconfig/` and, for Tcl/Tk, the script folders.
 - **How:** static only (`--disable-shared`, `-fPIC`), built into a temporary folder and
   renamed into place, one lock per entry. Libraries build in dependency order (Tcl before
-  Tk, ncurses before readline).
+  Tk, ncurses before readline). Libraries that need each other are built together and their
+  archives merged, so each `-l` stands alone: readline with ncurses, Tk with Tcl, libnsl with
+  libtirpc, and `libgdbm_compat` with `libgdbm` (measured in M8b: CPython's extension modules
+  don't get `LIBS` on their link line). `Libs.private` is folded into `Libs` in the store's
+  `.pc` files. A symbolic link in a library's source archive that points outside the source
+  tree is skipped and logged (libtirpc 1.3.8 ships one); python-build's own archives still
+  refuse such links.
 - **Only missing libraries are built.** Anything the system provides is used as it is,
   so it keeps getting the distribution's security updates.
 - **It is a cache.** CPython links the libraries statically, so deleting `cache/deps`
@@ -182,11 +189,18 @@ in `versions/<v>/.rpyenv-deps`. Linux has no `pyenv update` (it is pyenv-win's c
 so the check runs during `pyenv install`: when an rpyenv upgrade brings a catalog with a
 newer pin for a library an installed version was built with, `pyenv install` (of any
 version) prints one warning line per affected version, naming the library and both
-versions. `pyenv install -f <v>` rebuilds, reusing the store.
+versions. `pyenv install -f --deps=build <v>` rebuilds, reusing the store.
 
 **Tcl/Tk:** 8.6 (D11). The script folders `tcl8.6/` and `tk8.6/` are copied into
-`versions/<v>/lib/`, where Tcl looks relative to the executable. §4.4's `info library`
-check confirms it.
+`versions/<v>/lib/`, where Tcl looks relative to the executable, and into a shared
+`<root>/.rpyenv/tcltk/<release>/` (`tcl-8.6.x/tcl8.6`, `tk-8.6.x/tk8.6`), which Tcl and Tk have
+compiled in so that virtual environments find them (a venv's executable is not beside the
+version's copy). The shared folder is outside `cache/deps`, so deleting the cache breaks no
+venv; when it is deleted, the version itself falls back to its own copy (measured in M8b),
+`pyenv install` and `pyenv rehash` re-create it from an installed version's copy, and
+`pyenv uninstall` removes it once no installed version's record names that release. §4.4's
+checks confirm both. (User decision 2026-10-17, after the final review found venvs broken
+with a compiled-in path that never exists.)
 
 ### 6.4 X11 (M8c)
 
@@ -200,10 +214,13 @@ distribution's Tk is.
 OpenSSL is configured to look where the system keeps certificates (`/etc/ssl` or
 `/etc/pki/tls`), so the distribution's certificate updates apply. When the system has no
 certificates and the user has no root: a pinned Mozilla bundle (curl.se's `cacert.pem`,
-SHA-256 checked) in `<root>/cache/deps/ca/`. The pin ships with rpyenv; when an rpyenv
+SHA-256 checked) in `<root>/.rpyenv/ca/`, outside the
+cache, so deleting `cache/deps` never breaks HTTPS (user decision 2026-10-17). The pin ships with rpyenv; when an rpyenv
 upgrade brings a newer one, the next `pyenv install` replaces the file, and every
 version built against it uses the new bundle at once (the path, not the content, is
-compiled into OpenSSL).
+compiled into OpenSSL). The build route needs CPython 3.7 or later, a `PYENV_ROOT`
+without spaces, Perl's core modules for OpenSSL and libxcrypt, and (until M8c) the system's
+X11 headers for Tk.
 
 ## 7. The prebuilt route (M8d)
 
