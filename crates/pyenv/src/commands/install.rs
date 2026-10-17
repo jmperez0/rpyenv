@@ -426,6 +426,7 @@ fn resolve_deps(
                 &missing,
                 manager,
                 shown,
+                None,
                 crb.as_deref(),
                 continue_offered,
             ) {
@@ -435,15 +436,17 @@ fn resolve_deps(
                 match crate::install::prompt("> ") {
                     Reply::Interrupted => return Err(130),
                     Reply::Eof => return Err(1),
-                    Reply::Line(l) => match deps::choice(&l, offer.is_ok(), continue_offered) {
-                        Some(r) => break r,
-                        None => say(match (offer.is_ok(), continue_offered) {
-                            (true, true) => "pyenv: answer p, i or c",
-                            (true, false) => "pyenv: answer p or i",
-                            (false, true) => "pyenv: answer p or c",
-                            (false, false) => "pyenv: answer p",
-                        }),
-                    },
+                    Reply::Line(l) => {
+                        match deps::choice(&l, offer.is_ok(), false, continue_offered) {
+                            Some(r) => break r,
+                            None => say(match (offer.is_ok(), continue_offered) {
+                                (true, true) => "pyenv: answer p, i or c",
+                                (true, false) => "pyenv: answer p or i",
+                                (false, true) => "pyenv: answer p or c",
+                                (false, false) => "pyenv: answer p",
+                            }),
+                        }
+                    }
                 }
             }
         } else if let Some(r) = chosen {
