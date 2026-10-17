@@ -1020,7 +1020,9 @@ sleep 30"
         });
         let start = Instant::now();
         let exited = loop {
-            if log(&f).contains("apt-get") {
+            // The apt-get stub's own line: the sudo stub logs `sudo apt-get …` before its
+            // `exec`, which can still fail with ETXTBSY.
+            if log(&f).lines().any(|l| l.starts_with("apt-get ")) {
                 break false;
             }
             if child.try_wait().unwrap().is_some() {
