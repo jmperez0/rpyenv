@@ -15,7 +15,8 @@
 # headers and CA certificates, and no -dev package of any library and no pkg-config.
 # `pyenv install --deps=build` compiles every missing library into the store, builds a CPython
 # whose every module imports, and records them; a second build reuses the store; the version
-# keeps working without the store; and (Ubuntu) a store entry with its library removed makes
+# keeps working without the store, and Tcl starts in a venv made from it, also after the
+# shared Tcl/Tk folders are deleted and `pyenv rehash` re-creates them; and (Ubuntu) a store entry with its library removed makes
 # the check after the build fail naming the module. WEEKLY=1 adds the newest 3.14 (OpenSSL 4
 # and upstream's patch) and 3.8 (OpenSSL 1.1.1).
 # NO_CA=1 (BUILD, Debian/Ubuntu; allowlist D-128): no CA certificates at all. rpyenv downloads
@@ -97,6 +98,17 @@ imports() {
   "$root/versions/$1/bin/python3" -c "import $mods; print('every module imports')"
 }
 
+# Tcl starts in a virtual environment made from version $1 (M8 design §6.3: Tcl/Tk read their
+# scripts from `$PYENV_ROOT/.rpyenv/tcltk`, which they have compiled in).
+venv_tcl() {
+  local d
+  d=$(mktemp -d)
+  "$root/versions/$1/bin/python3" -m venv --without-pip "$d/venv"
+  "$d/venv/bin/python" -c "import tkinter; tkinter.Tcl(); print('Tcl starts in a venv of $1')" ||
+    { echo "::error::$distro: Tcl doesn't start in a venv of $1"; exit 1; }
+  rm -rf "$d"
+}
+
 if [ -n "${BUILD:-}" ]; then
   # Stage B1: the build route, without a terminal.
   "$bin" install --deps=build "$v" </dev/null 2>&1 | tee /tmp/build1.log
@@ -118,9 +130,12 @@ if [ -n "${BUILD:-}" ]; then
       { echo "::error::$distro: no TLS handshake through $bundle"; exit 1; }
     echo "== a TLS handshake to pypi.org through the bundle works"
   fi
-  # Tcl finds its library inside the version, not in the store (§4.4).
+  # Tcl's library exists outside the store, and Tcl starts in a venv too (§4.4, §6.3).
   lib=$("$root/versions/$v/bin/python3" -c "import tkinter; print(tkinter.Tcl().eval('info library'))")
-  case "$lib" in "$root/versions/$v/"*) ;; *) echo "::error::$distro: Tcl's library is $lib"; exit 1 ;; esac
+  echo "Tcl's library: $lib"
+  case "$lib" in "$root/cache/deps/"*) echo "::error::$distro: Tcl's library is in the store: $lib"; exit 1 ;; esac
+  [ -d "$lib" ] || { echo "::error::$distro: Tcl's library $lib doesn't exist"; exit 1; }
+  venv_tcl "$v"
   # The system itself is unchanged: strict detection still finds what is missing.
   if detect_empty; then echo "::error::$distro: detection is empty without any -dev package"; exit 1; fi
   # Stage B2: reuse (D6). A second build compiles no library.
@@ -133,7 +148,16 @@ if [ -n "${BUILD:-}" ]; then
   # Stage B3 (Review Focus 3): the store is only a cache.
   mv "$root/cache/deps" "$root/cache/deps.off"
   imports "$v"
+  venv_tcl "$v"
+  echo "== without the store, every module imports and Tcl starts in a venv"
   mv "$root/cache/deps.off" "$root/cache/deps"
+  # Stage B3b: the shared Tcl/Tk folders deleted. The version reads its own copy; a venv needs
+  # the shared folders, which `pyenv rehash` re-creates from the version (§6.3).
+  rm -rf "$root/.rpyenv/tcltk"
+  "$root/versions/$v/bin/python3" -c "import tkinter; tkinter.Tcl(); print('Tcl starts from the version copy')"
+  "$bin" rehash
+  venv_tcl "$v"
+  echo "== pyenv rehash re-created the shared Tcl/Tk folders"
   # Stage B4 (Ubuntu): the check can fail. A store entry that no longer holds its library (the
   # folder stays, so the store reuses it) makes the check after the build fail naming uuid; the
   # rollback keeps the version from stage B2.
@@ -154,6 +178,7 @@ if [ -n "${BUILD:-}" ]; then
       echo "== weekly: Python $w through the build route"
       "$bin" install --deps=build "$w" </dev/null
       imports "$w"
+      venv_tcl "$w"
     done
   fi
   echo "== the build route works on $distro"

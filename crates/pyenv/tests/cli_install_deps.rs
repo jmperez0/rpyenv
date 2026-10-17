@@ -1722,7 +1722,7 @@ fn pyenv_install_warns_once_per_version_built_with_an_older_library() {
     ];
     let r = run(&f, &["install", "3.12.99"], &p);
     assert_eq!(r.code, 0, "{}", r.stderr);
-    let want = "pyenv: 3.12.98 was built with libuuid 9.8; rpyenv now builds libuuid 9.9. To rebuild it: pyenv install -f 3.12.98\n";
+    let want = "pyenv: 3.12.98 was built with libuuid 9.8; rpyenv now builds libuuid 9.9. To rebuild it: pyenv install -f --deps=build 3.12.98\n";
     assert_eq!(r.stderr.matches(want).count(), 1, "{}", r.stderr);
     assert!(!r.stderr.contains("3.12.97 was built"), "{}", r.stderr);
     // Listing versions is not installing: no warning.
@@ -1771,4 +1771,176 @@ fn pyenv_install_replaces_an_outdated_ca_bundle() {
     // Up to date: nothing is fetched or said.
     let again = run(&f, &["install", "-f", "3.12.99"], &p);
     assert!(!again.stderr.contains("CA bundle"), "{}", again.stderr);
+}
+
+/// Final review S2: a library a definition pinned, whose definition can't be found any more,
+/// is unknown, not "now the catalog's": no warning that would never go away.
+#[test]
+fn a_version_whose_definition_is_gone_gets_no_stale_warning() {
+    let f = Fixture::new();
+    plugin_def(&f);
+    stubs(&f, 0);
+    let cat = f.base.join("catalog.tsv");
+    f.file(
+        &cat,
+        &format!("openssl\t3.6.5\tfile:///nonexistent\t{}\n", "a".repeat(64)),
+    );
+    f.file(
+        &f.root.join("versions/old/.rpyenv-deps"),
+        "definition 3.7.99-gone\nopenssl 1.1.1u definition\n",
+    );
+    // A control: the same library from the catalog does warn.
+    f.file(
+        &f.root.join("versions/other/.rpyenv-deps"),
+        "definition 3.7.98-gone\nopenssl 3.6.4 catalog\n",
+    );
+    let cat_s = cat.display().to_string();
+    let p = [
+        ("RPYENV_TEST_PREFLIGHT", ""),
+        ("RPYENV_TEST_CATALOG", cat_s.as_str()),
+    ];
+    let r = run(&f, &["install", "3.12.99"], &p);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert!(!r.stderr.contains("old was built"), "{}", r.stderr);
+    assert!(
+        r.stderr.contains(
+            "pyenv: other was built with openssl 3.6.4; rpyenv now builds openssl 3.6.5."
+        ),
+        "{}",
+        r.stderr
+    );
+}
+
+/// A version the build route built with Tcl/Tk `release`, with its own script copies.
+fn tcltk_version(f: &Fixture, name: &str, release: &str) {
+    for d in ["tcl8.6", "tk8.6"] {
+        f.file(
+            &f.root.join(format!("versions/{name}/lib/{d}/init.tcl")),
+            name,
+        );
+    }
+    f.file(
+        &f.root.join(format!("versions/{name}/.rpyenv-deps")),
+        &format!("definition {name}\ntcl {release} catalog\ntk {release} catalog\n"),
+    );
+}
+
+// allowlist D-123
+/// Final review I1: `pyenv rehash` re-creates a deleted shared Tcl/Tk script folder, and
+/// `pyenv uninstall` removes the folders no remaining version names.
+#[test]
+fn rehash_recreates_the_shared_tcltk_folders_and_uninstall_removes_unused_ones() {
+    let f = Fixture::plain();
+    tcltk_version(&f, "3.12.98", "8.6.18");
+    tcltk_version(&f, "3.13.98", "8.6.17");
+    let home = f.root.join(".rpyenv/tcltk");
+    let r = f.pyenv(&["rehash"]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    for d in [
+        "tcl-8.6.18/tcl8.6",
+        "tk-8.6.18/tk8.6",
+        "tcl-8.6.17/tcl8.6",
+        "tk-8.6.17/tk8.6",
+    ] {
+        assert!(home.join(d).join("init.tcl").is_file(), "{d}");
+    }
+    let r = f.pyenv(&["uninstall", "-f", "3.13.98"]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    let mut left: Vec<String> = std::fs::read_dir(&home)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    left.sort();
+    assert_eq!(left, ["tcl-8.6.18", "tk-8.6.18"]);
+}
+
+// allowlist D-123
+/// Final review I3: while another pyenv holds a library's lock, the run says it is waiting,
+/// and Ctrl+C ends it at once with 130.
+#[test]
+fn ctrl_c_while_waiting_for_another_builders_lock_ends_the_run() {
+    use std::io::BufRead;
+    use std::os::unix::process::CommandExt;
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+    let f = Fixture::plain();
+    plugin_def(&f);
+    stubs(&f, 0);
+    let cat = fake_catalog(&f).display().to_string();
+    let extra = [
+        ("RPYENV_TEST_PREFLIGHT", "libuuid"),
+        ("RPYENV_TEST_BUILD_TOOLS", "perl,x11"),
+        ("RPYENV_TEST_CATALOG", cat.as_str()),
+    ];
+    assert_eq!(
+        run(&f, &["install", "--deps=build", "3.12.99"], &extra).code,
+        0
+    );
+    let locks = f.root.join("cache/deps/.locks");
+    let lock_path = std::fs::read_dir(&locks)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let held = std::fs::File::create(&lock_path).unwrap();
+    held.lock().unwrap();
+    let owned = env(&f, &extra);
+    let mut cmd = f.command(
+        std::path::Path::new(env!("CARGO_BIN_EXE_pyenv")),
+        &f.work,
+        &[],
+    );
+    for (k, v) in &owned {
+        cmd.env(k, v);
+    }
+    let mut child = cmd
+        .args(["install", "-f", "--deps=build", "3.12.99"])
+        .process_group(0)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    let stderr = child.stderr.take().unwrap();
+    std::thread::spawn(move || {
+        for l in std::io::BufReader::new(stderr)
+            .lines()
+            .map_while(Result::ok)
+        {
+            let _ = tx.send(l);
+        }
+    });
+    let want = format!(
+        "Waiting for another pyenv building libuuid 9.9 ({})",
+        lock_path.display()
+    );
+    let mut seen = Vec::new();
+    while !seen.contains(&want) {
+        match rx.recv_timeout(Duration::from_secs(20)) {
+            Ok(l) => seen.push(l),
+            Err(_) => {
+                let _ = child.kill();
+                panic!("no waiting line: {seen:?}");
+            }
+        }
+    }
+    let signalled = Instant::now();
+    common::sigint_group(child.id());
+    loop {
+        if let Some(st) = child.try_wait().unwrap() {
+            assert_eq!(st.code(), Some(130), "{seen:?}");
+            break;
+        }
+        if signalled.elapsed() > Duration::from_secs(5) {
+            let _ = child.kill();
+            panic!("pyenv did not stop after SIGINT while the lock was held");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    drop(held);
+    // The version from the first run is still there; the store is unchanged.
+    assert!(installed(&f));
+    assert_eq!(uuid_runs(&f), 1);
 }

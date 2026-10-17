@@ -575,12 +575,22 @@ if not ok:
 raise SystemExit(0 if ok else 1)
 ";
 
+/// What §4.4 also checks when the build route supplied Tcl and Tk (final review I1).
+pub(crate) struct StoreTcl<'a> {
+    /// `<root>/cache/deps`: Tcl's library must not lie under it.
+    pub cache: &'a Path,
+    /// Whether a path exists (the filesystem, or a fake in tests).
+    pub exists: &'a dyn Fn(&Path) -> bool,
+    /// Makes a throwaway virtual environment from the built interpreter and starts Tcl in it.
+    pub in_venv: &'a dyn Fn() -> bool,
+}
+
 /// M8 design §4.4: every module of the table imports, CA certificates exist, Tcl runs.
 /// `run(args)` runs the built interpreter: its success and its stdout.
 pub(crate) fn stdlib_failures(
     run: &dyn Fn(&[&str]) -> (bool, String),
     minor: u32,
-    tcl_home: Option<&Path>,
+    store_tcl: Option<&StoreTcl>,
 ) -> Vec<String> {
     let mut out = Vec::new();
     for m in super::stdlib::modules(minor) {
@@ -612,14 +622,21 @@ pub(crate) fn stdlib_failures(
     ]);
     if !tcl_ok {
         out.push("tkinter (Tcl doesn't start; needs tk)".into());
-    } else if let Some(home) = tcl_home {
-        // M8 design §4.4: a store-built Tcl must use the version's copy of its library.
+    } else if let Some(s) = store_tcl {
+        // M8 design §4.4: a store-built Tcl reads its library from outside the build cache
+        // (deleting the cache must not break it), and starts in a venv too (§6.3).
         let lib = tcl_out.trim();
-        if !Path::new(lib).starts_with(home) {
+        if Path::new(lib).starts_with(s.cache) {
             out.push(format!(
-                "tkinter (Tcl's library {lib} is outside {}; needs tk)",
-                home.display()
+                "tkinter (Tcl's library {lib} is in the build cache; needs tk)"
             ));
+        } else if !(s.exists)(Path::new(lib)) {
+            out.push(format!(
+                "tkinter (Tcl's library {lib} doesn't exist; needs tk)"
+            ));
+        }
+        if !(s.in_venv)() {
+            out.push("tkinter (Tcl doesn't start in a virtual environment; needs tk)".into());
         }
     }
     out
@@ -655,12 +672,51 @@ fn stdlib_check(
             Err(_) => (false, String::new()),
         }
     };
-    // The library check applies only when the store supplied Tcl/Tk (its script folders).
-    let tcl_home = job
+    // A throwaway venv from the built interpreter, where Tcl must start as well (§4.4).
+    let in_venv = || -> bool {
+        if interrupted() {
+            return true;
+        }
+        let tmp = get(job.env, "TMPDIR")
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| "/tmp".into());
+        let venv = Path::new(&tmp).join(format!("rpyenv-tcl-venv.{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&venv);
+        let quiet = |c: &mut Command| -> bool {
+            let st = c
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+            if st.as_ref().is_ok_and(sigint) {
+                sigint_seen.set(true);
+            }
+            st.is_ok_and(|s| s.success())
+        };
+        let ok = quiet(
+            command(python, &plan.env)
+                .args(["-m", "venv", "--without-pip"])
+                .arg(&venv),
+        ) && quiet(
+            command(venv.join("bin").join("python"), &plan.env)
+                .args(["-c", "import tkinter; tkinter.Tcl()"]),
+        );
+        let _ = std::fs::remove_dir_all(&venv);
+        ok
+    };
+    // These checks apply only when the store supplied Tcl/Tk (its script folders).
+    let exists = |p: &Path| p.exists();
+    let cache = job
         .store
         .filter(|s| !s.scripts.is_empty())
-        .map(|_| plan.prefix.as_path());
-    let fails = stdlib_failures(&run, minor, tcl_home);
+        .and_then(|s| s.entries.iter().find(|e| e.key == "tcl"))
+        .and_then(|e| e.dir.parent());
+    let store_tcl = cache.map(|cache| StoreTcl {
+        cache,
+        exists: &exists,
+        in_venv: &in_venv,
+    });
+    let fails = stdlib_failures(&run, minor, store_tcl.as_ref());
     if interrupted() || sigint_seen.get() {
         return Err(InstallError::Interrupted);
     }
@@ -783,7 +839,7 @@ fn lenient_summary(
 }
 
 /// `cp -fR src/. dst`: directories, regular files with their modes, and links as links.
-fn copy_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
+pub(crate) fn copy_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dst)?;
     for e in std::fs::read_dir(src)? {
         let e = e?;
@@ -1492,11 +1548,10 @@ mod tests {
         assert_eq!(get(&plan.env, "PATH").unwrap(), "/store/bin:/usr/bin");
     }
 
-    /// M8 design §4.4's last clause, deferred from M8a: when the build route supplied Tcl/Tk,
-    /// Tcl's `info library` must lie inside the version.
+    /// M8 design §4.4's last clause (final review I1): when the build route supplied Tcl/Tk,
+    /// Tcl's `info library` exists outside the build cache, and Tcl starts in a venv.
     #[test]
-    fn tcl_must_find_its_library_inside_the_version_when_the_store_supplied_it() {
-        let home = Path::new("/r/versions/3.12.15");
+    fn a_store_built_tcl_must_read_its_library_outside_the_cache_and_start_in_a_venv() {
         let says = |lib: &'static str| {
             move |args: &[&str]| -> (bool, String) {
                 if args[1].contains("tkinter.Tcl") {
@@ -1506,14 +1561,41 @@ mod tests {
                 }
             }
         };
-        assert!(
-            stdlib_failures(&says("/r/versions/3.12.15/lib/tcl8.6"), 12, Some(home)).is_empty()
+        let cache = Path::new("/r/cache/deps");
+        let real = [
+            "/r/.rpyenv/tcltk/tcl-8.6.18/tcl8.6",
+            "/r/versions/3.12.15/lib/tcl8.6",
+        ];
+        let exists = |p: &Path| real.iter().any(|r| p == Path::new(r));
+        let venv_ok = || true;
+        let venv_fails = || false;
+        let good = StoreTcl {
+            cache,
+            exists: &exists,
+            in_venv: &venv_ok,
+        };
+        for lib in real {
+            let f = stdlib_failures(&says(lib), 12, Some(&good));
+            assert!(f.is_empty(), "{lib}: {f:?}");
+        }
+        assert_eq!(
+            stdlib_failures(&says("/r/cache/deps/tcl-8.6.18-abc/lib/tcl8.6"), 12, Some(&good)),
+            ["tkinter (Tcl's library /r/cache/deps/tcl-8.6.18-abc/lib/tcl8.6 is in the build cache; needs tk)"]
         );
         assert_eq!(
-            stdlib_failures(&says("/r/cache/deps/tcl-8.6.18-abc/lib/tcl8.6"), 12, Some(home)),
-            ["tkinter (Tcl's library /r/cache/deps/tcl-8.6.18-abc/lib/tcl8.6 is outside /r/versions/3.12.15; needs tk)"]
+            stdlib_failures(&says("/r/.rpyenv/tcltk/gone/tcl8.6"), 12, Some(&good)),
+            ["tkinter (Tcl's library /r/.rpyenv/tcltk/gone/tcl8.6 doesn't exist; needs tk)"]
         );
-        // Without the store, where Tcl's library is doesn't matter.
+        let no_venv = StoreTcl {
+            cache,
+            exists: &exists,
+            in_venv: &venv_fails,
+        };
+        assert_eq!(
+            stdlib_failures(&says(real[0]), 12, Some(&no_venv)),
+            ["tkinter (Tcl doesn't start in a virtual environment; needs tk)"]
+        );
+        // Without the store, neither where Tcl's library is nor venvs are checked.
         assert!(stdlib_failures(&says("/usr/share/tcltk/tcl8.6"), 12, None).is_empty());
     }
 

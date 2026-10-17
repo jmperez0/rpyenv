@@ -398,10 +398,17 @@ fn resolve_deps(
         let continue_offered = !missing.iter().any(|d| deps::is_hard(d.lib));
         // `[b]` and `--deps=build`: the build tools are probed only then, once (they spawn
         // perl and the compiler).
-        let plan = (interactive || chosen == Some(Route::Build)).then(|| {
-            let t = *tools.get_or_insert_with(|| preflight::build_tools(get));
-            deps::build_plan(&missing, minor, &t, root_ok.clone(), manager)
-        });
+        let wants_plan = interactive || chosen == Some(Route::Build);
+        if wants_plan && tools.is_none() {
+            tools = Some(preflight::build_tools(get));
+            // Ctrl+C killed the probes: what they found may be false (final review S7).
+            if interrupted() {
+                return Err(130);
+            }
+        }
+        let plan = tools
+            .filter(|_| wants_plan)
+            .map(|t| deps::build_plan(&missing, minor, &t, root_ok.clone(), manager));
         let build_offered = plan.as_ref().is_some_and(|p| p.blocked.is_none());
         if (tty || chosen == Some(Route::Install)) && sudo_probe.is_none() {
             let has_sudo = run_probe(get, "sudo", &["--version"]).is_some();
@@ -526,7 +533,8 @@ fn resolve_deps(
                 }
                 match build(&p.keys, &mut |s: &str| say(s)) {
                     Ok(e) => {
-                        store_entries.extend(e);
+                        // A later round reuses ncurses or Tcl: each entry once (review S4).
+                        store::add_unique(&mut store_entries, e);
                         supplied.extend(p.libs.iter().copied());
                     }
                     Err(InstallError::Interrupted) => return Err(130),
@@ -699,15 +707,17 @@ pub fn install(ctx: &Ctx, args: &[&str]) -> Output {
     // Reads the two small pages a conda `-latest` name needs; no cache.
     let probe = Fetcher::from_env(&env, None);
     // M8 design §6.3 and §6.5: once per run, before any version is installed.
+    // The shared Tcl/Tk script folders venvs read (§6.3), when one was deleted.
+    crate::install::record::heal_scripts(&ctx.root);
     if let Ok(rows) = catalog::table(&env) {
         let now = |lib: &str, def: &str, origin: catalog::Origin| -> Option<String> {
             if origin == catalog::Origin::Definition {
-                let pinned = defs::find(&ctx.root, def, &env)
-                    .and_then(|found| {
-                        defs::parse(&found, &env, &|n| defs::find(&ctx.root, n, &env)).ok()
-                    })
-                    .and_then(|d| catalog::pinned(lib, &d));
-                if let Some(r) = pinned {
+                // A definition that can't be found or read: unknown, not the catalog's version
+                // (final review S2).
+                let d = defs::find(&ctx.root, def, &env).and_then(|found| {
+                    defs::parse(&found, &env, &|n| defs::find(&ctx.root, n, &env)).ok()
+                })?;
+                if let Some(r) = catalog::pinned(lib, &d) {
                     return Some(r.version);
                 }
             }

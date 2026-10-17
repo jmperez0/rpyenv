@@ -90,8 +90,9 @@ After CPython is built, before the version counts as installed:
 - every module on the list for this version imports;
 - `ssl.get_default_verify_paths()` names a CA file that exists or a CA directory that
   holds certificates (no network);
-- `import tkinter` and `tkinter.Tcl()` work without a display, and Tcl's `info library`
-  lies inside the version (when the build route supplied Tcl/Tk).
+- `import tkinter` and `tkinter.Tcl()` work without a display; when the build route supplied
+  Tcl/Tk, Tcl's `info library` is outside the build cache, and Tcl also starts in a virtual
+  environment made from the version.
 
 A failure names the module and the library. It fails the install as any build error
 does.
@@ -188,13 +189,18 @@ in `versions/<v>/.rpyenv-deps`. Linux has no `pyenv update` (it is pyenv-win's c
 so the check runs during `pyenv install`: when an rpyenv upgrade brings a catalog with a
 newer pin for a library an installed version was built with, `pyenv install` (of any
 version) prints one warning line per affected version, naming the library and both
-versions. `pyenv install -f <v>` rebuilds, reusing the store.
+versions. `pyenv install -f --deps=build <v>` rebuilds, reusing the store.
 
 **Tcl/Tk:** 8.6 (D11). The script folders `tcl8.6/` and `tk8.6/` are copied into
-`versions/<v>/lib/`, where Tcl looks relative to the executable. §4.4's `info library`
-check confirms it. Tcl and Tk are built with a
-compiled-in library path that never exists, so they find the copy in the version and never
-the store's (measured in M8b).
+`versions/<v>/lib/`, where Tcl looks relative to the executable, and into a shared
+`<root>/.rpyenv/tcltk/<release>/` (`tcl-8.6.x/tcl8.6`, `tk-8.6.x/tk8.6`), which Tcl and Tk have
+compiled in so that virtual environments find them (a venv's executable is not beside the
+version's copy). The shared folder is outside `cache/deps`, so deleting the cache breaks no
+venv; when it is deleted, the version itself falls back to its own copy (measured in M8b),
+`pyenv install` and `pyenv rehash` re-create it from an installed version's copy, and
+`pyenv uninstall` removes it once no installed version's record names that release. §4.4's
+checks confirm both. (User decision 2026-10-17, after the final review found venvs broken
+with a compiled-in path that never exists.)
 
 ### 6.4 X11 (M8c)
 
