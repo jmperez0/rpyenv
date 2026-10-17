@@ -672,10 +672,20 @@ fn lenient_summary(
         };
         if let Some((dn, lib)) = lib {
             if !libs.iter().any(|d| d.lib == lib) {
+                // No probe result here: on Fedora 42+ an older CPython's Tk is the Tk 8
+                // package (`deps::packages`), as the check before the build says.
+                let tk9 = lib == "tk" && minor <= 12 && os_release.is_some_and(deps::fedora_tk9);
                 libs.push(preflight::Dep {
                     name: dn,
                     required: false,
-                    missing: preflight::Missing::Certificates,
+                    missing: if tk9 {
+                        preflight::Missing::TooNew {
+                            found: "9".into(),
+                            need: "8.5 or 8.6",
+                        }
+                    } else {
+                        preflight::Missing::Certificates
+                    },
                     lib,
                 });
             }
@@ -689,9 +699,14 @@ fn lenient_summary(
             deps::install_argv(m, &pkgs, !root, false).join(" ")
         })
         .unwrap_or_else(|| format!("install the development packages for {list}"));
+    // RHEL-family systems: the `dnf install` above needs CRB first (ruling R15).
+    let crb = os_release
+        .and_then(|os| deps::crb_line(os, root))
+        .map(|l| format!("\n  {l}"))
+        .unwrap_or_default();
     format!(
         "pyenv: {name} was built without: {list}
-  Add them: {add}, then pyenv install -f {name}
+  Add them: {add}, then pyenv install -f {name}{crb}
   In a later rpyenv release this stops the build; choose now with --deps=install or
   --deps=system (or RPYENV_BUILD_DEPS)."
     )
@@ -1312,5 +1327,40 @@ VERSION_ID=\"12\"
             none.contains("Add them: install the development packages for tkinter, uuid, then"),
             "{none}"
         );
+    }
+
+    /// Fedora 42+ ships Tk 9 as tk-devel: CPython 3.12 and older need tk8-devel, 3.13 and
+    /// newer keep tk-devel; Fedora 41 has no tk8-devel (measured with dnf repoquery).
+    #[test]
+    fn the_lenient_summary_names_tk8_devel_for_old_cpython_on_new_fedora() {
+        let fails = vec!["tkinter (import tkinter failed; needs tk)".to_string()];
+        let f44 = "ID=fedora\nVERSION_ID=44\n";
+        assert!(lenient_summary("3.12.14", &fails, 12, Some(f44), false)
+            .contains("Add them: sudo dnf install tk8-devel, then"),);
+        assert!(lenient_summary("3.13.16", &fails, 13, Some(f44), false)
+            .contains("Add them: sudo dnf install tk-devel, then"),);
+        let f41 = "ID=fedora\nVERSION_ID=41\n";
+        assert!(lenient_summary("3.12.14", &fails, 12, Some(f41), false)
+            .contains("Add them: sudo dnf install tk-devel, then"),);
+    }
+
+    /// Rocky, Alma and RHEL: the summary's dnf command needs CRB, so the line is there too.
+    #[test]
+    fn the_lenient_summary_names_crb_on_the_rhel_family() {
+        let fails = vec!["uuid (import _uuid failed; needs libuuid)".to_string()];
+        let rocky = "ID=\"rocky\"\nID_LIKE=\"rhel centos fedora\"\nVERSION_ID=\"9.4\"\n";
+        let s = lenient_summary("3.12.14", &fails, 12, Some(rocky), false);
+        assert!(
+            s.contains("\n  Some packages live in the CRB repository; enable it first: sudo dnf install dnf-plugins-core && sudo dnf config-manager --set-enabled crb\n"),
+            "{s}"
+        );
+        let fedora = lenient_summary(
+            "3.12.14",
+            &fails,
+            12,
+            Some("ID=fedora\nVERSION_ID=44\n"),
+            false,
+        );
+        assert!(!fedora.contains("CRB"), "{fedora}");
     }
 }

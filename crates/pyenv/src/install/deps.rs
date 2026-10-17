@@ -106,9 +106,35 @@ fn program_packages(lib: &str) -> Option<[&'static str; 5]> {
     }
 }
 
+/// Fedora 42 made `tk-devel` Tk 9, which CPython 3.12 and older can't build `_tkinter`
+/// against; Tk 8.6 is `tk8-devel` there (measured 2026-10-17: Fedora 41 has only tk-devel
+/// 8.6.14; 42 has tk-devel 9.0.0 and tk8-devel 8.6.15; 44 has 9.0.2 and 8.6.17).
+const DNF_TK8: &str = "tk8-devel";
+
+/// True on Fedora 42 and later, where `tk-devel` is Tk 9.
+pub fn fedora_tk9(os_release: &str) -> bool {
+    let id = os_release
+        .lines()
+        .find_map(|l| l.strip_prefix("ID="))
+        .map(unquote);
+    let major = os_release
+        .lines()
+        .find_map(|l| l.strip_prefix("VERSION_ID="))
+        .and_then(|v| unquote(v).split('.').next()?.parse::<u32>().ok());
+    id == Some("fedora") && major.is_some_and(|m| m >= 42)
+}
+
 pub fn packages(m: Manager, deps: &[Dep]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for d in deps {
+        // A Tk that is too new (Tk 9 for CPython <= 3.12) needs the Tk 8 package, which only
+        // dnf names separately.
+        if d.lib == "tk" && m == Manager::Dnf && matches!(d.missing, Missing::TooNew { .. }) {
+            if !out.iter().any(|o| o == DNF_TK8) {
+                out.push(DNF_TK8.to_string());
+            }
+            continue;
+        }
         let row = stdlib::lib(d.lib)
             .map(|l| l.packages)
             .or_else(|| program_packages(d.lib));
@@ -682,5 +708,43 @@ mod tests {
         assert!(matches!(Route::parse("install"), Some(Route::Install)));
         assert!(matches!(Route::parse("prebuilt"), Some(Route::Prebuilt)));
         assert!(Route::parse("yes").is_none());
+    }
+
+    /// A Tk that is too new (Tk 9 for CPython <= 3.12) is the Tk 8 package on dnf only;
+    /// a Tk that is simply missing keeps the distribution's usual package.
+    #[test]
+    fn a_too_new_tk_asks_dnf_for_tk8_devel() {
+        let too_new = Dep {
+            name: "tkinter",
+            required: true,
+            missing: Missing::TooNew {
+                found: "9.0.2".into(),
+                need: "8.5 or 8.6",
+            },
+            lib: "tk",
+        };
+        assert_eq!(
+            packages(Manager::Dnf, std::slice::from_ref(&too_new)),
+            ["tk8-devel"]
+        );
+        assert_eq!(
+            packages(Manager::Apt, std::slice::from_ref(&too_new)),
+            ["tk-dev"]
+        );
+        assert_eq!(
+            packages(Manager::Dnf, &[dep("tkinter", "tk")]),
+            ["tk-devel"]
+        );
+    }
+
+    #[test]
+    fn fedora_42_and_later_ship_tk9_as_tk_devel() {
+        assert!(fedora_tk9("ID=fedora\nVERSION_ID=42\n"));
+        assert!(fedora_tk9("ID=\"fedora\"\nVERSION_ID=\"44\"\n"));
+        assert!(!fedora_tk9("ID=fedora\nVERSION_ID=41\n"));
+        assert!(!fedora_tk9(
+            "ID=rocky\nID_LIKE=\"rhel centos fedora\"\nVERSION_ID=\"9.4\"\n"
+        ));
+        assert!(!fedora_tk9("ID=fedora\n"));
     }
 }
