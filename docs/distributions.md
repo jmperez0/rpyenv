@@ -48,6 +48,7 @@ provide them. Then you choose:
 |---|---|
 | `p` (default) | Prints the install command and stops |
 | `i` | Runs the command through `sudo` (no `sudo` when you are root; no `-y`), then checks again |
+| `b` | Builds the missing libraries from source, without root, and links them into Python. Offered for CPython 3.7 and later when the compiler, `make` and `patch` are there; it says what it can't build here and why |
 | `c` | Builds without the missing libraries and lists them at the end. Offered only when the compiler, `make`, OpenSSL and zlib are all there |
 
 `i` is left out, with the reason, when `sudo` can't be used or rpyenv doesn't know your
@@ -68,14 +69,15 @@ even at a terminal. The flag wins over the variable.
 |---|---|
 | `system` | Stops with the list of what is missing |
 | `install` | Installs the packages, then builds. Without a terminal it adds `-y` and uses `sudo -n` |
-| `build` | Says it comes in a later release |
+| `build` | Builds the missing libraries from source, then Python. Stops before building anything when one of them can't be built here |
 | `prebuilt` | Says it comes in a later release |
 
 **Scripts that set neither.** Without a terminal, `--deps` or `RPYENV_BUILD_DEPS`,
 rpyenv is lenient, as upstream is. Only the compiler, `make`, `patch` (when the
 definition needs it), OpenSSL and zlib stop the build. Any other missing library is a
 warning, and the run ends with a three-line summary. A later rpyenv release will make
-that summary stop the build. To choose now, use `--deps=install` or `--deps=system`.
+that summary stop the build. To choose now, use `--deps=install`, `--deps=build` or
+`--deps=system`.
 
 **After the build.** rpyenv imports every standard-library module, checks that CA
 certificates exist, and starts Tcl. If one fails, it removes the build and tells you
@@ -83,6 +85,31 @@ which module and which package. For missing CA certificates, it names the file a
 directory the built Python looked in. In lenient mode this is the three-line summary,
 and the build stays. With `RPYENV_SKIP_PREFLIGHT=1` it is a one-line warning, and the
 build stays. `RPYENV_SKIP_PREFLIGHT=1` also skips the check before the build.
+
+### Building libraries without root
+
+`pyenv install --deps=build`, or `b` at the prompt, compiles each missing library from source
+and links it into Python statically. Nothing is installed on the system.
+
+- **Where:** `$PYENV_ROOT/cache/deps/<library>-<version>-<hash>/`. Another Python version that
+  needs the same library, version and options reuses it.
+- **Only what is missing** is built. Libraries the system has keep getting its updates.
+- **It is a cache.** Deleting `cache/deps` breaks no installed Python; the next build compiles
+  again. (The CA bundle below lives elsewhere, in `$PYENV_ROOT/.rpyenv/ca/`; keep that one.)
+- Creating `cache/deps` also creates `$PYENV_ROOT/cache`, which turns on the download cache for later installs (as creating it by hand does).
+- **Versions:** rpyenv pins each library's version and SHA-256 and checks every download. A
+  Python version whose definition pins OpenSSL or readline gets that version.
+- **What the system still needs:** a C compiler, `make` and `patch`. OpenSSL and libxcrypt also
+  need Perl with its core modules (`perl-core` on Fedora); Tk needs the X11 headers
+  (`libx11-dev`, `libX11-devel`) until a later release builds those too.
+- **`PYENV_ROOT`** must have no spaces or shell characters in its path.
+- **CA certificates:** a self-built OpenSSL reads the system's (`/etc/pki/tls` or `/etc/ssl`).
+  When the system has none, it reads `$PYENV_ROOT/.rpyenv/ca/cert.pem`, a bundle rpyenv pins (curl's
+  copy of Mozilla's list). `pyenv install` replaces that file when an rpyenv upgrade pins a
+  newer one.
+- **Updates:** each version built this way lists its libraries in `versions/<v>/.rpyenv-deps`.
+  When an rpyenv upgrade pins a newer version of one of them, `pyenv install` prints one line
+  per affected Python version, with the command that rebuilds it.
 
 ## PyPy
 
