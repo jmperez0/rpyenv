@@ -221,7 +221,7 @@ static RECIPES: &[Recipe] = &[
         includes: &[],
         steps: &[
             "./configure --prefix={prefix} --disable-shared --with-tcl={dep:tcl}/lib",
-            "make -j{jobs} TK_LIBRARY=/nonexistent/rpyenv/tk8.6 binaries libraries",
+            "make -j{jobs} TK_LIBRARY=/nonexistent/rpyenv/tk8.6 TCL_GENERIC_DIR={dep:tcl}/include TCL_PLATFORM_DIR={dep:tcl}/include binaries libraries",
             "make install-binaries install-libraries install-headers INSTALL_ROOT={destdir}",
         ],
     },
