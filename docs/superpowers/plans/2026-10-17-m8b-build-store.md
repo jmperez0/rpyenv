@@ -316,7 +316,7 @@ mod tests {
     }
 
     /// Every vendored CPython 3.7+ definition that pins OpenSSL pins a series the recipe
-    /// builds (1.1.1, 3.x or 4.x), with a SHA-256.
+    /// builds (1.1.0, 1.1.1, 3.x or 4.x), with a SHA-256.
     #[test]
     fn every_vendored_cpython_3_7_and_later_pins_an_openssl_the_recipe_builds() {
         let env = |_: &str| None;
@@ -339,7 +339,7 @@ mod tests {
             };
             if let Some(r) = pinned("openssl", &d) {
                 assert!(
-                    ["1.1.1", "3.", "4."].iter().any(|p| r.version.starts_with(p)),
+                    ["1.1.0", "1.1.1", "3.", "4."].iter().any(|p| r.version.starts_with(p)),
                     "{name}: openssl {}",
                     r.version
                 );
@@ -634,7 +634,7 @@ static RECIPES: &[Recipe] = &[
         // no `build_sw`); CPython needs the libraries and headers, not the `openssl` program
         // (measured on 1.1.1u, 3.0.16, 3.6.5 and 4.0.3).
         steps: &[
-            "./config --prefix={prefix} --libdir=lib --openssldir={openssldir} no-shared no-tests -fPIC",
+            "./config --prefix={prefix} --libdir=lib --openssldir={openssldir} no-shared -fPIC",
             "make -j{jobs} build_libs",
             "make install_dev DESTDIR={destdir}",
         ],
