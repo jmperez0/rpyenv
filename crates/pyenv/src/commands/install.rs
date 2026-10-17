@@ -363,6 +363,8 @@ fn resolve_deps(
             root.display()
         ))
     };
+    // The report names `--deps=build` only where that route can run (rulings P2, P5).
+    let build_route = minor >= 7 && root_ok.is_ok();
     let mut tools: Option<preflight::Tools> = None;
     let mut supplied: Vec<&'static str> = Vec::new();
     let mut store_entries: Vec<store::Entry> = Vec::new();
@@ -490,6 +492,7 @@ fn resolve_deps(
                 is_root,
                 hard_missing,
                 apt_update,
+                build_route,
             ) {
                 say(&l);
             }
@@ -595,9 +598,14 @@ fn resolve_deps(
             }
             _ => {
                 // system: today's text, now listing every missing module.
-                for l in
-                    preflight::report_deps_with(&missing, os.as_deref(), is_root, true, apt_update)
-                {
+                for l in preflight::report_deps_with(
+                    &missing,
+                    os.as_deref(),
+                    is_root,
+                    true,
+                    apt_update,
+                    build_route,
+                ) {
                     say(&l);
                 }
                 return Err(1);

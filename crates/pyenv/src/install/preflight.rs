@@ -313,17 +313,19 @@ pub fn report_deps(
     root: bool,
     refuse: bool,
 ) -> Vec<String> {
-    report_deps_with(missing, os_release, root, refuse, false)
+    report_deps_with(missing, os_release, root, refuse, false, false)
 }
 
 /// As `report_deps`; `apt_update`: the apt package lists are empty, so the command starts
-/// with `apt-get update &&` (M8 design §5.3).
+/// with `apt-get update &&` (M8 design §5.3). `build_route`: `--deps=build` could run for this
+/// version and root (CPython 3.7 or later, a plain `PYENV_ROOT`: plan rulings P2, P5).
 pub fn report_deps_with(
     missing: &[Dep],
     os_release: Option<&str>,
     root: bool,
     refuse: bool,
     apt_update: bool,
+    build_route: bool,
 ) -> Vec<String> {
     use super::deps;
     let mut lines = Vec::new();
@@ -349,8 +351,10 @@ pub fn report_deps_with(
         lines.push("Install them with:".to_string());
         lines.push(format!("  {cmd}"));
     }
-    // M8b: the way out without root (not when the compiler or make itself is missing).
+    // M8b: the way out without root, where the build route can run (not when the compiler or
+    // make itself is missing).
     if refuse
+        && build_route
         && !missing
             .iter()
             .any(|d| matches!(d.lib, "compiler" | "make" | "patch"))
@@ -1584,6 +1588,14 @@ mod tests {
                 "  uuid (can't link -luuid)",
                 "Install them with:",
                 "  sudo apt-get install uuid-dev",
+                "To build anyway, set RPYENV_SKIP_PREFLIGHT=1.",
+            ]
+        );
+        // M8b: where the build route can run, the refusal names it.
+        let hint = report_deps_with(&d, Some(os), false, true, false, true);
+        assert_eq!(
+            hint[4..],
+            [
                 "Without root, pyenv install --deps=build compiles them from source.",
                 "To build anyway, set RPYENV_SKIP_PREFLIGHT=1.",
             ]
@@ -1595,7 +1607,7 @@ mod tests {
             missing: Missing::Program("cc".into()),
             lib: "compiler",
         }];
-        let no_cc = report_deps(&cc, Some(os), false, true);
+        let no_cc = report_deps_with(&cc, Some(os), false, true, false, true);
         assert!(
             !no_cc.iter().any(|l| l.contains("--deps=build")),
             "{no_cc:?}"
@@ -1614,7 +1626,7 @@ mod tests {
                 "  apt-get install uuid-dev",
             ]
         );
-        let upd = report_deps_with(&d, Some(os), false, false, true);
+        let upd = report_deps_with(&d, Some(os), false, false, true, false);
         assert_eq!(
             upd[3],
             "  sudo apt-get update && sudo apt-get install uuid-dev"

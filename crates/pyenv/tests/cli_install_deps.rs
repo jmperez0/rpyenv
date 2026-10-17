@@ -1637,7 +1637,8 @@ fn an_interrupt_during_a_library_build_leaves_no_store_entry() {
 // allowlist D-125
 #[test]
 fn a_refusal_names_the_build_route_for_users_without_root() {
-    let f = Fixture::new();
+    // A plain root: the hint is left out where the build route would refuse (ruling P5).
+    let f = Fixture::plain();
     plugin_def(&f);
     stubs(&f, 0);
     let r = run(
@@ -1652,4 +1653,50 @@ fn a_refusal_names_the_build_route_for_users_without_root() {
         "{}",
         r.stderr
     );
+}
+
+/// Rulings P2 and P5: the hint names `--deps=build` only where that route can run. CPython
+/// 3.0-3.6 keep today's report exactly, and a `PYENV_ROOT` with a space gets no hint either.
+#[test]
+fn the_build_route_hint_is_left_out_where_the_route_cannot_run() {
+    let f = Fixture::plain();
+    stubs(&f, 0);
+    // `plugin_def`'s shape, for a 3.6 definition; the run stops before any download.
+    f.file(
+        &f.root.join("plugins/fake/share/python-build/3.6.99"),
+        &format!(
+            "install_package \"Python-3.6.99\" \"http://127.0.0.1:9/Python-3.6.99.tar.gz#{}\" standard verify_py36 ensurepip\n",
+            "0".repeat(64)
+        ),
+    );
+    let r = run(
+        &f,
+        &["install", "--deps=system", "3.6.99"],
+        &[("RPYENV_TEST_PREFLIGHT", "libuuid")],
+    );
+    assert_eq!(r.code, 1, "{}", r.stderr);
+    assert!(
+        r.stderr
+            .contains("pyenv: cannot build Python: missing build dependencies:\n"),
+        "{}",
+        r.stderr
+    );
+    assert!(!r.stderr.contains("Without root"), "{}", r.stderr);
+    // A root with a space (the standard fixture's): the build route would refuse.
+    let f = Fixture::new();
+    plugin_def(&f);
+    stubs(&f, 0);
+    let r = run(
+        &f,
+        &["install", "--deps=system", "3.12.99"],
+        &[("RPYENV_TEST_PREFLIGHT", "libuuid")],
+    );
+    assert_eq!(r.code, 1, "{}", r.stderr);
+    assert!(
+        r.stderr
+            .contains("To build anyway, set RPYENV_SKIP_PREFLIGHT=1.\n"),
+        "{}",
+        r.stderr
+    );
+    assert!(!r.stderr.contains("Without root"), "{}", r.stderr);
 }
