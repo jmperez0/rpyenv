@@ -572,7 +572,10 @@ fn resolve_deps(
                     }
                     // A command that can't even start (not found, "Text file busy") says why.
                     let ok = match c.status() {
-                        Ok(st) => st.success(),
+                        Ok(st) => {
+                            crate::install::note_child_status(&st);
+                            st.success()
+                        }
                         Err(e) => {
                             say(&format!("pyenv: cannot run {}: {e}", argv[0]));
                             false

@@ -790,6 +790,9 @@ fn run_with_input(
         let _ = s.write_all(input.as_bytes());
     }
     let o = child.wait_with_output().ok()?;
+    // A probe killed by Ctrl+C: the caller's `interrupted()` check must see it (no race with
+    // the handler thread).
+    super::note_child_status(&o.status);
     Some((
         o.status.success(),
         String::from_utf8_lossy(&o.stdout).into_owned(),
