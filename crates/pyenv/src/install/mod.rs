@@ -4,6 +4,8 @@
 pub mod archive;
 #[cfg(unix)]
 pub mod builder;
+#[cfg(unix)]
+pub mod catalog;
 pub mod checksum;
 pub mod conda;
 pub mod condacatalog;
