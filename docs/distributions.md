@@ -96,13 +96,17 @@ and links it into Python statically. Nothing is installed on the system.
 - **Only what is missing** is built. Libraries the system has keep getting its updates.
 - **It is a cache.** Deleting `cache/deps` breaks no installed Python; the next build compiles
   again. (The CA bundle below lives elsewhere, in `$PYENV_ROOT/.rpyenv/ca/`; keep that one.)
+- **Tcl/Tk scripts:** a Python whose Tcl/Tk was built this way, and every virtual environment
+  made from it, reads Tcl's and Tk's scripts from `$PYENV_ROOT/.rpyenv/tcltk/`. Keep that
+  folder: if it is deleted, `pyenv install` and `pyenv rehash` re-create it from the installed
+  versions, and `pyenv uninstall` removes what no installed version uses.
 - Creating `cache/deps` also creates `$PYENV_ROOT/cache`, which turns on the download cache for later installs (as creating it by hand does).
 - **Versions:** rpyenv pins each library's version and SHA-256 and checks every download. A
   Python version whose definition pins OpenSSL or readline gets that version.
 - **What the system still needs:** a C compiler, `make` and `patch`. OpenSSL and libxcrypt also
   need Perl with its core modules (`perl-core` on Fedora); Tk needs the X11 headers
   (`libx11-dev`, `libX11-devel`) until a later release builds those too.
-- **`PYENV_ROOT`** must have no spaces or shell characters in its path.
+- **`PYENV_ROOT`** must have no spaces, shell characters or `:` in its path.
 - **CA certificates:** a self-built OpenSSL reads the system's (`/etc/pki/tls` or `/etc/ssl`).
   When the system has none, it reads `$PYENV_ROOT/.rpyenv/ca/cert.pem`, a bundle rpyenv pins (curl's
   copy of Mozilla's list). `pyenv install` replaces that file when an rpyenv upgrade pins a

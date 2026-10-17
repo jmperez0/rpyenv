@@ -43,7 +43,9 @@ impl Origin {
 /// How one library is built: shell command lines run with `sh -c`, in order, in the source
 /// tree's `dir`. `store::expand` fills in `{prefix}` (the entry), `{destdir}` (where `make
 /// install` stages it), `{stage}` (`{destdir}{prefix}`), `{jobs}`, `{triple}` (`cc
-/// -dumpmachine`), `{openssldir}` and `{dep:<key>}` (the entry of a library in `needs`).
+/// -dumpmachine`), `{openssldir}`, `{scripts}` (`<root>/.rpyenv/tcltk/<key>-<version>`, the
+/// shared home of Tcl's and Tk's script folders) and `{dep:<key>}` (the entry of a library in
+/// `needs`).
 pub struct Recipe {
     pub key: &'static str,
     /// The subdirectory of the source tree the commands run in (`unix` for Tcl and Tk).
@@ -204,11 +206,12 @@ static RECIPES: &[Recipe] = &[
         perl: false,
         x11: false,
         includes: &[],
-        // The compiled-in library path names a folder that never exists, so Tcl finds the copy
-        // in the version (`<prefix>/lib/tcl8.6`) and never the store's (measured).
+        // The compiled-in library path is the shared script home outside the store, so Tcl
+        // finds it from a venv too, and never the store's copy; without it, Tcl falls back to
+        // the copy in the version (`<prefix>/lib/tcl8.6`, measured; final review I1).
         steps: &[
             "./configure --prefix={prefix} --disable-shared --enable-threads",
-            "make -j{jobs} TCL_LIBRARY=/nonexistent/rpyenv/tcl8.6 binaries libraries",
+            "make -j{jobs} TCL_LIBRARY={scripts}/tcl8.6 binaries libraries",
             "make install-binaries install-libraries install-headers INSTALL_ROOT={destdir}",
         ],
     },
@@ -221,7 +224,7 @@ static RECIPES: &[Recipe] = &[
         includes: &[],
         steps: &[
             "./configure --prefix={prefix} --disable-shared --with-tcl={dep:tcl}/lib",
-            "make -j{jobs} TK_LIBRARY=/nonexistent/rpyenv/tk8.6 TCL_GENERIC_DIR={dep:tcl}/include TCL_PLATFORM_DIR={dep:tcl}/include binaries libraries",
+            "make -j{jobs} TK_LIBRARY={scripts}/tk8.6 TCL_GENERIC_DIR={dep:tcl}/include TCL_PLATFORM_DIR={dep:tcl}/include binaries libraries",
             "make install-binaries install-libraries install-headers INSTALL_ROOT={destdir}",
         ],
     },

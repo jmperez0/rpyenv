@@ -37,14 +37,70 @@ pub fn ca_dir(root: &Path) -> PathBuf {
     root.join(".rpyenv").join("ca")
 }
 
+/// Where Tcl's and Tk's script folders live for the virtual environments of the versions built
+/// against them (M8 design §6.3): `<root>/.rpyenv/tcltk/<key>-<version>/`. Tcl and Tk have this
+/// path compiled in; it is outside `cache/deps`, so deleting the cache breaks no venv.
+pub fn tcltk_dir(root: &Path) -> PathBuf {
+    root.join(".rpyenv").join("tcltk")
+}
+
+/// The shared script home of one Tcl or Tk release.
+pub fn scripts_home(root: &Path, key: &str, version: &str) -> PathBuf {
+    tcltk_dir(root).join(format!("{key}-{version}"))
+}
+
+/// The script folder a Tcl or Tk entry installs under `lib/`; `None` for other libraries.
+pub fn script_dir(key: &str) -> Option<&'static str> {
+    match key {
+        "tcl" => Some("tcl8.6"),
+        "tk" => Some("tk8.6"),
+        _ => None,
+    }
+}
+
+/// Copies the tree `src` to `dst` unless `dst` is already a directory: into a temporary sibling
+/// first, then renamed into place, so `dst` is never half-copied. Another process that put
+/// `dst` in place first wins.
+pub fn place_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
+    if dst.is_dir() {
+        return Ok(());
+    }
+    let parent = dst
+        .parent()
+        .ok_or_else(|| std::io::Error::other("no parent folder"))?;
+    std::fs::create_dir_all(parent)?;
+    let name = dst.file_name().unwrap_or_default().to_string_lossy();
+    let tmp = parent.join(format!(".tmp-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    let copied = super::builder::copy_tree(src, &tmp).and_then(|()| std::fs::rename(&tmp, dst));
+    if let Err(e) = copied {
+        let _ = std::fs::remove_dir_all(&tmp);
+        if !dst.is_dir() {
+            return Err(e);
+        }
+    }
+    Ok(())
+}
+
+/// Adds the entries of `new` that `into` doesn't hold yet (same folder): a second `[b]` round
+/// reuses ncurses or Tcl, and CPython's flags and the record must name each entry once.
+pub fn add_unique(into: &mut Vec<Entry>, new: Vec<Entry>) {
+    for e in new {
+        if !into.iter().any(|x| x.dir == e.dir) {
+            into.push(e);
+        }
+    }
+}
+
 /// A path the recipes and CPython's flags can carry unquoted (plan ruling P5): not empty, no
-/// whitespace or control character, and none of the characters a shell gives a meaning.
+/// whitespace or control character, none of the characters a shell gives a meaning, and no `:`
+/// (it would split `PATH` and `PKG_CONFIG_PATH`).
 pub fn plain_path(p: &Path) -> bool {
     let s = p.to_string_lossy();
     !s.is_empty()
         && !s
             .chars()
-            .any(|c| c.is_whitespace() || c.is_control() || "\"'`$\\;&|<>*?()[]{}!#~".contains(c))
+            .any(|c| c.is_whitespace() || c.is_control() || "\"'`$\\;&|<>*?()[]{}!#~:".contains(c))
 }
 
 /// Where the system keeps CA certificates, for a self-built OpenSSL's `OPENSSLDIR` (§6.5):
@@ -67,13 +123,15 @@ pub fn entry_name(key: &str, version: &str, fingerprint: &str) -> String {
 }
 
 /// Everything that makes two builds of a library differ (spec D6): its source, its recipe,
-/// the compiler and target, `OPENSSLDIR` for OpenSSL, and the entries it was built against.
+/// the compiler and target, `OPENSSLDIR` for OpenSSL, the script home for Tcl and Tk (both are
+/// compiled in), and the entries it was built against.
 pub fn fingerprint(
     r: &Recipe,
     row: &Row,
     cc: &str,
     triple: &str,
     openssldir: &str,
+    scripts: &str,
     deps: &[String],
 ) -> String {
     let mut s = format!(
@@ -85,6 +143,10 @@ pub fn fingerprint(
     );
     if r.key == "openssl" {
         s.push_str(openssldir);
+        s.push('\n');
+    }
+    if script_dir(r.key).is_some() {
+        s.push_str(scripts);
         s.push('\n');
     }
     for d in deps {
@@ -236,17 +298,50 @@ pub fn ensure(b: &Build, keys: &[&'static str], say: &mut dyn FnMut(&str)) -> R<
                     .into_owned(),
             );
         }
+        // Tcl and Tk have their shared script home compiled in (§6.3).
+        let home = scripts_home(b.root, key, &row.version);
+        let scripts = home.display().to_string();
+        vars.push(("scripts".to_string(), scripts.clone()));
         let name = entry_name(
             key,
             &row.version,
-            &fingerprint(recipe, &row, &cc, &triple, &openssldir, &deps),
+            &fingerprint(recipe, &row, &cc, &triple, &openssldir, &scripts, &deps),
         );
         let prefix = dir.join(&name);
         let lock_path = locks.join(format!("{name}.lock"));
         let lock = std::fs::File::create(&lock_path)
             .map_err(|e| message(format!("pyenv: cannot create {}: {e}", lock_path.display())))?;
-        lock.lock()
-            .map_err(|e| message(format!("pyenv: cannot lock {}: {e}", lock_path.display())))?;
+        // Polled, not blocking: a blocking lock would hold off Ctrl+C until the other
+        // builder finishes (final review I3).
+        let mut waiting = false;
+        loop {
+            match lock.try_lock() {
+                Ok(()) => break,
+                Err(std::fs::TryLockError::WouldBlock) => {
+                    if !waiting {
+                        waiting = true;
+                        say(&format!(
+                            "Waiting for another pyenv building {key} {} ({})",
+                            row.version,
+                            lock_path.display()
+                        ));
+                    }
+                    if interrupted() {
+                        return Err(InstallError::Interrupted);
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                }
+                Err(std::fs::TryLockError::Error(e)) => {
+                    return Err(message(format!(
+                        "pyenv: cannot lock {}: {e}",
+                        lock_path.display()
+                    )))
+                }
+            }
+        }
+        if interrupted() {
+            return Err(InstallError::Interrupted);
+        }
         if prefix.is_dir() {
             say(&format!(
                 "Using {key} {} from {}",
@@ -274,6 +369,17 @@ pub fn ensure(b: &Build, keys: &[&'static str], say: &mut dyn FnMut(&str)) -> R<
                 pkgconf.as_deref(),
                 say,
             )?;
+        }
+        // The shared script home is filled from the entry, built or reused (§6.3).
+        if let Some(d) = script_dir(key) {
+            let (from, to) = (prefix.join("lib").join(d), home.join(d));
+            place_tree(&from, &to).map_err(|e| {
+                message(format!(
+                    "pyenv: cannot copy {} into {}: {e}",
+                    from.display(),
+                    to.display()
+                ))
+            })?;
         }
         drop(lock);
         done.push(Entry {
@@ -604,6 +710,14 @@ printf 'Libs: -lz\nLibs.private: -lm\n' > "$p/lib/pkgconfig/zlib.pc"
     }
 
     fn run(f: &Fixture, said: &mut Vec<String>) -> Result<Vec<Entry>, InstallError> {
+        run_keys(f, &["zlib"], &mut |s: &str| said.push(s.to_string()))
+    }
+
+    fn run_keys(
+        f: &Fixture,
+        keys: &[&'static str],
+        say: &mut dyn FnMut(&str),
+    ) -> Result<Vec<Entry>, InstallError> {
         let def = Definition::default();
         let fetcher = Fetcher::direct();
         let b = Build {
@@ -615,7 +729,134 @@ printf 'Libs: -lz\nLibs.private: -lm\n' > "$p/lib/pkgconfig/zlib.pc"
             openssldir: PathBuf::from("/etc/ssl"),
             verbose: false,
         };
-        ensure(&b, &["zlib"], &mut |s: &str| said.push(s.to_string()))
+        ensure(&b, keys, say)
+    }
+
+    /// A fake Tcl source tree: `unix/configure` writes a Makefile whose build records the
+    /// `TCL_LIBRARY` it was given and whose install puts `lib/tcl8.6/init.tcl` and that record
+    /// under `$INSTALL_ROOT<prefix>`.
+    const TCL_CONFIGURE: &str = r#"#!/bin/sh
+for a in "$@"; do case "$a" in --prefix=*) echo "${a#--prefix=}" > prefix.txt;; esac; done
+printf 'binaries libraries:\n\techo "$(TCL_LIBRARY)" > tcl_library.txt\ninstall-binaries install-libraries install-headers:\n\tsh ./install.sh "$(INSTALL_ROOT)"\n' > Makefile
+"#;
+
+    const TCL_INSTALL: &str = r#"p="$1$(cat prefix.txt)"
+mkdir -p "$p/lib/tcl8.6/encoding"
+echo init > "$p/lib/tcl8.6/init.tcl"
+echo enc > "$p/lib/tcl8.6/encoding/ascii.enc"
+cp tcl_library.txt "$p/lib/tcl_library.txt"
+"#;
+
+    fn tcl_fixture() -> Fixture {
+        let mut f = fixture(false);
+        let mut b = tar::Builder::new(flate2::write::GzEncoder::new(
+            Vec::new(),
+            flate2::Compression::fast(),
+        ));
+        for (name, body, mode) in [
+            ("configure", TCL_CONFIGURE, 0o755),
+            ("install.sh", TCL_INSTALL, 0o644),
+        ] {
+            let mut h = tar::Header::new_gnu();
+            h.set_size(body.len() as u64);
+            h.set_mode(mode);
+            b.append_data(&mut h, format!("tcl0.1/unix/{name}"), body.as_bytes())
+                .unwrap();
+        }
+        let gz = b.into_inner().unwrap().finish().unwrap();
+        let path = f._tmp.path().join("tcl0.1-src.tar.gz");
+        std::fs::write(&path, &gz).unwrap();
+        f.rows = vec![Row {
+            key: "tcl".into(),
+            version: "0.1".into(),
+            url: format!("file://{}", path.display()),
+            sha256: crate::install::checksum::sha256_file(&path).unwrap(),
+        }];
+        f
+    }
+
+    /// Final review I1: a Tcl entry, built or reused, fills `<root>/.rpyenv/tcltk/tcl-<v>/`,
+    /// the folder its build compiled in, so venvs find `init.tcl`.
+    #[test]
+    fn a_tcl_entry_fills_the_shared_script_home_and_refills_it_when_deleted() {
+        let f = tcl_fixture();
+        let e = run_keys(&f, &["tcl"], &mut |_| {}).unwrap();
+        let home = f.root.join(".rpyenv/tcltk/tcl-0.1");
+        assert!(home.join("tcl8.6/init.tcl").is_file());
+        assert!(home.join("tcl8.6/encoding/ascii.enc").is_file());
+        let compiled = std::fs::read_to_string(e[0].dir.join("lib/tcl_library.txt")).unwrap();
+        assert_eq!(compiled.trim(), home.join("tcl8.6").display().to_string());
+        let names = |d: &Path| -> Vec<String> {
+            std::fs::read_dir(d)
+                .unwrap()
+                .map(|x| x.unwrap().file_name().to_string_lossy().into_owned())
+                .collect()
+        };
+        assert_eq!(names(&home), ["tcl8.6"], "nothing temporary is left");
+        std::fs::remove_dir_all(&home).unwrap();
+        let mut said = Vec::new();
+        let again = run_keys(&f, &["tcl"], &mut |s: &str| said.push(s.to_string())).unwrap();
+        assert_eq!(again, e);
+        assert!(
+            said.iter().any(|l| l.starts_with("Using tcl 0.1 from ")),
+            "{said:?}"
+        );
+        assert!(
+            home.join("tcl8.6/init.tcl").is_file(),
+            "the reused entry refilled it"
+        );
+    }
+
+    /// Final review I3: a builder waiting for another one's lock says so, and goes on when the
+    /// lock is released.
+    #[test]
+    fn a_builder_waiting_for_the_lock_says_so_then_reuses_the_entry() {
+        use std::sync::{Arc, Mutex};
+        use std::time::{Duration, Instant};
+        let f = Arc::new(fixture(false));
+        run(&f, &mut Vec::new()).unwrap();
+        let locks = deps_dir(&f.root).join(".locks");
+        let lock_path = std::fs::read_dir(&locks)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let held = std::fs::File::create(&lock_path).unwrap();
+        held.lock().unwrap();
+        let said = Arc::new(Mutex::new(Vec::<String>::new()));
+        let t = {
+            let (f, said) = (f.clone(), said.clone());
+            std::thread::spawn(move || {
+                run_keys(&f, &["zlib"], &mut |s: &str| {
+                    said.lock().unwrap().push(s.into())
+                })
+            })
+        };
+        let want = format!(
+            "Waiting for another pyenv building zlib 0.1 ({})",
+            lock_path.display()
+        );
+        let start = Instant::now();
+        while !said.lock().unwrap().contains(&want) {
+            assert!(
+                start.elapsed() < Duration::from_secs(10),
+                "{:?}",
+                said.lock().unwrap()
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(!t.is_finished(), "it went on while the lock was held");
+        drop(held);
+        t.join().unwrap().unwrap();
+        let said = said.lock().unwrap();
+        assert_eq!(said.iter().filter(|l| **l == want).count(), 1, "{said:?}");
+        assert!(
+            said.iter().any(|l| l.starts_with("Using zlib 0.1 from ")),
+            "{said:?}"
+        );
+        assert_eq!(runs(&f), 1);
     }
 
     fn runs(f: &Fixture) -> usize {
@@ -737,7 +978,7 @@ printf 'Libs: -lz\nLibs.private: -lm\n' > "$p/lib/pkgconfig/zlib.pc"
             url: "u".into(),
             sha256: "a".repeat(64),
         };
-        let base = fingerprint(r, &row, "cc", "x86_64-linux-gnu", "/etc/ssl", &[]);
+        let base = fingerprint(r, &row, "cc", "x86_64-linux-gnu", "/etc/ssl", "/h", &[]);
         let name = entry_name("openssl", "3.6.5", &base);
         assert!(
             name.starts_with("openssl-3.6.5-") && name.len() == "openssl-3.6.5-".len() + 12,
@@ -745,15 +986,16 @@ printf 'Libs: -lz\nLibs.private: -lm\n' > "$p/lib/pkgconfig/zlib.pc"
         );
         assert_eq!(name, entry_name("openssl", "3.6.5", &base), "stable");
         for other in [
-            fingerprint(r, &row, "gcc-14", "x86_64-linux-gnu", "/etc/ssl", &[]),
-            fingerprint(r, &row, "cc", "aarch64-linux-gnu", "/etc/ssl", &[]),
-            fingerprint(r, &row, "cc", "x86_64-linux-gnu", "/etc/pki/tls", &[]),
+            fingerprint(r, &row, "gcc-14", "x86_64-linux-gnu", "/etc/ssl", "/h", &[]),
+            fingerprint(r, &row, "cc", "aarch64-linux-gnu", "/etc/ssl", "/h", &[]),
+            fingerprint(r, &row, "cc", "x86_64-linux-gnu", "/etc/pki/tls", "/h", &[]),
             fingerprint(
                 r,
                 &row,
                 "cc",
                 "x86_64-linux-gnu",
                 "/etc/ssl",
+                "/h",
                 &["dep-1".into()],
             ),
             fingerprint(
@@ -765,6 +1007,7 @@ printf 'Libs: -lz\nLibs.private: -lm\n' > "$p/lib/pkgconfig/zlib.pc"
                 "cc",
                 "x86_64-linux-gnu",
                 "/etc/ssl",
+                "/h",
                 &[],
             ),
         ] {
@@ -777,9 +1020,48 @@ printf 'Libs: -lz\nLibs.private: -lm\n' > "$p/lib/pkgconfig/zlib.pc"
             ..row.clone()
         };
         assert_eq!(
-            fingerprint(z, &zrow, "cc", "t", "/etc/ssl", &[]),
-            fingerprint(z, &zrow, "cc", "t", "/etc/pki/tls", &[])
+            fingerprint(z, &zrow, "cc", "t", "/etc/ssl", "/h", &[]),
+            fingerprint(z, &zrow, "cc", "t", "/etc/pki/tls", "/h", &[])
         );
+        // The script home only matters for Tcl and Tk, which have it compiled in.
+        assert_eq!(
+            fingerprint(z, &zrow, "cc", "t", "/etc/ssl", "/h", &[]),
+            fingerprint(z, &zrow, "cc", "t", "/etc/ssl", "/other", &[])
+        );
+        for k in ["tcl", "tk"] {
+            let r = catalog::recipe(k).unwrap();
+            let row = Row {
+                key: k.into(),
+                ..row.clone()
+            };
+            assert_ne!(
+                fingerprint(r, &row, "cc", "t", "/etc/ssl", "/r1/.rpyenv/tcltk/x", &[]),
+                fingerprint(r, &row, "cc", "t", "/etc/ssl", "/r2/.rpyenv/tcltk/x", &[]),
+                "{k}"
+            );
+        }
+    }
+
+    /// Final review I1: Tcl and Tk compile in the shared script home, never a store path.
+    #[test]
+    fn tcl_and_tk_compile_in_the_shared_script_home() {
+        for (k, var) in [
+            ("tcl", "TCL_LIBRARY={scripts}/tcl8.6"),
+            ("tk", "TK_LIBRARY={scripts}/tk8.6"),
+        ] {
+            let r = catalog::recipe(k).unwrap();
+            assert!(
+                r.steps.iter().any(|s| s.contains(var)),
+                "{k}: {:?}",
+                r.steps
+            );
+            assert!(!r.steps.iter().any(|s| s.contains("/nonexistent")), "{k}");
+        }
+        assert_eq!(
+            scripts_home(Path::new("/r"), "tcl", "8.6.18"),
+            Path::new("/r/.rpyenv/tcltk/tcl-8.6.18")
+        );
+        assert!(!tcltk_dir(Path::new("/r")).starts_with(deps_dir(Path::new("/r"))));
     }
 
     #[test]
@@ -820,10 +1102,33 @@ printf 'Libs: -lz\nLibs.private: -lm\n' > "$p/lib/pkgconfig/zlib.pc"
             "/a\\b",
             "/a*b",
             "/a(b",
+            // A `:` would split PATH and PKG_CONFIG_PATH.
+            "/home/u/a:b",
             "",
         ] {
             assert!(!plain_path(Path::new(bad)), "{bad:?}");
         }
+    }
+
+    /// A second `[b]` round reuses ncurses: CPython's flags and the record name it once.
+    #[test]
+    fn add_unique_keeps_one_entry_per_folder() {
+        let mut all = vec![
+            entry("ncurses", "/s/ncurses-1-a"),
+            entry("readline", "/s/rl-1-b"),
+        ];
+        add_unique(
+            &mut all,
+            vec![
+                entry("ncurses", "/s/ncurses-1-a"),
+                entry("sqlite", "/s/sq-1-c"),
+            ],
+        );
+        let dirs: Vec<&Path> = all.iter().map(|e| e.dir.as_path()).collect();
+        assert_eq!(
+            dirs,
+            ["/s/ncurses-1-a", "/s/rl-1-b", "/s/sq-1-c"].map(Path::new)
+        );
     }
 
     #[test]
