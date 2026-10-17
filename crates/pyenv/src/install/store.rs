@@ -3,7 +3,7 @@
 //! needs the same library, version and options (D6, D7). It is a cache: CPython links these
 //! libraries statically, so deleting `cache/deps` breaks no installed version.
 
-use super::archive::{extract, Kind};
+use super::archive::{extract_skipping_outside_links, Kind};
 use super::builder::{get, logged};
 use super::catalog::{self, Origin, Recipe, Row};
 use super::checksum::sha256_file;
@@ -332,10 +332,16 @@ fn build_one(
         };
         let mut w: &BuildLog = &log;
         let archive = b.fetcher.fetch(&req, &mut w, say)?;
-        let src = extract(&archive, kind, &work, recipe.key).map_err(|e| {
-            log.line(&e);
-            InstallError::Failed
-        })?;
+        let (src, skipped) = extract_skipping_outside_links(&archive, kind, &work, recipe.key)
+            .map_err(|e| {
+                log.line(&e);
+                InstallError::Failed
+            })?;
+        for link in &skipped {
+            log.line(&format!(
+                "skipped a link that leaves the source tree: {link}"
+            ));
+        }
         let cwd = if recipe.dir.is_empty() {
             src
         } else {
@@ -634,6 +640,13 @@ printf 'Libs: -lz\nLibs.private: -lm\n' > "$p/lib/pkgconfig/zlib.pc"
             e[0].dir.display()
         );
         assert!(e[0].dir.join("include/zlib.h").is_file());
+        assert_eq!(
+            said.iter()
+                .filter(|l| l.starts_with("Building zlib"))
+                .count(),
+            1,
+            "{said:?}"
+        );
         assert!(said.iter().any(|l| l == "Building zlib 0.1..."), "{said:?}");
         // Nothing staged is left beside the entry.
         let left: Vec<String> = std::fs::read_dir(deps_dir(&f.root))
