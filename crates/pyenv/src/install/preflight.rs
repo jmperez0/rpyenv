@@ -476,6 +476,25 @@ pub fn check(env: &dyn Fn(&str) -> Option<String>, needs_patch: bool) -> Vec<Dep
     evaluate(&present, needs_patch, display)
 }
 
+/// The program a header probe compiles. stdio.h comes first: Fedora's readline.h uses FILE
+/// without including it.
+fn header_probe_source(header: &str) -> String {
+    format!("#include <stdio.h>\n#include <{header}>\nint main(void) {{ return 0; }}\n")
+}
+
+/// The link flag sets to try for a library: what `pkg-config --cflags --libs` printed first
+/// (it carries include paths such as libtirpc's /usr/include/tirpc), then the fixed `links`.
+fn link_alternatives(links: &[&[&str]], pkg_config_flags: Option<&str>) -> Vec<Vec<String>> {
+    let mut alts: Vec<Vec<String>> = links
+        .iter()
+        .map(|a| a.iter().map(|s| s.to_string()).collect())
+        .collect();
+    if let Some(flags) = pkg_config_flags {
+        alts.insert(0, flags.split_whitespace().map(str::to_string).collect());
+    }
+    alts
+}
+
 /// `<cc> CPPFLAGS... -x c - -o <out> LDFLAGS... <libs>`: compiles and links a program that
 /// includes `header` (M8 design §4.2 item 3). `run(program, args)` runs it with the source on
 /// stdin; the caller deletes `out`.
@@ -751,17 +770,8 @@ pub fn check3(env: &dyn Fn(&str) -> Option<String>, needs_patch: bool, minor: u3
             .map(|(_, s)| s);
         let mut found = false;
         'h: for h in l.headers {
-            // stdio.h first: Fedora's readline.h uses FILE without including it.
-            let src =
-                format!("#include <stdio.h>\n#include <{h}>\nint main(void) {{ return 0; }}\n");
-            let mut alts: Vec<Vec<String>> = l
-                .links
-                .iter()
-                .map(|a| a.iter().map(|s| s.to_string()).collect())
-                .collect();
-            if let Some(flags) = &pc {
-                alts.insert(0, flags.split_whitespace().map(str::to_string).collect());
-            }
+            let src = header_probe_source(h);
+            let alts = link_alternatives(l.links, pc.as_deref());
             for alt in &alts {
                 let libs: Vec<&str> = alt.iter().map(String::as_str).collect();
                 let tmp = probe_path();
@@ -1212,5 +1222,29 @@ mod tests {
             "  sudo apt-get update && sudo apt-get install uuid-dev"
         );
         assert!(report_deps(&[], Some(os), false, true).is_empty());
+    }
+
+    #[test]
+    fn header_probe_includes_stdio_first() {
+        assert_eq!(
+            header_probe_source("readline/readline.h"),
+            "#include <stdio.h>\n#include <readline/readline.h>\nint main(void) { return 0; }\n"
+        );
+    }
+
+    #[test]
+    fn pkg_config_flags_come_before_the_fixed_links() {
+        let links: &[&[&str]] = &[&["-lnsl", "-ltirpc"]];
+        assert_eq!(
+            link_alternatives(links, Some("-I/usr/include/tirpc -ltirpc\n")),
+            [
+                vec!["-I/usr/include/tirpc".to_string(), "-ltirpc".to_string()],
+                vec!["-lnsl".to_string(), "-ltirpc".to_string()],
+            ]
+        );
+        assert_eq!(
+            link_alternatives(links, None),
+            [vec!["-lnsl".to_string(), "-ltirpc".to_string()]]
+        );
     }
 }

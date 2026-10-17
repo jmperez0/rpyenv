@@ -453,4 +453,10 @@ mod tests {
         assert_eq!(minor_of_step("verify_py27"), None);
         assert_eq!(minor_of_step("standard"), None);
     }
+
+    #[test]
+    fn libnsl_probe_uses_libtirpc_pkg_config() {
+        // yp_prot.h includes <rpc/rpc.h>, found only through libtirpc's include path.
+        assert_eq!(lib("libnsl").unwrap().pkg_config, Some("libtirpc"));
+    }
 }
