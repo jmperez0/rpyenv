@@ -112,10 +112,11 @@ if [ -n "${BUILD:-}" ]; then
   mv "$root/cache/deps" "$root/cache/deps.off"
   imports "$v"
   mv "$root/cache/deps.off" "$root/cache/deps"
-  # Stage B4 (Ubuntu): the check can fail. A store entry whose library is gone makes the check
-  # after the build fail naming uuid; the rollback keeps the version from stage B2.
+  # Stage B4 (Ubuntu): the check can fail. A store entry that no longer holds its library (the
+  # folder stays, so the store reuses it) makes the check after the build fail naming uuid; the
+  # rollback keeps the version from stage B2.
   if [ "$distro" = ubuntu ]; then
-    rm "$root"/cache/deps/libuuid-*/lib/libuuid.a
+    rm -rf "$root"/cache/deps/libuuid-*/*
     rc=0
     out=$("$bin" install -f --deps=build "$v" 2>&1 </dev/null) || rc=$?
     tail -5 <<<"$out"
