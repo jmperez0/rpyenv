@@ -67,8 +67,10 @@ store, GitHub Actions with Ubuntu and Fedora containers, Python 3 for the weekly
   CPython and are removed from the libraries' environment.
 - **P8:** the store's `CPPFLAGS`/`LDFLAGS` come after the user's own, and its `configure`
   arguments before the user's `CONFIGURE_OPTS`/`PYTHON_CONFIGURE_OPTS`, so the user's choices win.
-- **P9:** the pinned CA bundle (spec §6.5) is fetched only when OpenSSL is built with the
-  bundle's folder as `OPENSSLDIR`; `pyenv install` refreshes it when the file exists and its
+- **P9:** the pinned CA bundle (spec §6.5) lives at `$PYENV_ROOT/.rpyenv/ca/cert.pem`, outside
+  the cache (user decision 2026-10-17: deleting `cache/deps` must not break HTTPS for versions
+  whose OpenSSL reads the bundle). It is fetched only when OpenSSL is built with the bundle's
+  folder as `OPENSSLDIR`; `pyenv install` refreshes it when the file exists and its
   hash differs from the catalog's.
 - **P10:** a missing `pkg-config` is supplied by building pkgconf into the store; its `bin/`
   goes first on `PATH` for the later library builds and for CPython's build.
@@ -790,7 +792,7 @@ git commit -m "M8b: the build catalog: pinned library sources and their static r
 - Produces (`store.rs`):
   - `pub struct Entry { pub key: &'static str, pub version: String, pub origin: Origin, pub dir: PathBuf }` (derives `Debug, Clone, PartialEq, Eq`)
   - `pub fn deps_dir(root: &Path) -> PathBuf` (`<root>/cache/deps`)
-  - `pub fn ca_dir(root: &Path) -> PathBuf` (`<root>/cache/deps/ca`)
+  - `pub fn ca_dir(root: &Path) -> PathBuf` (`<root>/.rpyenv/ca`, outside the cache; ruling P9)
   - `pub fn plain_path(p: &Path) -> bool`
   - `pub fn system_openssldir(exists: &dyn Fn(&str) -> bool, has_files: &dyn Fn(&str) -> bool) -> Option<&'static str>`
   - `pub fn entry_name(key: &str, version: &str, fingerprint: &str) -> String`
@@ -1047,6 +1049,14 @@ printf 'Libs: -lz\nLibs.private: -lm\n' > "$p/lib/pkgconfig/zlib.pc"
         assert_eq!(system_openssldir(&|_| false, &|_| false), None);
     }
 
+    /// Ruling P9: deleting the cache must not break HTTPS for versions that read the bundle.
+    #[test]
+    fn the_ca_bundle_lives_outside_the_cache() {
+        let root = Path::new("/r");
+        assert_eq!(ca_dir(root), Path::new("/r/.rpyenv/ca"));
+        assert!(!ca_dir(root).starts_with(deps_dir(root)));
+    }
+
     fn entry(key: &'static str, dir: &str) -> Entry {
         Entry { key, version: "1".into(), origin: Origin::Catalog, dir: PathBuf::from(dir) }
     }
@@ -1158,8 +1168,10 @@ pub fn deps_dir(root: &Path) -> PathBuf {
 }
 
 /// Where the pinned CA bundle lives when the system has no certificates (M8 design §6.5).
+/// Outside `cache/deps` (ruling P9): a self-built OpenSSL has this path compiled in, so the
+/// file must survive the cache being deleted.
 pub fn ca_dir(root: &Path) -> PathBuf {
-    deps_dir(root).join("ca")
+    root.join(".rpyenv").join("ca")
 }
 
 /// A path the recipes and CPython's flags can carry unquoted (plan ruling P5): not empty, no
@@ -1494,7 +1506,7 @@ fn build_one(
     }
 }
 
-/// Puts the catalog's CA bundle at `<root>/cache/deps/ca/cert.pem` (M8 design §6.5), unless
+/// Puts the catalog's CA bundle at `<root>/.rpyenv/ca/cert.pem` (M8 design §6.5), unless
 /// the file there already has the catalog's SHA-256. `Ok(true)` when it wrote the file.
 pub fn place_ca(root: &Path, rows: &[Row], fetcher: &Fetcher, say: &mut dyn FnMut(&str)) -> R<bool> {
     let row = rows
@@ -1672,7 +1684,7 @@ pub mod store;
 - [ ] **Step 7: Run the tests to see them pass**
 
 Run: `cargo test -q -p pyenv --lib -- store:: record:: catalog::`
-Expected: all pass (12 store, 1 record, 8 catalog).
+Expected: all pass (13 store, 1 record, 8 catalog).
 
 - [ ] **Step 8: Commit**
 
@@ -2174,12 +2186,12 @@ fn uuid_runs(f: &Fixture) -> usize {
     std::fs::read_to_string(f.base.join("uuid-configure-runs")).map(|s| s.lines().count()).unwrap_or(0)
 }
 
-/// The store's entries (directory names under `cache/deps`, without `.locks` and `ca`).
+/// The store's entries (directory names under `cache/deps`, without `.locks`).
 fn store_entries(f: &Fixture) -> Vec<String> {
     let mut v: Vec<String> = std::fs::read_dir(f.root.join("cache/deps"))
         .map(|rd| rd.map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect())
         .unwrap_or_default();
-    v.retain(|n| n != ".locks" && n != "ca");
+    v.retain(|n| n != ".locks");
     v.sort();
     v
 }
@@ -2832,7 +2844,7 @@ fn pyenv_install_replaces_an_outdated_ca_bundle() {
     let sha = pyenv::install::checksum::sha256_file(&pem).unwrap();
     let cat = f.base.join("catalog.tsv");
     f.file(&cat, &format!("cacert\t2099-01-01\tfile://{}\t{sha}\n", pem.display()));
-    let bundle = f.root.join("cache/deps/ca/cert.pem");
+    let bundle = f.root.join(".rpyenv/ca/cert.pem");
     f.file(&bundle, "old\n");
     let cat_s = cat.display().to_string();
     let p = [("RPYENV_TEST_PREFLIGHT", ""), ("RPYENV_TEST_CATALOG", cat_s.as_str())];
@@ -3507,7 +3519,7 @@ and links it into Python statically. Nothing is installed on the system.
   needs the same library, version and options reuses it.
 - **Only what is missing** is built. Libraries the system has keep getting its updates.
 - **It is a cache.** Deleting `cache/deps` breaks no installed Python; the next build compiles
-  again.
+  again. (The CA bundle below lives elsewhere, in `$PYENV_ROOT/.rpyenv/ca/`; keep that one.)
 - **Versions:** rpyenv pins each library's version and SHA-256 and checks every download. A
   Python version whose definition pins OpenSSL or readline gets that version.
 - **What the system still needs:** a C compiler, `make` and `patch`. OpenSSL and libxcrypt also
@@ -3515,7 +3527,7 @@ and links it into Python statically. Nothing is installed on the system.
   (`libx11-dev`, `libX11-devel`) until a later release builds those too.
 - **`PYENV_ROOT`** must have no spaces or shell characters in its path.
 - **CA certificates:** a self-built OpenSSL reads the system's (`/etc/pki/tls` or `/etc/ssl`).
-  When the system has none, it reads `cache/deps/ca/cert.pem`, a bundle rpyenv pins (curl's
+  When the system has none, it reads `$PYENV_ROOT/.rpyenv/ca/cert.pem`, a bundle rpyenv pins (curl's
   copy of Mozilla's list). `pyenv install` replaces that file when an rpyenv upgrade pins a
   newer one.
 - **Updates:** each version built this way lists its libraries in `versions/<v>/.rpyenv-deps`.
@@ -3531,7 +3543,7 @@ and links it into Python statically. Nothing is installed on the system.
 | D-124 | Linux | `install` at a terminal (CPython 3.7+) | No prompt | The prompt offers `[b]` to build the missing libraries without root, naming what it can't build here and why; after it, whatever is left returns to the prompt | Same as D-123, chosen interactively (M8 design §5.1). |
 | D-125 | Linux | `install` (CPython 3), a refused build | No such line | The refusal adds `Without root, pyenv install --deps=build compiles them from source.` unless the compiler, `make` or `patch` is missing | Tells users without root the way out. |
 | D-126 | Linux | `install` | No such warning | Prints one line per installed version that the build route built with a library rpyenv now pins at another version, with the `pyenv install -f` command that rebuilds it | Statically linked libraries need a rebuild for a security fix (M8 design §6.3). |
-| D-127 | Linux | `install` | No such file | Replaces `$PYENV_ROOT/cache/deps/ca/cert.pem` when it exists and rpyenv pins a newer bundle, and says so | Versions whose OpenSSL reads the bundle get the new certificates at once (M8 design §6.5). |
+| D-127 | Linux | `install` | No such file | Replaces `$PYENV_ROOT/.rpyenv/ca/cert.pem` when it exists and rpyenv pins a newer bundle, and says so | Versions whose OpenSSL reads the bundle get the new certificates at once (M8 design §6.5). |
 ```
 
   Run `python parity/coverage.py` and expect it to report every row covered.
@@ -3555,6 +3567,8 @@ and links it into Python statically. Nothing is installed on the system.
   - §6.3, after "§4.4's `info library` check confirms it.", add: "Tcl and Tk are built with a
     compiled-in library path that never exists, so they find the copy in the version and never
     the store's (measured in M8b)."
+  - §6.5: replace "in `<root>/cache/deps/ca/`" with "in `<root>/.rpyenv/ca/`, outside the
+    cache, so deleting `cache/deps` never breaks HTTPS (user decision 2026-10-17)".
   - §6.5, add a last sentence: "The build route needs CPython 3.7 or later, a `PYENV_ROOT`
     without spaces, Perl's core modules for OpenSSL and libxcrypt, and (until M8c) the system's
     X11 headers for Tk."
