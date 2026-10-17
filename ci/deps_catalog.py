@@ -15,8 +15,13 @@ import json
 import os
 import re
 import sys
+import socket
 import tempfile
+import time
+import urllib.error
 import urllib.request
+
+SLEEP = time.sleep  # tests replace it
 
 GH = "https://github.com/{repo}/releases/download/{tag}/{name}"
 
@@ -89,8 +94,18 @@ def get(url, binary=False):
     token = os.environ.get("GH_TOKEN")
     if token and url.startswith("https://api.github.com/"):
         req.add_header("Authorization", "Bearer " + token)
-    with urllib.request.urlopen(req, timeout=60) as r:
-        data = r.read()
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                data = r.read()
+            break
+        except urllib.error.HTTPError as e:
+            if not (e.code >= 500 or e.code == 429) or attempt == 2:
+                raise
+        except (urllib.error.URLError, TimeoutError, socket.timeout):
+            if attempt == 2:
+                raise
+        SLEEP(2 * (attempt + 1))
     return data if binary else data.decode("utf-8", "replace")
 
 
