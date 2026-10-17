@@ -322,7 +322,7 @@ fn sigint(status: &ExitStatus) -> bool {
     status.signal() == Some(2)
 }
 
-fn logged(log: &BuildLog, cmd: &mut Command) -> R<()> {
+pub(crate) fn logged(log: &BuildLog, cmd: &mut Command) -> R<()> {
     if interrupted() {
         return Err(InstallError::Interrupted);
     }
