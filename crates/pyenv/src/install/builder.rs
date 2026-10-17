@@ -615,7 +615,9 @@ fn stdlib_check(
         .unwrap_or_default();
     // RPYENV_SKIP_PREFLIGHT=1 always gives P1's warning, lenient mode included (review M7).
     let skip = get(job.env, "RPYENV_SKIP_PREFLIGHT").as_deref() == Some("1");
-    if !skip && get(job.env, "RPYENV_DEPS_MODE").as_deref() == Some("lenient") {
+    // `lenient`: a script (D13); `continue`: the prompt's `[c]`, chosen by the user.
+    let mode = get(job.env, "RPYENV_DEPS_MODE");
+    if !skip && matches!(mode.as_deref(), Some("lenient" | "continue")) {
         // Spec §5.2's summary, verbatim; the build counts as installed (D13). Root is read
         // the way `pyenv install` reads it: `id -u` on the build's PATH.
         let root = command("id", job.env)
@@ -631,7 +633,16 @@ fn stdlib_check(
         }
         .unwrap_or_else(|| "/etc/os-release".into());
         let os = std::fs::read_to_string(os_path).ok();
-        say(&lenient_summary(&name, &fails, minor, os.as_deref(), root));
+        let summary = lenient_summary(&name, &fails, minor, os.as_deref(), root);
+        // The "later release" notice is for scripts; the user at the prompt chose this.
+        say(if mode.as_deref() == Some("continue") {
+            summary
+                .split("\n  In a later rpyenv release")
+                .next()
+                .unwrap_or(&summary)
+        } else {
+            &summary
+        });
         return Ok(());
     }
     let lead = if skip { "pyenv: warning: " } else { "pyenv: " };

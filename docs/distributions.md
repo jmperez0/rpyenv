@@ -48,6 +48,7 @@ provide them. Then you choose:
 |---|---|
 | `p` (default) | Prints the install command and stops |
 | `i` | Runs the command through `sudo` (no `sudo` when you are root; no `-y`), then checks again |
+| `c` | Builds without the missing libraries and lists them at the end. Offered only when the compiler, `make`, OpenSSL and zlib are all there |
 
 `i` is left out, with the reason, when `sudo` can't be used or rpyenv doesn't know your
 distribution. rpyenv knows apt, dnf, zypper and pacman. Alpine comes later.

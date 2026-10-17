@@ -607,6 +607,87 @@ fn not_root_and_no_sudo_leaves_i_out() {
     assert!(!installed(&f));
 }
 
+/// M8a follow-up: a user who may not use sudo, with only an optional library missing, can
+/// build without it. `[c]` builds; the run ends with the summary, without the notice that
+/// is meant for scripts.
+#[test]
+fn without_sudo_c_builds_without_the_optional_libraries() {
+    let f = Fixture::new();
+    plugin_def(&f);
+    stub(&f, "id", "echo 1000");
+    // A sudo that refuses this user: `[i]` is left out (and the real sudo never runs).
+    stub(
+        &f,
+        "sudo",
+        "case \"$1\" in --version) echo 'Sudo version 1.9.0'; exit 0;; esac\n\
+         echo 'Sorry, user jm may not run sudo on box.' >&2; exit 1",
+    );
+    let r = run_input(
+        &f,
+        &["install", "3.12.99"],
+        &[
+            ("RPYENV_TEST_TTY", "1"),
+            ("RPYENV_TEST_PREFLIGHT", "tk"),
+            ("FAKE_PY_MISSING", "tkinter"),
+        ],
+        "c\n",
+    );
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert!(
+        r.stderr
+            .contains("  [i] not offered: sudo says this user may not use it\n"),
+        "{}",
+        r.stderr
+    );
+    assert!(
+        r.stderr
+            .contains("  [c] continue without them (the build warns about them at the end)\n"),
+        "{}",
+        r.stderr
+    );
+    assert!(
+        r.stderr
+            .contains("pyenv: 3.12.99 was built without: tkinter\n"),
+        "{}",
+        r.stderr
+    );
+    assert!(
+        r.stderr
+            .contains("  Add them: sudo apt-get install tk-dev, then pyenv install -f 3.12.99"),
+        "{}",
+        r.stderr
+    );
+    assert!(
+        !r.stderr.contains("In a later rpyenv release"),
+        "{}",
+        r.stderr
+    );
+    assert!(installed(&f));
+}
+
+/// `[c]` is not offered when a library from the hard set is missing; `c` is refused.
+#[test]
+fn c_is_refused_when_openssl_is_missing() {
+    let f = Fixture::new();
+    plugin_def(&f);
+    stub(&f, "id", "echo 1000");
+    let sys = f.syspath.display().to_string();
+    let r = run_input(
+        &f,
+        &["install", "3.12.99"],
+        &[
+            ("PATH", &sys),
+            ("RPYENV_TEST_TTY", "1"),
+            ("RPYENV_TEST_PREFLIGHT", "openssl,tk"),
+        ],
+        "c\n\n",
+    );
+    assert_eq!(r.code, 1, "{}", r.stderr);
+    assert!(!r.stderr.contains("[c]"), "{}", r.stderr);
+    assert!(r.stderr.contains("pyenv: answer p\n"), "{}", r.stderr);
+    assert!(!installed(&f));
+}
+
 /// Review focus 5.
 #[test]
 fn a_python2_definition_keeps_todays_behavior() {
@@ -732,7 +813,8 @@ fn an_install_that_leaves_items_missing_ends_without_looping() {
         "{}",
         r.stderr
     );
-    assert!(r.stderr.contains("pyenv: answer p\n"), "{}", r.stderr);
+    // uuid is optional, so `[c]` is offered alongside `p` (M8a follow-up).
+    assert!(r.stderr.contains("pyenv: answer p or c\n"), "{}", r.stderr);
     assert_eq!(log(&f).matches("apt-get install").count(), 2, "one install");
     assert!(!installed(&f));
     // Without a terminal: exactly one install command, then it stops.
