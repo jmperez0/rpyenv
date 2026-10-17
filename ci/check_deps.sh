@@ -18,6 +18,9 @@
 # keeps working without the store; and (Ubuntu) a store entry with its library removed makes
 # the check after the build fail naming the module. WEEKLY=1 adds the newest 3.14 (OpenSSL 4
 # and upstream's patch) and 3.8 (OpenSSL 1.1.1).
+# NO_CA=1 (BUILD, Debian/Ubuntu; allowlist D-128): no CA certificates at all. rpyenv downloads
+# with Mozilla's roots compiled in, builds OpenSSL against its pinned bundle, and the built
+# Python must complete a TLS handshake through that bundle.
 set -euo pipefail
 distro="$1"
 bin="$PWD/pyenv"
@@ -30,7 +33,15 @@ if [ -n "${BUILD:-}" ]; then
   case "$distro" in
     debian|ubuntu)
       apt-get update -q
-      apt-get install -yq gcc libc6-dev make patch perl libx11-dev ca-certificates
+      if [ -n "${NO_CA:-}" ]; then
+        # Without recommends: several packages recommend ca-certificates.
+        apt-get install -yq --no-install-recommends gcc libc6-dev make patch perl libx11-dev
+        if dpkg -s ca-certificates >/dev/null 2>&1 || [ -e /etc/ssl/certs/ca-certificates.crt ]; then
+          echo "::error::$distro: NO_CA=1, but CA certificates are installed"; exit 1
+        fi
+      else
+        apt-get install -yq gcc libc6-dev make patch perl libx11-dev ca-certificates
+      fi
       rm -rf /var/lib/apt/lists/* ;;
     fedora|rocky) dnf install -y gcc make patch perl-core libX11-devel ;;
     tumbleweed) zypper --non-interactive install gcc make patch perl libX11-devel ca-certificates ;;
@@ -96,6 +107,17 @@ if [ -n "${BUILD:-}" ]; then
   cat "$rec"
   # No libssl-dev was installed: OpenSSL must have come from the store.
   grep -q '^openssl ' "$rec" || { echo "::error::$distro: OpenSSL is not in the record"; exit 1; }
+  # NO_CA (§6.5, D-128): the downloads worked without system certificates; the store's OpenSSL
+  # reads rpyenv's pinned bundle, and a real TLS handshake goes through it.
+  if [ -n "${NO_CA:-}" ]; then
+    bundle="$root/.rpyenv/ca/cert.pem"
+    [ -f "$bundle" ] || { echo "::error::$distro: no CA bundle at $bundle"; exit 1; }
+    echo "== the CA bundle is $bundle"
+    "$root/versions/$v/bin/python3" -c "import ssl; print(ssl.get_default_verify_paths())"
+    "$root/versions/$v/bin/python3" -c "import urllib.request; urllib.request.urlopen('https://pypi.org/simple/', timeout=30)" ||
+      { echo "::error::$distro: no TLS handshake through $bundle"; exit 1; }
+    echo "== a TLS handshake to pypi.org through the bundle works"
+  fi
   # Tcl finds its library inside the version, not in the store (§4.4).
   lib=$("$root/versions/$v/bin/python3" -c "import tkinter; print(tkinter.Tcl().eval('info library'))")
   case "$lib" in "$root/versions/$v/"*) ;; *) echo "::error::$distro: Tcl's library is $lib"; exit 1 ;; esac
