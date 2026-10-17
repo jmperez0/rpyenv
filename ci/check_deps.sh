@@ -45,7 +45,8 @@ if [ -n "${BUILD:-}" ]; then
       fi
       rm -rf /var/lib/apt/lists/* ;;
     fedora|rocky) dnf install -y gcc make patch perl-core libX11-devel ;;
-    tumbleweed) zypper --non-interactive install gcc make patch perl libX11-devel ca-certificates ;;
+    # gawk: `--deps=build` needs awk from the system (CPython's and xz's configure run it).
+    tumbleweed) zypper --non-interactive install gcc make patch gawk perl libX11-devel ca-certificates ;;
     arch) pacman -Syu --noconfirm gcc make patch perl libx11 ;;
     *) echo "::error::unknown distro $distro"; exit 1 ;;
   esac
@@ -129,7 +130,11 @@ if [ -n "${BUILD:-}" ]; then
   [ -f "$rec" ] || { echo "::error::$distro: no $rec"; exit 1; }
   cat "$rec"
   # No libssl-dev was installed: OpenSSL must have come from the store.
-  grep -q '^openssl ' "$rec" || { echo "::error::$distro: OpenSSL is not in the record"; exit 1; }
+  # Arch has no -dev packages: its base image ships OpenSSL with its headers, so the build
+  # route correctly builds none there.
+  if [ "$distro" != arch ]; then
+    grep -q '^openssl ' "$rec" || { echo "::error::$distro: OpenSSL is not in the record"; exit 1; }
+  fi
   # NO_CA (§6.5, D-128): the downloads worked without system certificates; the store's OpenSSL
   # reads rpyenv's pinned bundle, and a real TLS handshake goes through it.
   if [ -n "${NO_CA:-}" ]; then
@@ -243,6 +248,11 @@ fi
 # Stage 2 (full legs): `pyenv install --deps=install` runs the package manager itself (spec §9
 # row 2), from the container as stage 1 left it, then builds. It checks every module itself
 # (strict: a miss fails it); the imports below are an independent look from outside.
+# Rocky: the -devel packages in CRB need it enabled first, which rpyenv prints and never does.
+if [ -n "$crb" ]; then
+  echo "== running: $(with_yes "$crb")"
+  eval "$(with_yes "$crb")"
+fi
 "$bin" install --deps=install "$v" </dev/null
 detect_empty || { echo "::error::$distro: still missing after --deps=install"; exit 1; }
 echo "== detection is empty on $distro"
