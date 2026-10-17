@@ -38,6 +38,30 @@ class Versions(unittest.TestCase):
         self.assertEqual(dc.cacert_latest(page), "2026-09-25")
 
 
+class Kernel(unittest.TestCase):
+    PAGES = {
+        dc.KERNEL: '<a href="v2.40/">v2.40/</a> <a href="v2.41/">v2.41/</a> <a href="v2.42/">v2.42/</a>',
+        dc.KERNEL + "v2.42/": '<a href="util-linux-2.42-rc1.tar.xz">x</a> <a href="util-linux-2.42-rc2.tar.xz">y</a>',
+        dc.KERNEL + "v2.41/": "util-linux-2.41.tar.xz util-linux-2.41.1.tar.xz util-linux-2.41.2.tar.xz util-linux-2.41-rc3.tar.xz",
+        dc.KERNEL + "v2.40/": "util-linux-2.40.4.tar.xz",
+    }
+
+    def test_a_series_with_only_release_candidates_falls_back_to_the_one_before(self):
+        self.assertEqual(
+            dc.kernel_latest(self.PAGES.__getitem__),
+            ("2.41.2", dc.KERNEL + "v2.41/util-linux-2.41.2.tar.xz"),
+        )
+
+    def test_the_newest_series_wins_once_it_has_a_release(self):
+        pages = dict(self.PAGES)
+        pages[dc.KERNEL + "v2.42/"] += " util-linux-2.42.tar.xz"
+        self.assertEqual(dc.kernel_latest(pages.__getitem__), ("2.42", dc.KERNEL + "v2.42/util-linux-2.42.tar.xz"))
+
+    def test_no_release_anywhere_is_none(self):
+        pages = {dc.KERNEL: '<a href="v2.42/">', dc.KERNEL + "v2.42/": "util-linux-2.42-rc1.tar.xz"}
+        self.assertEqual(dc.kernel_latest(pages.__getitem__), (None, None))
+
+
 class Rows(unittest.TestCase):
     TSV = "# comment\nzlib\t1.3.1\thttps://x/zlib-1.3.1.tar.gz\t" + SHA + "\nxz\t5.8.4\thttps://x/xz-5.8.4.tar.gz\t" + SHA + "\n"
 
