@@ -160,10 +160,25 @@ fn without_a_terminal_or_flag_other_libraries_only_warn_and_the_build_goes_on() 
     let r = run(
         &f,
         &["install", "3.12.99"],
-        &[("RPYENV_TEST_PREFLIGHT", "tk,libuuid")],
+        &[
+            ("RPYENV_TEST_PREFLIGHT", "tk,libuuid"),
+            ("FAKE_PY_MISSING", "tkinter _uuid"),
+        ],
     );
     assert_eq!(r.code, 0, "{}", r.stderr);
     assert!(installed(&f), "{}", r.stderr);
+    // The end summary (§5.2): the built interpreter really lacks both, and the run succeeds.
+    assert!(
+        r.stderr.contains(
+            "pyenv: 3.12.99 was built without: tkinter, uuid
+  Add them: sudo apt-get install tk-dev uuid-dev, then pyenv install -f 3.12.99
+  In a later rpyenv release this stops the build; choose now with --deps=install or
+  --deps=system (or RPYENV_BUILD_DEPS).
+"
+        ),
+        "{}",
+        r.stderr
+    );
     assert!(
         r.stderr
             .contains("pyenv: the build will lack these optional modules:\n"),
@@ -180,6 +195,67 @@ fn without_a_terminal_or_flag_other_libraries_only_warn_and_the_build_goes_on() 
     assert!(!r.stderr.contains("cannot build"), "{}", r.stderr);
     assert!(!r.stderr.contains("To build anyway"), "{}", r.stderr);
     assert_eq!(log(&f), "");
+}
+
+#[test]
+fn a_build_missing_a_module_is_not_installed() {
+    let f = Fixture::new();
+    plugin_def(&f);
+    stubs(&f, 0);
+    let r = run(
+        &f,
+        &["install", "--deps=system", "3.12.99"],
+        &[("RPYENV_TEST_PREFLIGHT", ""), ("FAKE_PY_MISSING", "_uuid")],
+    );
+    assert_eq!(r.code, 1, "{}", r.stderr);
+    assert!(
+        r.stderr
+            .contains("pyenv: 3.12.99 was built without: uuid (import _uuid failed)"),
+        "{}",
+        r.stderr
+    );
+    assert!(!installed(&f), "{}", r.stderr);
+}
+
+#[test]
+fn skip_preflight_turns_the_failure_into_a_warning() {
+    let f = Fixture::new();
+    plugin_def(&f);
+    stubs(&f, 0);
+    let r = run(
+        &f,
+        &["install", "--deps=system", "3.12.99"],
+        &[("RPYENV_SKIP_PREFLIGHT", "1"), ("FAKE_PY_NO_CA", "1")],
+    );
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert!(
+        r.stderr.contains(
+            "pyenv: warning: 3.12.99 was built without: ssl certificates (no CA file or directory)"
+        ),
+        "{}",
+        r.stderr
+    );
+    assert!(installed(&f), "{}", r.stderr);
+}
+
+#[test]
+fn a_tcl_that_does_not_start_fails_the_check() {
+    let f = Fixture::new();
+    plugin_def(&f);
+    stubs(&f, 0);
+    let r = run(
+        &f,
+        &["install", "--deps=system", "3.12.99"],
+        &[("RPYENV_TEST_PREFLIGHT", ""), ("FAKE_PY_NO_TCL", "1")],
+    );
+    assert_eq!(r.code, 1, "{}", r.stderr);
+    assert!(
+        r.stderr
+            .contains("was built without: tkinter (Tcl doesn't start)"),
+        "{}",
+        r.stderr
+    );
+    assert!(!installed(&f));
 }
 
 #[test]
@@ -747,4 +823,71 @@ fn root_without_a_terminal_installs_without_sudo() {
     );
     assert!(!l.contains("sudo"), "{l}");
     assert!(installed(&f));
+}
+
+#[test]
+fn an_interrupt_during_the_install_command_ends_the_run_with_130() {
+    use std::os::unix::process::CommandExt;
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+    let f = Fixture::new();
+    plugin_def(&f);
+    stubs(&f, 0);
+    // The package manager logs its line, then runs long enough to be interrupted.
+    let l = log_path(&f).display().to_string();
+    stub(
+        &f,
+        "apt-get",
+        &format!(
+            "echo \"apt-get $*\" >> '{l}'
+sleep 30"
+        ),
+    );
+    let owned = env(&f, &[("RPYENV_TEST_PREFLIGHT", "openssl")]);
+    let mut cmd = f.command(
+        std::path::Path::new(env!("CARGO_BIN_EXE_pyenv")),
+        &f.work,
+        &[],
+    );
+    for (k, v) in &owned {
+        cmd.env(k, v);
+    }
+    let mut child = cmd
+        .args(["install", "--deps=install", "3.12.99"])
+        .process_group(0)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stderr = child.stderr.take().unwrap();
+    let reader = std::thread::spawn(move || {
+        let mut s = String::new();
+        std::io::Read::read_to_string(&mut { stderr }, &mut s).ok();
+        s
+    });
+    let start = Instant::now();
+    while !log(&f).contains("apt-get") {
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "the stub never started"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    common::sigint_group(child.id());
+    let start = Instant::now();
+    let status = loop {
+        if let Some(st) = child.try_wait().unwrap() {
+            break st;
+        }
+        if start.elapsed() > Duration::from_secs(10) {
+            let _ = child.kill();
+            panic!("pyenv did not stop after SIGINT");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let err = reader.join().unwrap();
+    assert_eq!(status.code(), Some(130), "{err}");
+    assert!(!err.contains("install command failed"), "{err}");
+    assert!(!installed(&f), "{err}");
 }

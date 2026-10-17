@@ -511,7 +511,152 @@ fn verify(job: &Job, plan: &Plan, step: &str, python: &Path, say: &mut dyn FnMut
             c.lib
         ));
     }
+    if let Some(minor) = super::stdlib::minor_of_step(step) {
+        stdlib_check(job, plan, minor, python, say)?;
+    }
     Ok(())
+}
+
+/// M8 design §4.4: every module of the table imports, CA certificates exist, Tcl runs.
+pub(crate) fn stdlib_failures(run: &dyn Fn(&[&str]) -> bool, minor: u32) -> Vec<String> {
+    let mut out = Vec::new();
+    for m in super::stdlib::modules(minor) {
+        for i in m.imports {
+            let code = format!("import {i}");
+            if !run(&["-c", &code]) {
+                out.push(format!("{} (import {i} failed)", m.name));
+                break;
+            }
+        }
+    }
+    let ca = "import ssl, os; p = ssl.get_default_verify_paths();               ok = (p.cafile and os.path.isfile(p.cafile)) or (p.capath and os.path.isdir(p.capath) and os.listdir(p.capath));               raise SystemExit(0 if ok else 1)";
+    if !run(&["-c", ca]) {
+        out.push("ssl certificates (no CA file or directory)".into());
+    }
+    if !run(&["-c", "import tkinter; tkinter.Tcl().eval('info library')"]) {
+        out.push("tkinter (Tcl doesn't start)".into());
+    }
+    out
+}
+
+/// Runs the §4.4 check on the built interpreter and decides what a failure means: an error
+/// (strict), a warning (RPYENV_SKIP_PREFLIGHT=1, ruling P1) or the §5.2 summary (lenient, D13).
+fn stdlib_check(
+    job: &Job,
+    plan: &Plan,
+    minor: u32,
+    python: &Path,
+    say: &mut dyn FnMut(&str),
+) -> R<()> {
+    let sigint_seen = std::cell::Cell::new(false);
+    let run = |args: &[&str]| -> bool {
+        if interrupted() {
+            return true;
+        }
+        let status = command(python, &plan.env)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        if status.as_ref().is_ok_and(sigint) {
+            sigint_seen.set(true);
+        }
+        status.is_ok_and(|s| s.success())
+    };
+    let fails = stdlib_failures(&run, minor);
+    if interrupted() || sigint_seen.get() {
+        return Err(InstallError::Interrupted);
+    }
+    if fails.is_empty() {
+        return Ok(());
+    }
+    let name = plan
+        .prefix
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if get(job.env, "RPYENV_DEPS_MODE").as_deref() == Some("lenient") {
+        // Spec §5.2's summary, verbatim; the build counts as installed (D13). Root is read
+        // the way `pyenv install` reads it: `id -u` on the build's PATH.
+        let root = command("id", job.env)
+            .arg("-u")
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "0");
+        let os_path = if cfg!(debug_assertions) {
+            get(job.env, "RPYENV_TEST_OS_RELEASE")
+        } else {
+            None
+        }
+        .unwrap_or_else(|| "/etc/os-release".into());
+        let os = std::fs::read_to_string(os_path).ok();
+        say(&lenient_summary(&name, &fails, minor, os.as_deref(), root));
+        return Ok(());
+    }
+    let skip = get(job.env, "RPYENV_SKIP_PREFLIGHT").as_deref() == Some("1");
+    let lead = if skip { "pyenv: warning: " } else { "pyenv: " };
+    say(&format!(
+        "{lead}{name} was built without: {}",
+        fails.join(", ")
+    ));
+    if skip {
+        return Ok(());
+    }
+    say("Install the missing libraries (pyenv install asks how), or set RPYENV_SKIP_PREFLIGHT=1 to keep such a build.");
+    Err(InstallError::Failed)
+}
+
+/// The three lines of M8 design §5.2 for a lenient run that ends with failures.
+fn lenient_summary(
+    name: &str,
+    fails: &[String],
+    minor: u32,
+    os_release: Option<&str>,
+    root: bool,
+) -> String {
+    use super::{deps, preflight, stdlib};
+    let mut names: Vec<&str> = Vec::new();
+    let mut libs: Vec<preflight::Dep> = Vec::new();
+    for f in fails {
+        let n = f.split(" (").next().unwrap_or(f);
+        if !names.contains(&n) {
+            names.push(n);
+        }
+        let lib = if n == "ssl certificates" {
+            Some(("ssl certificates", stdlib::CA_KEY))
+        } else {
+            stdlib::modules(minor)
+                .into_iter()
+                .find(|m| m.name == n)
+                .map(|m| (m.name, m.lib))
+        };
+        if let Some((dn, lib)) = lib {
+            if !libs.iter().any(|d| d.lib == lib) {
+                libs.push(preflight::Dep {
+                    name: dn,
+                    required: false,
+                    missing: preflight::Missing::Certificates,
+                    lib,
+                });
+            }
+        }
+    }
+    let list = names.join(", ");
+    let add = os_release
+        .and_then(deps::Manager::from_os_release)
+        .map(|m| {
+            let pkgs = deps::packages(m, &libs);
+            deps::install_argv(m, &pkgs, !root, false).join(" ")
+        })
+        .unwrap_or_else(|| format!("install the development packages for {list}"));
+    format!(
+        "pyenv: {name} was built without: {list}
+  Add them: {add}, then pyenv install -f {name}
+  In a later rpyenv release this stops the build; choose now with --deps=install or
+  --deps=system (or RPYENV_BUILD_DEPS)."
+    )
 }
 
 /// `cp -fR src/. dst`: directories, regular files with their modes, and links as links.
@@ -1046,5 +1191,58 @@ fn run_step(
         other => Err(InstallError::Message(format!(
             "rpyenv cannot run build step `{other}'"
         ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stdlib_failures_name_each_missing_import_and_the_certificates() {
+        let fails = |args: &[&str]| -> bool {
+            !(args[1] == "import _uuid" || args[1].contains("get_default_verify_paths"))
+        };
+        let f = stdlib_failures(&fails, 12);
+        assert!(
+            f.contains(&"uuid (import _uuid failed)".to_string()),
+            "{f:?}"
+        );
+        assert!(
+            f.contains(&"ssl certificates (no CA file or directory)".to_string()),
+            "{f:?}"
+        );
+        assert!(stdlib_failures(&|_| true, 12).is_empty());
+    }
+
+    #[test]
+    fn the_lenient_summary_is_the_three_lines_of_the_spec() {
+        let os = "ID=debian
+VERSION_ID=\"12\"
+";
+        let fails = vec![
+            "tkinter (import tkinter failed)".to_string(),
+            "uuid (import _uuid failed)".to_string(),
+        ];
+        assert_eq!(
+            lenient_summary("3.12.14", &fails, 12, Some(os), false),
+            "pyenv: 3.12.14 was built without: tkinter, uuid
+  Add them: sudo apt-get install tk-dev uuid-dev, then pyenv install -f 3.12.14
+  In a later rpyenv release this stops the build; choose now with --deps=install or
+  --deps=system (or RPYENV_BUILD_DEPS)."
+        );
+        let root = lenient_summary("3.12.14", &fails, 12, Some(os), true);
+        assert!(
+            root.contains(
+                "
+  Add them: apt-get install tk-dev uuid-dev, then"
+            ),
+            "{root}"
+        );
+        let none = lenient_summary("3.12.14", &fails, 12, None, false);
+        assert!(
+            none.contains("Add them: install the development packages for tkinter, uuid, then"),
+            "{none}"
+        );
     }
 }
