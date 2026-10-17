@@ -155,20 +155,95 @@ integration.
 
 ## Environment variables
 
-| Variable | Meaning |
-|---|---|
-| `PYENV_ROOT` | Root directory. Default `~/.pyenv` on Linux, `%USERPROFILE%\.pyenv\pyenv-win` on Windows. pyenv-win's `PYENV` and `PYENV_HOME` are honored too. |
-| `PYENV_VERSION` | Overrides the selected version for the current shell |
-| `PYENV_DEBUG` | Prints where the version came from and which executable was chosen |
-| `PYTHON_BUILD_MIRROR_URL` | Alternate download mirror for CPython sources and packages |
-| `RPYENV_BUILD_DEPS` | Linux: how `pyenv install` gets missing build libraries: `system`, `install`, `build` or `prebuilt` (same as `--deps=`). See `docs/distributions.md` |
+These are the variables you can set to change what rpyenv does. "Both" means
+Linux and Windows. rpyenv-only settings use the `RPYENV_` prefix, so they can't
+clash with a future pyenv variable.
 
-rpyenv-only settings use the `RPYENV_` prefix, for example
-`RPYENV_LIVE_REHASH=1` to rehash while long-running programs such as Jupyter
-install packages (Windows and Linux). On Windows, `RPYENV_CONSOLE` and `RPYENV_CONSOLE_HOLD` set
-whether a program started without a console (from Explorer, say) gets a window
-only once it prints, and how long that window stays after a failure. The full
-list is in the design spec (§13).
+### Where things are and which version
+
+| Variable | OS | What it does |
+|---|---|---|
+| `PYENV_ROOT` | Both | The root folder, which holds the versions and the shims. Default `~/.pyenv` on Linux, `%USERPROFILE%\.pyenv\pyenv-win` on Windows. |
+| `PYENV`, `PYENV_HOME` | Windows | pyenv-win's names for the root folder. rpyenv uses the first one set of `PYENV_ROOT`, `PYENV` and `PYENV_HOME`. |
+| `PYENV_VERSION` | Both | Selects the version, ahead of any version file. `pyenv shell` sets it. |
+| `PYENV_DIR` | Linux | The folder where the search for a `.python-version` file starts, instead of the current folder. The folder must exist. |
+| `PYENV_FORCE_ARCH` | Windows | Which builds a version name means: `X86` for 32-bit (`-win32`), `ARM64` for `-arm64`, any other value for x64. Default: the machine's own architecture. |
+| `PYENV_SHELL` | Both | The shell that `pyenv shell`, `activate` and the other shell commands write code for. `pyenv init` sets it; without it, Linux uses `SHELL` and Windows looks at the parent process. |
+| `PYENV_HOOK_PATH` | Linux | Folders, separated by `:`, that `pyenv hooks` searches before the default hook folders. rpyenv runs no hooks itself; plugins use the list. |
+| `PYENV_REHASH_TIMEOUT` | Both | How many seconds `pyenv rehash` waits while another rehash holds the lock. Default 60. |
+| `PYENV_DEBUG` | Linux | Any value makes `pyenv install` verbose, as `-v` does. rpyenv has no equivalent of upstream's bash trace. |
+
+### Installing Python
+
+On Linux, `pyenv install` builds CPython from source and reads python-build's
+variables. The build-dependency check and its settings are described in
+[docs/distributions.md](docs/distributions.md).
+
+| Variable | OS | What it does |
+|---|---|---|
+| `PYTHON_BUILD_MIRROR_URL` | Both | Linux: a mirror tried before each file's own URL, with files named by their SHA-256. Windows: a site with python.org's layout that `pyenv update` lists, and that later installs download from. |
+| `PYTHON_BUILD_MIRROR_URL_SKIP_CHECKSUM` | Linux | Any value: the mirror has python.org's folder layout instead of files named by SHA-256. |
+| `PYTHON_BUILD_SKIP_MIRROR` | Linux | Any value: download each file from its own URL only. Otherwise files not from python.org are tried first at `https://pyenv.github.io/pythons`. |
+| `PYTHON_BUILD_CACHE_PATH` | Linux | A folder of downloaded archives that `pyenv install` reuses and adds to. Default `$PYENV_ROOT/cache`. It is used only when the folder exists. |
+| `PYTHON_BUILD_DEFINITIONS` | Linux | Folders, separated by `:`, searched for build definitions before the plugins' and the built-in ones. |
+| `PYENV_BUILD_ROOT` | Linux | Builds in `<folder>/<version>` and keeps the source tree there, as `-k` does. `-k` alone uses `$PYENV_ROOT/sources`. |
+| `PYTHON_BUILD_BUILD_PATH` | Linux | The folder to build in. Default: a new folder under `TMPDIR`. It is deleted after a successful build, unless `-k` or `PYENV_BUILD_ROOT` is used. |
+| `TMPDIR` | Linux | Where the build log and the default build folder go. Default `/tmp`. Programs must be able to run from it. |
+| `CONFIGURE_OPTS` | Linux | Extra options for `./configure`. `--enable-framework` and `--enable-universalsdk` are refused (they are for macOS). |
+| `PYTHON_CONFIGURE_OPTS` | Linux | More options for `./configure`, after `CONFIGURE_OPTS`. |
+| `PYTHON_CONFIGURE` | Linux | The command to run instead of `./configure`. |
+| `PYTHON_BUILD_FREE_THREADING` | Linux | Any value builds a free-threaded Python (`--disable-gil`). |
+| `CC` | Linux | The C compiler. The build gets it as it is, and the dependency check uses it. Default for the check: `cc`, else `gcc`. |
+| `CFLAGS` | Linux | Compiler flags. The build gets them as they are. |
+| `PYTHON_CFLAGS` | Linux | Added after `CFLAGS` for `./configure` only. |
+| `CPPFLAGS` | Linux | Preprocessor flags. rpyenv puts `-I<prefix>/include` before them. The dependency check uses them to find headers. |
+| `PYTHON_CPPFLAGS` | Linux | Added after `CPPFLAGS` for `./configure` and the dependency check. |
+| `LDFLAGS` | Linux | Linker flags. rpyenv puts `-L<prefix>/lib` and, for a shared build, an rpath before them. |
+| `PYTHON_LDFLAGS` | Linux | Added after `LDFLAGS` for `./configure` and the dependency check. |
+| `LIBS` | Linux | Libraries to link. rpyenv puts `-L<prefix>/lib` and the rpath before them. |
+| `MAKE` | Linux | The make program. Default `make`. |
+| `MAKEOPTS`, `MAKE_OPTS` | Linux | Options for the build's `make`. `MAKEOPTS` wins. Default `-j <number of CPUs>`. |
+| `PYTHON_MAKE_OPTS` | Linux | More options for the build's `make`, after `MAKEOPTS`. |
+| `PYTHON_MAKE_INSTALL_TARGET` | Linux | The make target that installs. Default `install`. With a target that contains `altinstall`, rpyenv adds no unversioned names such as `python`. |
+| `MAKE_INSTALL_OPTS` | Linux | Options for the installing `make`. |
+| `PYTHON_MAKE_INSTALL_OPTS` | Linux | More options for the installing `make`, after `MAKE_INSTALL_OPTS`. |
+| `SSL_CERT_FILE` | Linux | A file of CA certificates. When it or `SSL_CERT_DIR` is set, rpyenv's downloads trust only those certificates. The dependency check accepts it as the CA certificates. |
+| `SSL_CERT_DIR` | Linux | Folders of CA certificates, separated by `:`. Used as `SSL_CERT_FILE` is. |
+| `HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY` | Both | The proxy for rpyenv's downloads. rpyenv uses the first one set of `ALL_PROXY`, `HTTPS_PROXY` and `HTTP_PROXY`; lower-case names work too. |
+| `NO_PROXY` | Both | Hosts, separated by commas, that rpyenv's downloads reach without the proxy. Lower case works too. |
+| `RPYENV_BUILD_DEPS` | Linux | How `pyenv install` gets missing build libraries: `system`, `install`, `build` or `prebuilt`, as `--deps=` (the flag wins). With it set, rpyenv doesn't ask. |
+| `RPYENV_SKIP_PREFLIGHT` | Linux | `1` skips the dependency check before a build, and turns a failed check after it into a one-line warning: the build stays. |
+
+### Virtual environments
+
+| Variable | OS | What it does |
+|---|---|---|
+| `PYENV_VIRTUALENV_CACHE_PATH` | Both | The working folder of `pyenv virtualenv`, made if missing. Default `PYTHON_BUILD_CACHE_PATH`, else `$PYENV_ROOT/cache`. |
+| `GET_PIP` | Both | A local `get-pip.py` that `pyenv virtualenv` runs when `ensurepip` can't install pip. |
+| `GET_PIP_OPTS` | Both | Options for that `get-pip.py`. |
+| `GET_PIP_URL` | Both | Not used: rpyenv never downloads `get-pip.py`. When pip can't be installed, the error says this variable was ignored. |
+| `PYENV_VIRTUALENV_ROOT` | Linux | `pyenv virtualenv-init` puts `$PYENV_VIRTUALENV_ROOT/shims` first on `PATH`, instead of the folder rpyenv makes under `$PYENV_ROOT/.rpyenv`. rpyenv writes nothing there. |
+| `PYENV_VIRTUALENV_PROMPT` | Both | The prompt tag `activate` adds. `{venv}` stands for the environment's name. Default `(<name>)`; fish ignores it. |
+| `PYENV_VIRTUALENV_DISABLE_PROMPT`, `PYENV_VIRTUAL_ENV_DISABLE_PROMPT`, `VIRTUAL_ENV_DISABLE_PROMPT` | Both | Any value: `activate` leaves the prompt as it is. |
+| `PYENV_VIRTUALENV_VERBOSE_ACTIVATE` | Both | Any value makes `activate` and `deactivate` verbose, as `-v` does. |
+
+### rpyenv only
+
+| Variable | OS | What it does |
+|---|---|---|
+| `RPYENV_LIVE_REHASH` | Both | `1`: while a program started through a shim runs, rpyenv rehashes as soon as new commands appear, for example packages installed from Jupyter. |
+| `RPYENV_CONSOLE` | Windows | For a program started without a console (from Explorer, say): `lazy` (default) opens a window only once it prints; `eager` opens one at once. Needs Windows 11 24H2 or later. |
+| `RPYENV_CONSOLE_HOLD` | Windows | After a failure, how long a window the shim opened stays: until a key (default), `0` closes it at once, a whole number N closes it after N seconds. |
+| `RPYENV_DEBUG_LOG` | Both | A file that shims and `pyenv exec` add their decisions and errors to, in UTF-8. Useful when there is no console. |
+| `RPYENV_BATCH_FORWARD` | Windows | Names of batch files, separated by `;`, that `pyenv rehash` gives a `.cmd` forwarder instead of an `.exe` shim. This is for batch tools that must change the caller's environment. |
+
+"Any value" means any value that is not empty. rpyenv also reads variables
+that the system, your shell or an activation tool set, but they are not rpyenv
+settings: `HOME`, `USER`, `SHELL`, `PATH`, `PWD`, `DISPLAY`, `LD_LIBRARY_PATH`
+(which `pyenv exec -N` extends), `USERPROFILE`, `APPDATA`, `PATHEXT`,
+`ProgramFiles`, `VIRTUAL_ENV`, `CONDA_DEFAULT_ENV`, `PYTHONHOME` and `PROMPT`.
+Debug builds also read `RPYENV_TEST_*` variables for tests; release builds
+ignore them.
 
 ## Installing
 
