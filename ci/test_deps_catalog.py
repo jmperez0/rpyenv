@@ -3,6 +3,8 @@ rewriting a row."""
 import os
 import sys
 import unittest
+import urllib.error
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import deps_catalog as dc  # noqa: E402
@@ -53,6 +55,43 @@ class Rows(unittest.TestCase):
         with open(path, encoding="utf-8") as f:
             keys = [r[0] for r in dc.read_rows(f.read())]
         self.assertEqual(sorted(keys), sorted(dc.SOURCES))
+
+
+class Retries(unittest.TestCase):
+    def setUp(self):
+        self.sleeps = []
+        p = mock.patch.object(dc, "SLEEP", self.sleeps.append)
+        p.start()
+        self.addCleanup(p.stop)
+
+    @staticmethod
+    def err(code):
+        return urllib.error.HTTPError("https://x/", code, "boom", {}, None)
+
+    @staticmethod
+    def ok(body=b"hello"):
+        r = mock.MagicMock()
+        r.__enter__.return_value.read.return_value = body
+        return r
+
+    def test_two_522s_then_success_returns_the_body(self):
+        with mock.patch("urllib.request.urlopen", side_effect=[self.err(522), self.err(522), self.ok()]) as u:
+            self.assertEqual(dc.get("https://x/"), "hello")
+        self.assertEqual(u.call_count, 3)
+        self.assertEqual(self.sleeps, [2, 4])
+
+    def test_three_522s_raise_the_last_error(self):
+        with mock.patch("urllib.request.urlopen", side_effect=[self.err(522)] * 3) as u:
+            with self.assertRaises(urllib.error.HTTPError):
+                dc.get("https://x/")
+        self.assertEqual(u.call_count, 3)
+
+    def test_a_404_fails_at_once(self):
+        with mock.patch("urllib.request.urlopen", side_effect=[self.err(404), self.ok()]) as u:
+            with self.assertRaises(urllib.error.HTTPError):
+                dc.get("https://x/")
+        self.assertEqual(u.call_count, 1)
+        self.assertEqual(self.sleeps, [])
 
 
 if __name__ == "__main__":
