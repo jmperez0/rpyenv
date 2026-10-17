@@ -14,10 +14,10 @@ use crate::output::Output;
 use rpyenv_core::ctx::Ctx;
 use rpyenv_core::verfile;
 use std::ffi::OsString;
-use std::io::Read;
+use std::io::{IsTerminal, Read};
 use std::path::{Path, PathBuf};
 
-pub const HELP: &str = "Usage: pyenv install [-f] [-kvp] <version>[:<alias>]...\n       pyenv install [-f] [-kvp] <definition-file>[:<alias>]\n       pyenv install -l|--list [--bare]\n       pyenv install --version\n\n  -l/--list          List all available versions\n  -f/--force         Install even if the version appears to be installed already\n  -s/--skip-existing Skip if the version appears to be installed already\n\n  python-build options:\n\n  -k/--keep          Keep source tree in $PYENV_BUILD_ROOT after installation\n                     (defaults to $PYENV_ROOT/sources)\n  -p/--patch         Apply a patch from stdin before building\n  -v/--verbose       Verbose mode: print compilation status to stdout\n  --version          Show version of python-build\n  -g/--debug         Build a debug version\n\n  Append `:<alias>' to a version to install it under a custom name, so that\n  several builds of the same version can coexist:\n\n      pyenv install 3.12.0:my-3.12\n\n  This installs into $PYENV_ROOT/versions/my-3.12.\n\nFor detailed information on installing Python versions with\npython-build, including a list of environment variables for adjusting\ncompilation, see: https://github.com/pyenv/pyenv#readme\n\n";
+pub const HELP: &str = "Usage: pyenv install [-f] [-kvp] <version>[:<alias>]...\n       pyenv install [-f] [-kvp] <definition-file>[:<alias>]\n       pyenv install -l|--list [--bare]\n       pyenv install --version\n\n  -l/--list          List all available versions\n  -f/--force         Install even if the version appears to be installed already\n  -s/--skip-existing Skip if the version appears to be installed already\n\n  python-build options:\n\n  -k/--keep          Keep source tree in $PYENV_BUILD_ROOT after installation\n                     (defaults to $PYENV_ROOT/sources)\n  -p/--patch         Apply a patch from stdin before building\n  -v/--verbose       Verbose mode: print compilation status to stdout\n  --version          Show version of python-build\n  -g/--debug         Build a debug version\n  --deps=<route>     How to get missing build libraries: system, install, build, prebuilt\n\n  Append `:<alias>' to a version to install it under a custom name, so that\n  several builds of the same version can coexist:\n\n      pyenv install 3.12.0:my-3.12\n\n  This installs into $PYENV_ROOT/versions/my-3.12.\n\nFor detailed information on installing Python versions with\npython-build, including a list of environment variables for adjusting\ncompilation, see: https://github.com/pyenv/pyenv#readme\n\n";
 pub const USAGE: &str = "Usage: pyenv install [-f] [-kvp] <version>[:<alias>]...\n       pyenv install [-f] [-kvp] <definition-file>[:<alias>]\n       pyenv install -l|--list [--bare]\n       pyenv install --version";
 
 fn say(line: &str) {
@@ -34,6 +34,7 @@ struct Flags {
     verbose: bool,
     patch: bool,
     debug: bool,
+    deps: Option<String>,
 }
 
 enum Early {
@@ -57,6 +58,10 @@ fn parse<'a>(args: &[&'a str]) -> Result<(Flags, Vec<&'a str>), Early> {
             continue;
         };
         for n in names {
+            if let Some(route) = n.strip_prefix("deps=") {
+                f.deps = Some(route.to_string());
+                continue;
+            }
             match n.as_str() {
                 "h" | "help" => return Err(Early::Help),
                 "bare" => f.bare = true,
@@ -226,6 +231,264 @@ fn conda_text(
     }))
 }
 
+/// A terminal on stdin (debug builds: RPYENV_TEST_TTY=1 stands in for one).
+fn at_terminal(get: &dyn Fn(&str) -> Option<String>) -> bool {
+    std::io::stdin().is_terminal()
+        || (cfg!(debug_assertions) && get("RPYENV_TEST_TTY").as_deref() == Some("1"))
+}
+
+/// Runs `program args` with `PATH` from `get` and no stdin; `(success, stdout, stderr)`, or
+/// `None` when it can't start. Locale-neutral, so `sudo`'s English text can be matched.
+fn run_probe(
+    get: &dyn Fn(&str) -> Option<String>,
+    program: &str,
+    args: &[&str],
+) -> Option<(bool, String, String)> {
+    let o = std::process::Command::new(program)
+        .args(args)
+        .env("PATH", get("PATH").unwrap_or_default())
+        .env("LC_ALL", "C")
+        .env("LANGUAGE", "C")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    Some((
+        o.status.success(),
+        String::from_utf8_lossy(&o.stdout).into_owned(),
+        String::from_utf8_lossy(&o.stderr).into_owned(),
+    ))
+}
+
+/// CPython 2.x: the pre-M8 check, unchanged (plan ruling P2).
+fn old_preflight(get: &dyn Fn(&str) -> Option<String>, patch: bool) -> Result<(), i32> {
+    let missing = preflight::check(get, patch);
+    let os = std::fs::read_to_string("/etc/os-release").ok();
+    let r = preflight::report(
+        &missing,
+        os.as_deref(),
+        get("USER").as_deref() == Some("root"),
+    );
+    for l in &r.lines {
+        say(l);
+    }
+    if r.refuse {
+        Err(1)
+    } else {
+        Ok(())
+    }
+}
+
+/// M8 design §5: detect, then print (system) or install (install) until nothing is missing.
+/// `Ok(())` when the build may start; `Err(exit code)` otherwise.
+fn resolve_deps(
+    get: &dyn Fn(&str) -> Option<String>,
+    version: &str,
+    minor: u32,
+    patch: bool,
+    flag: Option<&str>,
+) -> Result<(), i32> {
+    use crate::install::deps::{self, Route, SudoUse};
+    use crate::install::Reply;
+    let chosen = match flag
+        .map(str::to_string)
+        .or_else(|| get("RPYENV_BUILD_DEPS").filter(|v| !v.is_empty()))
+    {
+        Some(v) => match Route::parse(&v) {
+            Some(r) => Some(r),
+            None => {
+                say("pyenv: --deps takes system, install, build or prebuilt");
+                return Err(1);
+            }
+        },
+        None => None,
+    };
+    if let Some(r @ (Route::Build | Route::Prebuilt)) = chosen {
+        let w = if r == Route::Build {
+            "build"
+        } else {
+            "prebuilt"
+        };
+        say(&format!(
+            "pyenv: the {w} route comes in a later rpyenv release"
+        ));
+        return Err(1);
+    }
+    let os_path = if cfg!(debug_assertions) {
+        get("RPYENV_TEST_OS_RELEASE")
+    } else {
+        None
+    }
+    .unwrap_or_else(|| "/etc/os-release".into());
+    let os = std::fs::read_to_string(os_path).ok();
+    let manager = os.as_deref().and_then(deps::Manager::from_os_release);
+    let tty = at_terminal(get);
+    let is_root = run_probe(get, "id", &["-u"]).is_some_and(|(_, out, _)| out.trim() == "0");
+    // Package lists: apt can't find a package on a minimal image without them (§5.3).
+    let lists = if cfg!(debug_assertions) {
+        get("RPYENV_TEST_APT_LISTS")
+    } else {
+        None
+    }
+    .unwrap_or_else(|| "/var/lib/apt/lists".into());
+    let apt_update =
+        manager == Some(deps::Manager::Apt) && !deps::apt_lists_present(Path::new(&lists));
+    // `sudo` is probed only when an install may be offered or run.
+    let mut sudo_probe: Option<(bool, Option<(bool, String)>)> = None;
+    let mut installed = false;
+    loop {
+        let after = if installed && cfg!(debug_assertions) {
+            get("RPYENV_TEST_PREFLIGHT_AFTER")
+        } else {
+            None
+        };
+        let probe_env = |k: &str| {
+            if k == "RPYENV_TEST_PREFLIGHT" {
+                after.clone().or_else(|| get(k))
+            } else {
+                get(k)
+            }
+        };
+        let missing = preflight::check3(&probe_env, patch, minor);
+        if missing.is_empty() {
+            return Ok(());
+        }
+        if (tty || chosen == Some(Route::Install)) && sudo_probe.is_none() {
+            let has_sudo = run_probe(get, "sudo", &["--version"]).is_some();
+            let sudo_n = if has_sudo {
+                run_probe(get, "sudo", &["-n", "true"]).map(|(ok, _, err)| (ok, err))
+            } else {
+                None
+            };
+            sudo_probe = Some((has_sudo, sudo_n));
+        }
+        // The commands to offer: apt's `update` first when its lists are empty.
+        let offer: Result<Vec<Vec<String>>, &'static str> = match (manager, &sudo_probe) {
+            (None, _) => Err("this distribution isn't recognized"),
+            (_, None) => Err("sudo was not probed"),
+            (Some(m), Some((has_sudo, sudo_n))) => {
+                match deps::classify_sudo(is_root, *has_sudo, sudo_n.clone()) {
+                    SudoUse::Not(r) => Err(r),
+                    SudoUse::Allowed if !tty && sudo_n.as_ref().is_some_and(|(ok, _)| !ok) => {
+                        Err("sudo needs a password and there is no terminal to ask it")
+                    }
+                    _ if installed => Err("the last install left these missing"),
+                    s => {
+                        let with_sudo = !matches!(s, SudoUse::Root);
+                        let mut cmds = Vec::new();
+                        if apt_update {
+                            cmds.push(deps::apt_update_argv(with_sudo));
+                        }
+                        cmds.push(deps::install_argv(
+                            m,
+                            &deps::packages(m, &missing),
+                            with_sudo,
+                            !tty,
+                        ));
+                        Ok(cmds)
+                    }
+                }
+            }
+        };
+        let route = if tty {
+            // The prompt shows the commands joined by `&&`, as a shell would run them.
+            let shown = offer.clone().map(|cmds| {
+                let mut one: Vec<String> = Vec::new();
+                for (i, c) in cmds.iter().enumerate() {
+                    if i > 0 {
+                        one.push("&&".into());
+                    }
+                    one.extend(c.iter().cloned());
+                }
+                one
+            });
+            for l in deps::prompt_lines(version, &missing, manager, shown) {
+                say(&l);
+            }
+            loop {
+                match crate::install::prompt("> ") {
+                    Reply::Interrupted => return Err(130),
+                    Reply::Eof => return Err(1),
+                    Reply::Line(l) => match deps::choice(&l, offer.is_ok()) {
+                        Some(r) => break r,
+                        None => say(if offer.is_ok() {
+                            "pyenv: answer p or i"
+                        } else {
+                            "pyenv: answer p"
+                        }),
+                    },
+                }
+            }
+        } else if let Some(r) = chosen {
+            r
+        } else {
+            // D13, lenient mode: only the hard set stops the build; the rest warns and the
+            // build goes on (the builder prints the end summary).
+            const HARD: [&str; 5] = ["compiler", "make", "patch", "openssl", "zlib"];
+            let hard_missing = missing.iter().any(|d| HARD.contains(&d.lib));
+            for l in preflight::report_deps_with(
+                &missing,
+                os.as_deref(),
+                is_root,
+                hard_missing,
+                apt_update,
+            ) {
+                say(&l);
+            }
+            return if hard_missing { Err(1) } else { Ok(()) };
+        };
+        match (route, offer) {
+            (Route::Install, Ok(cmds)) => {
+                for argv in cmds {
+                    // Without a terminal, sudo must not ask (`-n`).
+                    let argv: Vec<String> = if !tty && argv.first().is_some_and(|a| a == "sudo") {
+                        let mut v = vec!["sudo".to_string(), "-n".to_string()];
+                        v.extend(argv.into_iter().skip(1));
+                        v
+                    } else {
+                        argv
+                    };
+                    say(&format!("pyenv: running: {}", argv.join(" ")));
+                    let mut c = std::process::Command::new(&argv[0]);
+                    c.args(&argv[1..])
+                        .env("PATH", get("PATH").unwrap_or_default());
+                    if !tty {
+                        c.stdin(std::process::Stdio::null());
+                    }
+                    if !c.status().is_ok_and(|s| s.success()) {
+                        say("pyenv: the install command failed");
+                        if let Some(h) = os.as_deref().and_then(deps::rhel_crb_hint) {
+                            say(&format!(
+                                "pyenv: some packages live in the CRB repository: {h}"
+                            ));
+                        }
+                        if manager == Some(deps::Manager::Apt) {
+                            say("pyenv: if apt couldn't find a package, run sudo apt-get update first");
+                        }
+                        if !tty {
+                            return Err(1);
+                        }
+                        break;
+                    }
+                }
+                installed = true;
+            }
+            (Route::Install, Err(reason)) => {
+                say(&format!("pyenv: can't install the packages: {reason}"));
+                return Err(1);
+            }
+            _ => {
+                // system: today's text, now listing every missing module.
+                for l in
+                    preflight::report_deps_with(&missing, os.as_deref(), is_root, true, apt_update)
+                {
+                    say(&l);
+                }
+                return Err(1);
+            }
+        }
+    }
+}
+
 pub fn install(ctx: &Ctx, args: &[&str]) -> Output {
     // The process environment, which every lookup and the build itself see.
     let base: Vec<(OsString, OsString)> = std::env::vars_os().collect();
@@ -242,6 +505,7 @@ pub fn install(ctx: &Ctx, args: &[&str]) -> Output {
             "--verbose",
             "--version",
             "--debug",
+            "--deps=",
         ] {
             o.out(opt);
         }
@@ -423,6 +687,14 @@ pub fn install(ctx: &Ctx, args: &[&str]) -> Output {
         if let Some(r) = &build_root {
             job_env.push(("PYTHON_BUILD_BUILD_PATH".into(), r.join(&name).into()));
         }
+        // M8 design D13: a run with no terminal and neither `--deps` nor RPYENV_BUILD_DEPS is
+        // lenient; the builder reads the mode to print its end summary.
+        let strict = at_terminal(&env)
+            || f.deps.is_some()
+            || env("RPYENV_BUILD_DEPS").is_some_and(|v| !v.is_empty());
+        if !strict {
+            job_env.push(("RPYENV_DEPS_MODE".into(), "lenient".into()));
+        }
         let job_get = |k: &str| builder::get(&job_env, k);
         // A binary install (PyPy) compiles nothing, so it needs no build dependencies.
         let compiles = parsed
@@ -430,18 +702,22 @@ pub fn install(ctx: &Ctx, args: &[&str]) -> Output {
             .iter()
             .any(|p| p.steps.iter().any(|s| s == "standard" || s == "python"));
         if compiles && job_get("RPYENV_SKIP_PREFLIGHT").as_deref() != Some("1") {
-            let missing = preflight::check(&job_get, f.patch || needs_patch(&found, &parsed));
-            let os = std::fs::read_to_string("/etc/os-release").ok();
-            let r = preflight::report(
-                &missing,
-                os.as_deref(),
-                job_get("USER").as_deref() == Some("root"),
-            );
-            for l in &r.lines {
-                say(l);
-            }
-            if r.refuse {
-                status = status.max(1);
+            let patch = f.patch || needs_patch(&found, &parsed);
+            let minor = parsed
+                .packages
+                .iter()
+                .flat_map(|p| p.steps.iter())
+                .find_map(|s| crate::install::stdlib::minor_of_step(s));
+            let ok = match minor {
+                Some(m) => resolve_deps(&job_get, &name, m, patch, f.deps.as_deref()),
+                // CPython 2.x keeps today's check (plan ruling P2).
+                None => old_preflight(&job_get, patch),
+            };
+            if let Err(code) = ok {
+                if code == 130 {
+                    return Output::new().with_code(130);
+                }
+                status = status.max(code);
                 break;
             }
         }

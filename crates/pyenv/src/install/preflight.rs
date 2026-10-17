@@ -294,6 +294,55 @@ pub fn report(missing: &[Dep], os_release: Option<&str>, root: bool) -> Report {
     Report { refuse, lines }
 }
 
+/// The text for stderr when detection (`check3`) found something missing (M8 design §5).
+/// `refuse`: the build stops here (header "cannot build", and how to build anyway); otherwise
+/// lenient mode (D13) found only optional modules and the build goes on. `root`: no `sudo`.
+pub fn report_deps(
+    missing: &[Dep],
+    os_release: Option<&str>,
+    root: bool,
+    refuse: bool,
+) -> Vec<String> {
+    report_deps_with(missing, os_release, root, refuse, false)
+}
+
+/// As `report_deps`; `apt_update`: the apt package lists are empty, so the command starts
+/// with `apt-get update &&` (M8 design §5.3).
+pub fn report_deps_with(
+    missing: &[Dep],
+    os_release: Option<&str>,
+    root: bool,
+    refuse: bool,
+    apt_update: bool,
+) -> Vec<String> {
+    use super::deps;
+    let mut lines = Vec::new();
+    if missing.is_empty() {
+        return lines;
+    }
+    lines.push(if refuse {
+        "pyenv: cannot build Python: missing build dependencies:".to_string()
+    } else {
+        "pyenv: the build will lack these optional modules:".to_string()
+    });
+    for d in missing {
+        lines.push(format!("  {}", shown(d)));
+    }
+    if let Some(m) = os_release.and_then(deps::Manager::from_os_release) {
+        let install = deps::install_argv(m, &deps::packages(m, missing), !root, false);
+        let mut cmd = install.join(" ");
+        if apt_update && m == deps::Manager::Apt {
+            cmd = format!("{} && {cmd}", deps::apt_update_argv(!root).join(" "));
+        }
+        lines.push("Install them with:".to_string());
+        lines.push(format!("  {cmd}"));
+    }
+    if refuse {
+        lines.push("To build anyway, set RPYENV_SKIP_PREFLIGHT=1.".to_string());
+    }
+    lines
+}
+
 /// The compiler to use: `$CC` when set; otherwise `cc`, else `gcc` (as configure does).
 fn resolve_compiler(configured: Option<String>, works: &dyn Fn(&str) -> bool) -> String {
     match configured.filter(|v| !v.is_empty()) {
@@ -1122,5 +1171,44 @@ mod tests {
         for minor in [13, 14] {
             eprintln!("check3 3.{minor}: {:#?}", check3(&env, true, minor));
         }
+    }
+
+    #[test]
+    fn report_deps_refuses_or_warns_by_its_flag() {
+        let d = [Dep {
+            name: "uuid",
+            required: true,
+            missing: Missing::Link("uuid/uuid.h".into()),
+            lib: "libuuid",
+        }];
+        let os = "ID=debian
+";
+        let refuse = report_deps(&d, Some(os), false, true);
+        assert_eq!(
+            refuse,
+            [
+                "pyenv: cannot build Python: missing build dependencies:",
+                "  uuid (uuid/uuid.h)",
+                "Install them with:",
+                "  sudo apt-get install uuid-dev",
+                "To build anyway, set RPYENV_SKIP_PREFLIGHT=1.",
+            ]
+        );
+        let warn = report_deps(&d, Some(os), true, false);
+        assert_eq!(
+            warn,
+            [
+                "pyenv: the build will lack these optional modules:",
+                "  uuid (uuid/uuid.h)",
+                "Install them with:",
+                "  apt-get install uuid-dev",
+            ]
+        );
+        let upd = report_deps_with(&d, Some(os), false, false, true);
+        assert_eq!(
+            upd[3],
+            "  sudo apt-get update && sudo apt-get install uuid-dev"
+        );
+        assert!(report_deps(&[], Some(os), false, true).is_empty());
     }
 }
