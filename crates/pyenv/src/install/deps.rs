@@ -156,14 +156,11 @@ pub fn classify_sudo(is_root: bool, has_sudo: bool, n_status: Option<(bool, Stri
     }
 }
 
-/// RHEL, Rocky and Alma keep some `-devel` packages in CRB (9) or PowerTools (8).
+/// Some `-devel` packages sit in a repo that is off by default. Rocky, Alma and CentOS Stream
+/// have CRB (9) or PowerTools (8) for `dnf config-manager`; real RHEL needs
+/// `subscription-manager` for its CodeReady Builder repo (M8 design §5.1).
 pub fn rhel_crb_hint(os_release: &str) -> Option<String> {
-    let ids = ids(os_release);
-    if !ids.iter().any(|i| i == "rhel")
-        || ids
-            .iter()
-            .any(|i| i == "fedora" && !os_release.contains("ID_LIKE"))
-    {
+    if !ids(os_release).iter().any(|i| i == "rhel") {
         return None;
     }
     let major: u32 = os_release
@@ -174,6 +171,15 @@ pub fn rhel_crb_hint(os_release: &str) -> Option<String> {
         .next()?
         .parse()
         .ok()?;
+    let id = os_release
+        .lines()
+        .find_map(|l| l.strip_prefix("ID="))
+        .map(|v| v.trim_matches('"'));
+    if id == Some("rhel") {
+        return Some(format!(
+            "sudo subscription-manager repos --enable codeready-builder-for-rhel-{major}-$(arch)-rpms"
+        ));
+    }
     let repo = if major >= 9 { "crb" } else { "powertools" };
     Some(format!("sudo dnf config-manager --set-enabled {repo}"))
 }
@@ -229,7 +235,14 @@ pub fn prompt_lines(
     out.push("How should rpyenv get them?".into());
     out.push("  [p] print the commands and stop (default)".into());
     match install {
-        Ok(argv) => out.push(format!("  [i] install with sudo: {}", argv.join(" "))),
+        Ok(argv) => {
+            let label = if argv.first().map(String::as_str) == Some("sudo") {
+                "install with sudo"
+            } else {
+                "install"
+            };
+            out.push(format!("  [i] {label}: {}", argv.join(" ")));
+        }
         Err(reason) => out.push(format!("  [i] not offered: {reason}")),
     }
     out
@@ -366,6 +379,31 @@ mod tests {
     }
 
     #[test]
+    fn real_rhel_gets_the_subscription_manager_repo_and_centos_stream_gets_crb() {
+        assert_eq!(
+            rhel_crb_hint("ID=\"rhel\"\nVERSION_ID=\"9.4\"\n").unwrap(),
+            "sudo subscription-manager repos --enable codeready-builder-for-rhel-9-$(arch)-rpms"
+        );
+        assert_eq!(
+            rhel_crb_hint("ID=centos\nID_LIKE=\"rhel fedora\"\nVERSION_ID=\"9\"\n").unwrap(),
+            "sudo dnf config-manager --set-enabled crb"
+        );
+    }
+
+    #[test]
+    fn program_rows_are_by_manager() {
+        assert_eq!(
+            program_packages("compiler").unwrap()[Manager::Apt.column()],
+            "build-essential"
+        );
+        assert_eq!(
+            program_packages("pkg-config").unwrap()[Manager::Dnf.column()],
+            "pkgconf-pkg-config"
+        );
+        assert!(program_packages("no-such-lib").is_none());
+    }
+
+    #[test]
     fn the_prompt_lists_the_modules_and_the_offer() {
         let d = [
             Dep {
@@ -401,6 +439,12 @@ mod tests {
         assert!(
             lines.contains(&"  [i] not offered: no sudo on PATH".to_string()),
             "{lines:?}"
+        );
+        let root = install_argv(Manager::Apt, &packages(Manager::Apt, &d), false, false);
+        let lines = prompt_lines("3.13.1", &d, Some(Manager::Apt), Ok(root));
+        assert_eq!(
+            lines[5],
+            "  [i] install: apt-get install libssl-dev uuid-dev"
         );
     }
 
