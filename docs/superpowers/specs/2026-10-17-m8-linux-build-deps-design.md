@@ -28,7 +28,7 @@ python.org's builds.
 | D2 | Certificates | `ssl` counts as working only when trusted CA certificates are present (user). |
 | D3 | Distributions | glibc distributions in M8: Debian/Ubuntu (apt), Fedora/RHEL/Rocky/Alma (dnf), openSUSE (zypper), Arch (pacman), including WSL and containers based on them. Alpine/musl in a later milestone (user). |
 | D4 | Choosing a route at a terminal | Ask each time; Enter means "print the commands and stop" (user). |
-| D5 | Without a terminal | `--deps=<route>` or `RPYENV_BUILD_DEPS`; default `system` (print and fail), as today (parent spec §15.2). |
+| D5 | Without a terminal | `--deps=<route>` or `RPYENV_BUILD_DEPS` chooses, and then every module is required. With neither set, D13 applies. |
 | D6 | Reusing compiled libraries | Yes, when library, version and build options match (user). |
 | D7 | How a compiled library is reused | Static linking from a store that is only a build cache (user chose option D of six; see §8). |
 | D8 | Prebuilt CPython | python-build-standalone as a route the user can select, never the default, after the build route (user). |
@@ -36,6 +36,7 @@ python.org's builds.
 | D10 | Fonts in a no-root Tk | Tk built without Xft in the no-root case: fewer libraries, plainer fonts (accepted in review of §6). |
 | D11 | Tcl/Tk version | 8.6 for every source build, as CPython's own builds. Tk 9 only through the prebuilt route. |
 | D12 | Parity | Upstream pyenv has none of this. Each user-visible difference gets an allowlist entry. |
+| D13 | Scripts that set nothing (user, after a side-agent note) | **Phased.** Until M8b ships, a run with no terminal and neither `--deps` nor `RPYENV_BUILD_DEPS` keeps today's rule: the compiler, `make`, OpenSSL and zlib stop the build; every other missing library only warns, and the build goes on. The run ends with a summary naming what is missing, the command that adds it, and the notice that a later release makes this stop the build. **M8b** makes the script default strict (`system`), because from then on a script without root can answer with `--deps=build`. Chosen over strict everywhere (breaks today's Dockerfiles on upgrade, while a script without root could only fail), lenient for good (scripts never get every module), a policy per pyenv root (Dockerfiles make fresh roots), automatic installs as root (installs packages nobody approved) and splitting libraries by weight (still breaks on the newly checked gdbm, uuid and crypt). |
 
 ## 3. Parts
 
@@ -123,8 +124,17 @@ How should rpyenv get them?
 ### 5.2 Without a terminal
 
 `pyenv install --deps=system|install|build|prebuilt` or `RPYENV_BUILD_DEPS` with the
-same values. The default is `system`. `install` uses `sudo -n` and fails with a clear
-message when `sudo` needs a password.
+same values; then every module is required, as at a terminal. `install` uses `sudo -n`
+and fails with a clear message when `sudo` needs a password. With neither set, D13's
+phased rule applies: until M8b, only the compiler, `make`, OpenSSL and zlib stop the
+build, and the run ends with this summary when anything else is missing:
+
+```
+pyenv: 3.12.14 was built without: tkinter, uuid
+  Add them: sudo apt-get install tk-dev uuid-dev, then pyenv install -f 3.12.14
+  In a later rpyenv release this stops the build; choose now with --deps=install or
+  --deps=system (or RPYENV_BUILD_DEPS).
+```
 
 ### 5.3 Distribution details
 
