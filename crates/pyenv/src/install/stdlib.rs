@@ -32,6 +32,10 @@ pub struct MinVersion {
     pub expr: &'static str,
     pub need: u64,
     pub shown: &'static str,
+    /// What shows the installed version as text: one string macro (`OPENSSL_VERSION_TEXT`,
+    /// `SQLITE_VERSION`), or three space-separated integer macros joined with dots (zstd has
+    /// no string macro). Used only to word the message (M8 design §4.2).
+    pub text: &'static str,
 }
 
 pub const CA_KEY: &str = "ca-certificates";
@@ -337,30 +341,35 @@ pub fn min_version(key: &str, minor: u32) -> Option<MinVersion> {
             expr: "OPENSSL_VERSION_NUMBER",
             need: 0x1010_100f,
             shown: "1.1.1",
+            text: "OPENSSL_VERSION_TEXT",
         }),
         "openssl" if minor >= 7 => Some(MinVersion {
             header: "openssl/opensslv.h",
             expr: "OPENSSL_VERSION_NUMBER",
             need: 0x1000_2000,
             shown: "1.0.2",
+            text: "OPENSSL_VERSION_TEXT",
         }),
         "sqlite" if minor >= 13 => Some(MinVersion {
             header: "sqlite3.h",
             expr: "SQLITE_VERSION_NUMBER",
             need: 3_015_002,
             shown: "3.15.2",
+            text: "SQLITE_VERSION",
         }),
         "sqlite" if minor >= 11 => Some(MinVersion {
             header: "sqlite3.h",
             expr: "SQLITE_VERSION_NUMBER",
             need: 3_007_015,
             shown: "3.7.15",
+            text: "SQLITE_VERSION",
         }),
         "zstd" if minor >= 14 => Some(MinVersion {
             header: "zstd.h",
             expr: "ZSTD_VERSION_NUMBER",
             need: 10405,
             shown: "1.4.5",
+            text: "ZSTD_VERSION_MAJOR ZSTD_VERSION_MINOR ZSTD_VERSION_RELEASE",
         }),
         _ => None,
     }
@@ -427,6 +436,12 @@ mod tests {
         assert!(min_version("zlib", 13).is_none());
         assert_eq!(min_version("zstd", 14).unwrap().shown, "1.4.5");
         assert!(min_version("zstd", 13).is_none());
+        assert_eq!(
+            min_version("openssl", 13).unwrap().text,
+            "OPENSSL_VERSION_TEXT"
+        );
+        assert_eq!(min_version("sqlite", 13).unwrap().text, "SQLITE_VERSION");
+        assert_eq!(min_version("zstd", 14).unwrap().text.split(' ').count(), 3);
     }
 
     #[test]
