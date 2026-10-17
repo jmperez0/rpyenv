@@ -48,8 +48,8 @@ provide them. Then you choose:
 |---|---|
 | `p` (default) | Prints the install command and stops |
 | `i` | Runs the command through `sudo` (no `sudo` when you are root; no `-y`), then checks again |
-| `b` | Builds the missing libraries from source, without root, and links them into Python. Offered for CPython 3.7 and later when the compiler, `make` and `patch` are there; it says what it can't build here and why |
-| `c` | Builds without the missing libraries and lists them at the end. Offered only when the compiler, `make`, OpenSSL and zlib are all there |
+| `b` | Builds the missing libraries from source, without root, and links them into Python. Offered for CPython 3.7 and later when the compiler, `make`, `patch` and `awk` are there; it says what it can't build here and why |
+| `c` | Builds without the missing libraries and lists them at the end. Offered only when the compiler, `make`, `patch`, `awk`, OpenSSL and zlib are all there |
 
 `i` is left out, with the reason, when `sudo` can't be used or rpyenv doesn't know your
 distribution. rpyenv knows apt, dnf, zypper and pacman. Alpine comes later.
@@ -74,7 +74,7 @@ even at a terminal. The flag wins over the variable.
 
 **Scripts that set neither.** Without a terminal, `--deps` or `RPYENV_BUILD_DEPS`,
 rpyenv is lenient, as upstream is. Only the compiler, `make`, `patch` (when the
-definition needs it), OpenSSL and zlib stop the build. Any other missing library is a
+definition needs it), `awk`, OpenSSL and zlib stop the build. Any other missing library is a
 warning, and the run ends with a three-line summary. A later rpyenv release will make
 that summary stop the build. To choose now, use `--deps=install`, `--deps=build` or
 `--deps=system`.
@@ -103,7 +103,7 @@ and links it into Python statically. Nothing is installed on the system.
 - Creating `cache/deps` also creates `$PYENV_ROOT/cache`, which turns on the download cache for later installs (as creating it by hand does).
 - **Versions:** rpyenv pins each library's version and SHA-256 and checks every download. A
   Python version whose definition pins OpenSSL or readline gets that version.
-- **What the system still needs:** a C compiler, `make` and `patch`. OpenSSL and libxcrypt also
+- **What the system still needs:** a C compiler, `make`, `patch` and `awk` (`gawk`; Tumbleweed's base image has none). OpenSSL and libxcrypt also
   need Perl with its core modules (`perl-core` on Fedora); Tk needs the X11 headers
   (`libx11-dev`, `libX11-devel`) until a later release builds those too.
 - **`PYENV_ROOT`** must have no spaces, shell characters or `:` in its path.

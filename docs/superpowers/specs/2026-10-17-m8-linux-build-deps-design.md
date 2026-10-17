@@ -36,7 +36,7 @@ python.org's builds.
 | D10 | Fonts in a no-root Tk | Tk built without Xft in the no-root case: fewer libraries, plainer fonts (accepted in review of §6). |
 | D11 | Tcl/Tk version | 8.6 for every source build, as CPython's own builds. Tk 9 only through the prebuilt route. |
 | D12 | Parity | Upstream pyenv has none of this. Each user-visible difference gets an allowlist entry. |
-| D13 | Scripts that set nothing (user, after a side-agent note) | **Phased.** Until M8b ships, a run with no terminal and neither `--deps` nor `RPYENV_BUILD_DEPS` keeps today's rule: the compiler, `make`, OpenSSL and zlib stop the build; every other missing library only warns, and the build goes on. The run ends with a summary naming what is missing, the command that adds it, and the notice that a later release makes this stop the build. **M8c** makes the script default strict (`system`), because from then on a script without root can always answer with `--deps=build` (moved from M8b by the user on 2026-10-17: M8b can't build X11, so a script without root on a machine without X11 headers could not pass). Chosen over strict everywhere (breaks today's Dockerfiles on upgrade, while a script without root could only fail), lenient for good (scripts never get every module), a policy per pyenv root (Dockerfiles make fresh roots), automatic installs as root (installs packages nobody approved) and splitting libraries by weight (still breaks on the newly checked gdbm, uuid and crypt). |
+| D13 | Scripts that set nothing (user, after a side-agent note) | **Phased.** Until M8b ships, a run with no terminal and neither `--deps` nor `RPYENV_BUILD_DEPS` keeps today's rule: the compiler, `make`, `patch`, `awk`, OpenSSL and zlib stop the build (`awk` and `patch` added after the first real runs: Tumbleweed's base image has no `awk`, and CPython's configure needs it); every other missing library only warns, and the build goes on. The run ends with a summary naming what is missing, the command that adds it, and the notice that a later release makes this stop the build. **M8c** makes the script default strict (`system`), because from then on a script without root can always answer with `--deps=build` (moved from M8b by the user on 2026-10-17: M8b can't build X11, so a script without root on a machine without X11 headers could not pass). Chosen over strict everywhere (breaks today's Dockerfiles on upgrade, while a script without root could only fail), lenient for good (scripts never get every module), a policy per pyenv root (Dockerfiles make fresh roots), automatic installs as root (installs packages nobody approved) and splitting libraries by weight (still breaks on the newly checked gdbm, uuid and crypt). |
 
 ## 3. Parts
 
@@ -124,7 +124,7 @@ How should rpyenv get them?
 - **`b`** appears from M8b on, **`s`** from M8d on.
 - **`c`** (added after M8a, user decision) builds without the missing libraries and ends
   with D13's summary, without its "later release" notice. It is offered only when nothing
-  in D13's hard set (compiler, `make`, `patch`, OpenSSL, zlib) is missing, so a user
+  in D13's hard set (compiler, `make`, `patch`, `awk`, OpenSSL, zlib) is missing, so a user
   without sudo is never stuck before M8b brings `b`.
 
 ### 5.2 Without a terminal
@@ -132,7 +132,7 @@ How should rpyenv get them?
 `pyenv install --deps=system|install|build|prebuilt` or `RPYENV_BUILD_DEPS` with the
 same values; then every module is required, as at a terminal. `install` uses `sudo -n`
 and fails with a clear message when `sudo` needs a password. With neither set, D13's
-phased rule applies: until M8c, only the compiler, `make`, OpenSSL and zlib stop the
+phased rule applies: until M8c, only the compiler, `make`, `patch`, `awk`, OpenSSL and zlib stop the
 build, and the run ends with this summary when anything else is missing:
 
 ```
