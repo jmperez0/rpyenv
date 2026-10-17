@@ -524,17 +524,20 @@ pub(crate) fn stdlib_failures(run: &dyn Fn(&[&str]) -> bool, minor: u32) -> Vec<
         for i in m.imports {
             let code = format!("import {i}");
             if !run(&["-c", &code]) {
-                out.push(format!("{} (import {i} failed)", m.name));
+                out.push(format!("{} (import {i} failed; needs {})", m.name, m.lib));
                 break;
             }
         }
     }
     let ca = "import ssl, os; p = ssl.get_default_verify_paths();               ok = (p.cafile and os.path.isfile(p.cafile)) or (p.capath and os.path.isdir(p.capath) and os.listdir(p.capath));               raise SystemExit(0 if ok else 1)";
     if !run(&["-c", ca]) {
-        out.push("ssl certificates (no CA file or directory)".into());
+        out.push(format!(
+            "ssl certificates (no CA file or directory; needs {})",
+            super::stdlib::CA_KEY
+        ));
     }
     if !run(&["-c", "import tkinter; tkinter.Tcl().eval('info library')"]) {
-        out.push("tkinter (Tcl doesn't start)".into());
+        out.push("tkinter (Tcl doesn't start; needs tk)".into());
     }
     out
 }
@@ -1205,11 +1208,13 @@ mod tests {
         };
         let f = stdlib_failures(&fails, 12);
         assert!(
-            f.contains(&"uuid (import _uuid failed)".to_string()),
+            f.contains(&"uuid (import _uuid failed; needs libuuid)".to_string()),
             "{f:?}"
         );
         assert!(
-            f.contains(&"ssl certificates (no CA file or directory)".to_string()),
+            f.contains(
+                &"ssl certificates (no CA file or directory; needs ca-certificates)".to_string()
+            ),
             "{f:?}"
         );
         assert!(stdlib_failures(&|_| true, 12).is_empty());
@@ -1221,8 +1226,8 @@ mod tests {
 VERSION_ID=\"12\"
 ";
         let fails = vec![
-            "tkinter (import tkinter failed)".to_string(),
-            "uuid (import _uuid failed)".to_string(),
+            "tkinter (import tkinter failed; needs tk)".to_string(),
+            "uuid (import _uuid failed; needs libuuid)".to_string(),
         ];
         assert_eq!(
             lenient_summary("3.12.14", &fails, 12, Some(os), false),

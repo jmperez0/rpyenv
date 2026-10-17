@@ -209,8 +209,9 @@ fn a_build_missing_a_module_is_not_installed() {
     );
     assert_eq!(r.code, 1, "{}", r.stderr);
     assert!(
-        r.stderr
-            .contains("pyenv: 3.12.99 was built without: uuid (import _uuid failed)"),
+        r.stderr.contains(
+            "pyenv: 3.12.99 was built without: uuid (import _uuid failed; needs libuuid)"
+        ),
         "{}",
         r.stderr
     );
@@ -230,7 +231,7 @@ fn skip_preflight_turns_the_failure_into_a_warning() {
     assert_eq!(r.code, 0, "{}", r.stderr);
     assert!(
         r.stderr.contains(
-            "pyenv: warning: 3.12.99 was built without: ssl certificates (no CA file or directory)"
+            "pyenv: warning: 3.12.99 was built without: ssl certificates (no CA file or directory; needs ca-certificates)"
         ),
         "{}",
         r.stderr
@@ -251,7 +252,7 @@ fn a_tcl_that_does_not_start_fails_the_check() {
     assert_eq!(r.code, 1, "{}", r.stderr);
     assert!(
         r.stderr
-            .contains("was built without: tkinter (Tcl doesn't start)"),
+            .contains("was built without: tkinter (Tcl doesn't start; needs tk)"),
         "{}",
         r.stderr
     );
