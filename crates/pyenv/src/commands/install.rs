@@ -289,14 +289,20 @@ fn resolve_deps(
 ) -> Result<(), i32> {
     use crate::install::deps::{self, Route, SudoUse};
     use crate::install::Reply;
-    let chosen = match flag
-        .map(str::to_string)
-        .or_else(|| get("RPYENV_BUILD_DEPS").filter(|v| !v.is_empty()))
-    {
-        Some(v) => match Route::parse(&v) {
+    // The flag wins over the variable; a bad value names where it came from (review M10).
+    let given = match flag {
+        Some(v) => Some(("--deps", v.to_string())),
+        None => get("RPYENV_BUILD_DEPS")
+            .filter(|v| !v.is_empty())
+            .map(|v| ("RPYENV_BUILD_DEPS", v)),
+    };
+    let chosen = match given {
+        Some((source, v)) => match Route::parse(&v) {
             Some(r) => Some(r),
             None => {
-                say("pyenv: --deps takes system, install, build or prebuilt");
+                say(&format!(
+                    "pyenv: {source} takes system, install, build or prebuilt"
+                ));
                 return Err(1);
             }
         },
@@ -326,6 +332,8 @@ fn resolve_deps(
     // `sudo -n` either, because apt and sudo can ask the user themselves there.
     let interactive = tty && chosen.is_none();
     let is_root = run_probe(get, "id", &["-u"]).is_some_and(|(_, out, _)| out.trim() == "0");
+    // RHEL family: CRB must be on before dnf can find some packages (ruling R15).
+    let crb = os.as_deref().and_then(|o| deps::crb_line(o, is_root));
     // Package lists: apt can't find a package on a minimal image without them (§5.3).
     let lists = if cfg!(debug_assertions) {
         get("RPYENV_TEST_APT_LISTS")
@@ -353,6 +361,11 @@ fn resolve_deps(
             }
         };
         let missing = preflight::check3(&probe_env, patch, minor);
+        // Ctrl+C killed the probing compilers, so `missing` may be false: no prompt, no
+        // report and no install after it (final review M1).
+        if interrupted() {
+            return Err(130);
+        }
         if missing.is_empty() {
             return Ok(());
         }
@@ -406,7 +419,7 @@ fn resolve_deps(
                 }
                 one
             });
-            for l in deps::prompt_lines(version, &missing, manager, shown) {
+            for l in deps::prompt_lines(version, &missing, manager, shown, crb.as_deref()) {
                 say(&l);
             }
             loop {
@@ -468,10 +481,9 @@ fn resolve_deps(
                     if !ok {
                         last_failed = true;
                         say("pyenv: the install command failed");
-                        if let Some(h) = os.as_deref().and_then(deps::rhel_crb_hint) {
-                            say(&format!(
-                                "pyenv: some packages live in the CRB repository: {h}"
-                            ));
+                        // The prompt showed the CRB line already; `--deps=install` did not.
+                        if let (false, Some(l)) = (interactive, &crb) {
+                            say(l);
                         }
                         if manager == Some(deps::Manager::Apt) && !apt_update {
                             say("pyenv: if apt couldn't find a package, run sudo apt-get update first");
@@ -704,6 +716,8 @@ pub fn install(ctx: &Ctx, args: &[&str]) -> Output {
         let strict = at_terminal(&env)
             || f.deps.is_some()
             || env("RPYENV_BUILD_DEPS").is_some_and(|v| !v.is_empty());
+        // The mode is rpyenv's own: one set by hand must not make a run lenient (review M8).
+        job_env.retain(|(k, _)| k != "RPYENV_DEPS_MODE");
         if !strict {
             job_env.push(("RPYENV_DEPS_MODE".into(), "lenient".into()));
         }

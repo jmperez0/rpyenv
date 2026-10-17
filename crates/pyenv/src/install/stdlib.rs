@@ -376,6 +376,22 @@ pub fn min_version(key: &str, minor: u32) -> Option<MinVersion> {
     }
 }
 
+/// The first library version CPython 3.`minor` can't build against (final review M4): `need`
+/// is that version's value of `expr`, and `shown` what the version needs instead. CPython 3.12
+/// and older don't build `_tkinter` against Tk 9 (Fedora's `tk-devel` is Tk 9 from Fedora 42).
+pub fn too_new(key: &str, minor: u32) -> Option<MinVersion> {
+    match key {
+        "tk" if minor <= 12 => Some(MinVersion {
+            header: "tk.h",
+            expr: "TK_MAJOR_VERSION",
+            need: 9,
+            shown: "8.5 or 8.6",
+            text: "TK_PATCH_LEVEL",
+        }),
+        _ => None,
+    }
+}
+
 /// `verify_py312` → 12; `verify_py3_latest` → the newest (`u32::MAX`); 2.x and others → `None`.
 pub fn minor_of_step(step: &str) -> Option<u32> {
     let tag = step.strip_prefix("verify_py3")?;
@@ -443,6 +459,17 @@ mod tests {
         );
         assert_eq!(min_version("sqlite", 13).unwrap().text, "SQLITE_VERSION");
         assert_eq!(min_version("zstd", 14).unwrap().text.split(' ').count(), 3);
+    }
+
+    #[test]
+    fn tk_9_is_too_new_up_to_3_12() {
+        let tk = too_new("tk", 12).unwrap();
+        assert_eq!(
+            (tk.expr, tk.need, tk.shown),
+            ("TK_MAJOR_VERSION", 9, "8.5 or 8.6")
+        );
+        assert!(too_new("tk", 13).is_none());
+        assert!(too_new("openssl", 12).is_none());
     }
 
     #[test]

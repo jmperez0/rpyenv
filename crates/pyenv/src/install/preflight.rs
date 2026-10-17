@@ -11,11 +11,18 @@ use std::sync::atomic::{AtomicU64, Ordering};
 pub enum Missing {
     Program(String),
     Header(String),
-    /// The header is there but a program using it does not link (M8 design §4.2).
+    /// The header compiles but a program using it does not link (M8 design §4.2): the `-l`
+    /// flags that were tried first.
     Link(String),
     /// Installed, below CPython's minimum: `found` is the raw version number, `need` the
     /// minimum as people write it.
     TooOld {
+        found: String,
+        need: &'static str,
+    },
+    /// Installed, newer than this CPython can build against (Tk 9 for 3.12 and older):
+    /// `found` as `TooOld`'s, `need` what it needs instead.
+    TooNew {
         found: String,
         need: &'static str,
     },
@@ -225,7 +232,7 @@ fn manager(os_release: &str) -> Option<(usize, &'static str)> {
         .lines()
         .filter_map(|l| l.strip_prefix("ID=").or_else(|| l.strip_prefix("ID_LIKE=")))
         .flat_map(|v| {
-            v.trim_matches('"')
+            super::deps::unquote(v)
                 .split_whitespace()
                 .map(str::to_string)
                 .collect::<Vec<_>>()
@@ -250,8 +257,11 @@ fn manager(os_release: &str) -> Option<(usize, &'static str)> {
 fn shown(d: &Dep) -> String {
     let what = match &d.missing {
         Missing::Program(p) => p.clone(),
-        Missing::Header(h) | Missing::Link(h) => h.clone(),
-        Missing::TooOld { found, need } => format!("{found}, needs {need}"),
+        Missing::Header(h) => h.clone(),
+        Missing::Link(flags) => format!("can't link {flags}"),
+        Missing::TooOld { found, need } | Missing::TooNew { found, need } => {
+            format!("{found}, needs {need}")
+        }
         Missing::Certificates => "CA certificates".to_string(),
     };
     format!("{} ({what})", d.name)
@@ -334,6 +344,8 @@ pub fn report_deps_with(
         if apt_update && m == deps::Manager::Apt {
             cmd = format!("{} && {cmd}", deps::apt_update_argv(!root).join(" "));
         }
+        // RHEL family: the command fails until CRB is on (ruling R15).
+        lines.extend(os_release.and_then(|o| deps::crb_line(o, root)));
         lines.push("Install them with:".to_string());
         lines.push(format!("  {cmd}"));
     }
@@ -495,19 +507,16 @@ fn link_alternatives(links: &[&[&str]], pkg_config_flags: Option<&str>) -> Vec<V
     alts
 }
 
-/// `<cc> CPPFLAGS... -x c - -o <out> LDFLAGS... <libs>`: compiles and links a program that
-/// includes `header` (M8 design §4.2 item 3). `run(program, args)` runs it with the source on
-/// stdin; the caller deletes `out`.
+/// `<cc> CPPFLAGS... -x c - -o <out> LDFLAGS... <libs>`: compiles and links a program (M8
+/// design §4.2 item 3). `cc` is the compiler `check` found (final review M2). `run(program,
+/// args)` runs it with the source on stdin; the caller deletes `out`.
 fn link_probe(
     env: &dyn Fn(&str) -> Option<String>,
+    cc: &str,
     run: &dyn Fn(&str, &[&str]) -> bool,
-    header: &str,
     libs: &[&str],
     out: &str,
 ) -> bool {
-    let cc = env("CC")
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| "cc".into());
     let words = |k: &str| {
         env(k)
             .map(|v| v.split_whitespace().map(str::to_string).collect::<Vec<_>>())
@@ -520,17 +529,17 @@ fn link_probe(
     args.extend(words("LDFLAGS"));
     args.extend(words("PYTHON_LDFLAGS"));
     args.extend(libs.iter().map(|l| l.to_string()));
-    let _ = header; // the source text is passed by `run`
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    run(&cc, &refs)
+    run(cc, &refs)
 }
 
 /// The program a version check compiles (R6): the preprocessor evaluates the macro, so
 /// OpenSSL 3's `( (3<<28) |(5<<20) ... )` is compared correctly. A failed `#error` means the
-/// library is older than `need`.
-fn version_source(need: &stdlib::MinVersion) -> String {
+/// library is older than `need`, or, for a `too_new` bound (M4), at least `need`.
+fn version_source(need: &stdlib::MinVersion, too_new: bool) -> String {
+    let (op, word) = if too_new { (">=", "new") } else { ("<", "old") };
     format!(
-        "#include <{}>\n#if {} < {:#x}\n#error too old\n#endif\n",
+        "#include <{}>\n#if {} {op} {:#x}\n#error too {word}\n#endif\n",
         need.header, need.expr, need.need
     )
 }
@@ -571,31 +580,44 @@ fn readable_version(preprocessed: &str, names: usize) -> Option<String> {
 
 type Runner<'a> = &'a dyn Fn(&str, &[&str], &str, bool) -> Option<(bool, String)>;
 
+/// `CPPFLAGS` and `PYTHON_CPPFLAGS`, then `extra` (a library's own `-I` flags).
+fn cpp_flags(env: &dyn Fn(&str) -> Option<String>, extra: &[String]) -> Vec<String> {
+    ["CPPFLAGS", "PYTHON_CPPFLAGS"]
+        .iter()
+        .filter_map(|k| env(k))
+        .flat_map(|v| v.split_whitespace().map(str::to_string).collect::<Vec<_>>())
+        .chain(extra.iter().cloned())
+        .collect()
+}
+
 /// Whether the installed library meets `need` (R6): `Some(Dep)` only when the header
-/// compiles on its own but the `#if` version test fails. `run(program, args, stdin, capture)`.
+/// compiles on its own but the `#if` version test fails. `too_new`: `need` is the first
+/// version that is too new (M4). `cc` is the compiler `check` found (M2); `extra` the library's
+/// own `-I` flags (Tk's from pkg-config). `run(program, args, stdin, capture)`.
+#[allow(clippy::too_many_arguments)]
 fn version_verdict(
     env: &dyn Fn(&str) -> Option<String>,
+    cc: &str,
+    extra: &[String],
     run: Runner,
     name: &'static str,
     lib: &'static str,
     need: &stdlib::MinVersion,
+    too_new: bool,
 ) -> Option<Dep> {
-    let cc = env("CC")
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| "cc".into());
-    let flags: Vec<String> = ["CPPFLAGS", "PYTHON_CPPFLAGS"]
-        .iter()
-        .filter_map(|k| env(k))
-        .flat_map(|v| v.split_whitespace().map(str::to_string).collect::<Vec<_>>())
-        .collect();
+    let flags = cpp_flags(env, extra);
     let compile = |mode: &[&str], src: &str, capture: bool| {
         let mut args: Vec<&str> = flags.iter().map(String::as_str).collect();
         args.extend(mode);
         args.extend(["-x", "c", "-"]);
-        run(&cc, &args, src, capture)
+        run(cc, &args, src, capture)
     };
     let ok = |r: Option<(bool, String)>| r.is_some_and(|(ok, _)| ok);
-    if ok(compile(&["-fsyntax-only"], &version_source(need), false)) {
+    if ok(compile(
+        &["-fsyntax-only"],
+        &version_source(need, too_new),
+        false,
+    )) {
         return None;
     }
     // The header must be includable, or the failure says nothing about the version.
@@ -606,38 +628,63 @@ fn version_verdict(
     let found = compile(&["-E", "-P"], &version_text_source(need), true)
         .and_then(|(ok, s)| ok.then_some(s))
         .and_then(|s| readable_version(&s, need.text.split(' ').count()))
-        .unwrap_or_else(|| "an older version".to_string());
+        .unwrap_or_else(|| {
+            if too_new {
+                "a newer version"
+            } else {
+                "an older version"
+            }
+            .to_string()
+        });
+    let missing = if too_new {
+        Missing::TooNew {
+            found,
+            need: need.shown,
+        }
+    } else {
+        Missing::TooOld {
+            found,
+            need: need.shown,
+        }
+    };
     Some(Dep {
         name,
         required: true,
-        missing: Missing::TooOld {
-            found,
-            need: need.shown,
-        },
+        missing,
         lib,
     })
 }
 
 /// CA certificates where the system's OpenSSL looks (`openssl version -d`), else the
-/// distributions' bundle files (M8 design §4.3).
+/// distributions' bundle files (M8 design §4.3). `SSL_CERT_FILE` and `SSL_CERT_DIR` (a
+/// `:`-separated list), when set, replace the file and the directory OpenSSL would read, as
+/// they do for the built Python (final review M3).
 pub(crate) fn ca_present(
     openssldir: Option<&str>,
+    cert_file: Option<&str>,
+    cert_dir: Option<&str>,
     exists: &dyn Fn(&str) -> bool,
     has_files: &dyn Fn(&str) -> bool,
 ) -> bool {
-    if let Some(d) = openssldir {
-        if exists(&format!("{d}/cert.pem")) || has_files(&format!("{d}/certs")) {
-            return true;
+    let file = match cert_file {
+        Some(f) => exists(f),
+        None => {
+            openssldir.is_some_and(|d| exists(&format!("{d}/cert.pem")))
+                || [
+                    "/etc/ssl/certs/ca-certificates.crt",
+                    "/etc/pki/tls/certs/ca-bundle.crt",
+                    "/etc/ssl/ca-bundle.pem",
+                    "/etc/ssl/cert.pem",
+                ]
+                .iter()
+                .any(|p| exists(p))
         }
-    }
-    [
-        "/etc/ssl/certs/ca-certificates.crt",
-        "/etc/pki/tls/certs/ca-bundle.crt",
-        "/etc/ssl/ca-bundle.pem",
-        "/etc/ssl/cert.pem",
-    ]
-    .iter()
-    .any(|p| exists(p))
+    };
+    let dir = match cert_dir {
+        Some(list) => list.split(':').any(|d| !d.is_empty() && has_files(d)),
+        None => openssldir.is_some_and(|d| has_files(&format!("{d}/certs"))),
+    };
+    file || dir
 }
 
 /// Runs `program` (its words split, as `$CC` may be `ccache gcc`) with `input` on stdin;
@@ -683,6 +730,106 @@ fn probe_path() -> std::path::PathBuf {
         std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
     ))
+}
+
+/// The compiler `check` uses: `$CC`, else `cc`, else `gcc` (`resolve_compiler`), each tried
+/// with `--version` through `run`.
+fn probe_compiler(env: &dyn Fn(&str) -> Option<String>, run: Runner) -> String {
+    resolve_compiler(env("CC"), &|c| {
+        run(c, &["--version"], "", false).is_some_and(|(ok, _)| ok)
+    })
+}
+
+/// Every module of the table for 3.`minor` whose library is missing (M8 design §4.2): a header
+/// that doesn't compile, one that compiles but doesn't link (M5), or a version outside the
+/// bounds (R6, M4). `cc`: the compiler to probe with (M2). `run(program, args, stdin,
+/// capture)` runs the compiler and `pkg-config`.
+fn library_deps(
+    env: &dyn Fn(&str) -> Option<String>,
+    cc: &str,
+    run: Runner,
+    minor: u32,
+) -> Vec<Dep> {
+    let mut out: Vec<Dep> = Vec::new();
+    let ok = |r: Option<(bool, String)>| r.is_some_and(|(ok, _)| ok);
+    for m in stdlib::modules(minor) {
+        let Some(l) = stdlib::lib(m.lib) else {
+            continue;
+        };
+        if l.key == stdlib::CA_KEY || out.iter().any(|d| d.lib == l.key) {
+            continue;
+        }
+        let pc = l
+            .pkg_config
+            .and_then(|p| run("pkg-config", &["--cflags", "--libs", p], "", true))
+            .filter(|(ok, _)| *ok)
+            .map(|(_, s)| s);
+        let alts = link_alternatives(l.links, pc.as_deref());
+        let mut linked: Option<&Vec<String>> = None;
+        'h: for h in l.headers {
+            let src = header_probe_source(h);
+            for alt in &alts {
+                let libs: Vec<&str> = alt.iter().map(String::as_str).collect();
+                let tmp = probe_path();
+                let works = link_probe(
+                    env,
+                    cc,
+                    &|p, a| ok(run(p, a, &src, false)),
+                    &libs,
+                    &tmp.display().to_string(),
+                );
+                let _ = std::fs::remove_file(&tmp);
+                if works {
+                    linked = Some(alt);
+                    break 'h;
+                }
+            }
+        }
+        // pkg-config's `-I` flags, which the header may need (Tk on Debian, libtirpc).
+        let include = |alt: &[String]| -> Vec<String> {
+            alt.iter()
+                .filter(|f| f.starts_with("-I") || f.starts_with("-D"))
+                .cloned()
+                .collect()
+        };
+        let Some(alt) = linked else {
+            // No link: a header that compiles means the library itself is what's missing (M5).
+            let extra = pc
+                .as_deref()
+                .map(|p| include(&link_alternatives(&[], Some(p))[0]))
+                .unwrap_or_default();
+            let flags = cpp_flags(env, &extra);
+            let compiles = l.headers.iter().any(|h| {
+                let mut args: Vec<&str> = flags.iter().map(String::as_str).collect();
+                args.extend(["-fsyntax-only", "-x", "c", "-"]);
+                ok(run(cc, &args, &header_probe_source(h), false))
+            });
+            let missing = if compiles {
+                Missing::Link(l.links.first().map(|f| f.join(" ")).unwrap_or_default())
+            } else {
+                Missing::Header(l.headers[0].to_string())
+            };
+            out.push(Dep {
+                name: m.name,
+                required: true,
+                missing,
+                lib: l.key,
+            });
+            continue;
+        };
+        let extra = include(alt);
+        if let Some(need) = stdlib::min_version(l.key, minor) {
+            out.extend(version_verdict(
+                env, cc, &extra, run, m.name, l.key, &need, false,
+            ));
+        }
+        if let Some(limit) = stdlib::too_new(l.key, minor) {
+            out.extend(version_verdict(
+                env, cc, &extra, run, m.name, l.key, &limit, true,
+            ));
+        }
+    }
+    out
 }
 
 /// CPython 3.`minor` (M8 design §4): programs as `check`, then every module of the table:
@@ -756,58 +903,19 @@ pub fn check3(env: &dyn Fn(&str) -> Option<String>, needs_patch: bool, minor: u3
             lib: "pkg-config",
         });
     }
-    for m in stdlib::modules(minor) {
-        let Some(l) = stdlib::lib(m.lib) else {
-            continue;
-        };
-        if l.key == stdlib::CA_KEY || out.iter().any(|d| d.lib == l.key) {
-            continue;
-        }
-        let pc = l
-            .pkg_config
-            .and_then(|p| runs_with_input("pkg-config", &["--cflags", "--libs", p], "", true))
-            .filter(|(ok, _)| *ok)
-            .map(|(_, s)| s);
-        let mut found = false;
-        'h: for h in l.headers {
-            let src = header_probe_source(h);
-            let alts = link_alternatives(l.links, pc.as_deref());
-            for alt in &alts {
-                let libs: Vec<&str> = alt.iter().map(String::as_str).collect();
-                let tmp = probe_path();
-                let linked = link_probe(
-                    env,
-                    &|p, a| runs_with_input(p, a, &src, false).is_some_and(|(ok, _)| ok),
-                    h,
-                    &libs,
-                    &tmp.display().to_string(),
-                );
-                let _ = std::fs::remove_file(&tmp);
-                if linked {
-                    found = true;
-                    break 'h;
-                }
-            }
-        }
-        if !found {
-            out.push(Dep {
-                name: m.name,
-                required: true,
-                missing: Missing::Link(l.headers[0].to_string()),
-                lib: l.key,
-            });
-            continue;
-        }
-        if let Some(need) = stdlib::min_version(l.key, minor) {
-            out.extend(version_verdict(env, &runs_with_input, m.name, l.key, &need));
-        }
-    }
+    // The compiler `check` found: on a host with `gcc` and no `cc`, that is gcc (M2).
+    let cc = probe_compiler(env, &runs_with_input);
+    out.extend(library_deps(env, &cc, &runs_with_input, minor));
     let dir = runs_with_input("openssl", &["version", "-d"], "", true)
         .and_then(|(ok, s)| ok.then_some(s))
         .and_then(|s| s.split('"').nth(1).map(str::to_string));
     let has_files = |d: &str| std::fs::read_dir(d).is_ok_and(|mut r| r.next().is_some());
+    let var = |k: &str| env(k).filter(|v| !v.is_empty());
+    let (cert_file, cert_dir) = (var("SSL_CERT_FILE"), var("SSL_CERT_DIR"));
     if !ca_present(
         dir.as_deref(),
+        cert_file.as_deref(),
+        cert_dir.as_deref(),
         &|p| std::path::Path::new(p).is_file(),
         &has_files,
     ) {
@@ -975,17 +1083,57 @@ mod tests {
         let none = |_: &str| false;
         assert!(ca_present(
             Some("/usr/lib/ssl"),
+            None,
+            None,
             &|p| p == "/usr/lib/ssl/cert.pem",
             &none
         ));
-        assert!(ca_present(Some("/usr/lib/ssl"), &none, &|d| d == "/usr/lib/ssl/certs"));
+        assert!(ca_present(Some("/usr/lib/ssl"), None, None, &none, &|d| d
+            == "/usr/lib/ssl/certs"));
         // No openssl binary: the distributions' bundle paths.
         assert!(ca_present(
+            None,
+            None,
             None,
             &|p| p == "/etc/pki/tls/certs/ca-bundle.crt",
             &none
         ));
-        assert!(!ca_present(Some("/usr/lib/ssl"), &none, &none));
+        assert!(!ca_present(Some("/usr/lib/ssl"), None, None, &none, &none));
+    }
+
+    /// Final review M3: SSL_CERT_FILE and SSL_CERT_DIR replace what OpenSSL would read, before
+    /// the build as after it.
+    #[test]
+    fn ssl_cert_file_and_dir_replace_the_defaults() {
+        let none = |_: &str| false;
+        let bundle = |p: &str| p == "/etc/ssl/certs/ca-certificates.crt";
+        // The variable names a file that is not there: the system bundle no longer counts.
+        assert!(!ca_present(
+            None,
+            Some("/opt/certs.pem"),
+            None,
+            &bundle,
+            &none
+        ));
+        assert!(ca_present(
+            None,
+            Some("/opt/certs.pem"),
+            None,
+            &|p| p == "/opt/certs.pem",
+            &none
+        ));
+        // SSL_CERT_DIR is a list; one directory with certificates is enough.
+        let dir = |d: &str| d == "/opt/b";
+        assert!(ca_present(None, None, Some("/opt/a:/opt/b"), &none, &dir));
+        assert!(!ca_present(
+            Some("/usr/lib/ssl"),
+            None,
+            Some("/opt/a"),
+            &none,
+            &|d| d == "/usr/lib/ssl/certs"
+        ));
+        // Only the directory is replaced: the default file still counts.
+        assert!(ca_present(None, None, Some("/opt/a"), &bundle, &none));
     }
 
     /// Review focus 4: a compiler wrapper and custom flags reach the link probe.
@@ -1007,7 +1155,7 @@ mod tests {
             "LDFLAGS" => Some("-L/opt/x/lib".to_string()),
             _ => None,
         };
-        assert!(link_probe(&env, &run, "zlib.h", &["-lz"], "/tmp/out"));
+        assert!(link_probe(&env, "ccache gcc", &run, &["-lz"], "/tmp/out"));
         let call = &seen.borrow()[0];
         assert_eq!(call[0], "ccache gcc");
         for want in ["-I/opt/x/include", "-L/opt/x/lib", "-lz", "-o", "/tmp/out"] {
@@ -1039,12 +1187,18 @@ mod tests {
     #[test]
     fn the_version_test_is_an_if_on_the_macro() {
         let need = crate::install::stdlib::min_version("openssl", 13).unwrap();
-        let src = version_source(&need);
+        let src = version_source(&need, false);
         assert!(
             src.contains(
                 "#include <openssl/opensslv.h>\n#if OPENSSL_VERSION_NUMBER < 0x1010100f\n#error"
             ),
             "{src}"
+        );
+        // M4: the upper bound is the same test the other way.
+        let tk = crate::install::stdlib::too_new("tk", 12).unwrap();
+        assert_eq!(
+            version_source(&tk, true),
+            "#include <tk.h>\n#if TK_MAJOR_VERSION >= 0x9\n#error too new\n#endif\n"
         );
     }
 
@@ -1084,17 +1238,138 @@ mod tests {
     fn a_too_old_library_is_reported_with_both_versions() {
         let need = crate::install::stdlib::min_version("openssl", 13).unwrap();
         let env = |_: &str| None;
-        let d = version_verdict(&env, &fake_cc(true, true), "ssl", "openssl", &need).unwrap();
+        let verdict = |old: bool, includable: bool| {
+            version_verdict(
+                &env,
+                "cc",
+                &[],
+                &fake_cc(old, includable),
+                "ssl",
+                "openssl",
+                &need,
+                false,
+            )
+        };
         assert_eq!(
-            d.missing,
+            verdict(true, true).unwrap().missing,
             Missing::TooOld {
                 found: "3.5.5".into(),
                 need: "1.1.1"
             }
         );
-        assert!(version_verdict(&env, &fake_cc(false, true), "ssl", "openssl", &need).is_none());
+        assert!(verdict(false, true).is_none());
         // A header that does not compile at all is not "too old".
-        assert!(version_verdict(&env, &fake_cc(true, false), "ssl", "openssl", &need).is_none());
+        assert!(verdict(true, false).is_none());
+    }
+
+    /// Final review M4: CPython 3.12 and older can't build `_tkinter` against Tk 9. The check
+    /// compiles with Tk's own `-I` flags (Debian keeps tk.h in /usr/include/tcl8.6).
+    #[test]
+    fn tk_9_is_too_new_for_3_12() {
+        let seen = std::cell::RefCell::new(Vec::<String>::new());
+        let run = |_: &str, args: &[&str], src: &str, _: bool| {
+            seen.borrow_mut().push(args.join(" "));
+            if args.contains(&"-E") {
+                return Some((true, "\"9.0.2\"\n".to_string()));
+            }
+            Some((!src.contains("#error too new"), String::new()))
+        };
+        let env = |_: &str| None;
+        let limit = crate::install::stdlib::too_new("tk", 12).unwrap();
+        let extra = vec!["-I/usr/include/tcl9.0".to_string()];
+        let d = version_verdict(&env, "cc", &extra, &run, "tkinter", "tk", &limit, true).unwrap();
+        assert_eq!(
+            d.missing,
+            Missing::TooNew {
+                found: "9.0.2".into(),
+                need: "8.5 or 8.6"
+            }
+        );
+        assert!(
+            seen.borrow()
+                .iter()
+                .all(|a| a.contains("-I/usr/include/tcl9.0")),
+            "{:?}",
+            seen.borrow()
+        );
+        // Tk 8.6 passes.
+        let tk8 = |_: &str, _: &[&str], _: &str, _: bool| Some((true, String::new()));
+        assert!(version_verdict(&env, "cc", &[], &tk8, "tkinter", "tk", &limit, true).is_none());
+    }
+
+    /// Final review M2 and M5, with a fake runner: on a host with `gcc` and no `cc`, every
+    /// probe uses gcc; a library whose header compiles but doesn't link is `Link` with its
+    /// flags, and one whose header doesn't compile is `Header`.
+    #[test]
+    fn probes_use_the_compiler_check_found_and_tell_link_from_header() {
+        let seen = std::cell::RefCell::new(Vec::<String>::new());
+        let run = |p: &str, args: &[&str], src: &str, _: bool| -> Option<(bool, String)> {
+            seen.borrow_mut().push(p.to_string());
+            match p {
+                "gcc" => {}
+                "pkg-config" => return Some((false, String::new())),
+                _ => return None, // no `cc` on this host
+            }
+            let linking = args.contains(&"-o") && !args.contains(&"--version");
+            if src.contains("gdbm.h") && linking {
+                return Some((false, String::new())); // libgdbm_compat missing
+            }
+            if src.contains("uuid/uuid.h") {
+                return Some((false, String::new())); // no uuid-dev at all
+            }
+            Some((true, String::new()))
+        };
+        let env = |_: &str| None;
+        let cc = probe_compiler(&env, &run);
+        assert_eq!(cc, "gcc");
+        let deps = library_deps(&env, &cc, &run, 12);
+        let got: Vec<(&str, &Missing)> = deps.iter().map(|d| (d.name, &d.missing)).collect();
+        assert_eq!(
+            got,
+            [
+                ("dbm", &Missing::Link("-lgdbm -lgdbm_compat".into())),
+                ("uuid", &Missing::Header("uuid/uuid.h".into())),
+            ]
+        );
+        assert!(
+            seen.borrow()
+                .iter()
+                .skip(2) // `probe_compiler`'s `cc --version`, then `gcc --version`
+                .all(|p| p == "gcc" || p == "pkg-config"),
+            "{:?}",
+            seen.borrow()
+        );
+    }
+
+    /// Final review M2, on real processes: a PATH with `gcc` and no `cc` (and `make`,
+    /// `pkg-config`) finds every library, where the probes once ran `cc` and failed to start.
+    #[test]
+    fn a_host_with_gcc_and_no_cc_finds_its_libraries() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = std::env::temp_dir().join(format!("rpyenv-gcc-only-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let stub = |name: &str, body: &str| {
+            let p = d.join(name);
+            std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        // gcc: succeeds at everything; `-E` prints nothing, so no version text is read.
+        stub("gcc", "exit 0");
+        stub("make", "exit 0");
+        stub("pkg-config", "[ \"$1\" = --version ] && exit 0\nexit 1");
+        let certs = d.join("certs.pem");
+        std::fs::write(&certs, "x").unwrap();
+        // Only the stubs: the real /usr/bin has a `cc`.
+        let path = d.display().to_string();
+        let certs = certs.display().to_string();
+        let env = |k: &str| match k {
+            "PATH" => Some(path.clone()),
+            "SSL_CERT_FILE" => Some(certs.clone()),
+            _ => None,
+        };
+        let deps = check3(&env, false, 12);
+        let _ = std::fs::remove_dir_all(&d);
+        assert!(deps.is_empty(), "{deps:#?}");
     }
 
     #[test]
@@ -1111,7 +1386,17 @@ mod tests {
             _ => None,
         };
         let need = crate::install::stdlib::min_version("openssl", 13).unwrap();
-        assert!(version_verdict(&env, &run, "ssl", "openssl", &need).is_none());
+        assert!(version_verdict(
+            &env,
+            "ccache gcc",
+            &[],
+            &run,
+            "ssl",
+            "openssl",
+            &need,
+            false
+        )
+        .is_none());
         let (prog, args) = &seen.borrow()[0];
         assert_eq!(prog, "ccache gcc");
         assert!(
@@ -1172,12 +1457,13 @@ mod tests {
             shown: "4.0.0",
             ..real
         };
-        let verdict = version_verdict(&env, &run, "ssl", "openssl", &future);
+        let cc = probe_compiler(&env, &run);
+        let verdict = version_verdict(&env, &cc, &[], &run, "ssl", "openssl", &future, false);
         eprintln!("openssl need 4.0.0: {verdict:?}");
         let real = stdlib::min_version("openssl", 13).unwrap();
         eprintln!(
             "openssl need 1.1.1: {:?}",
-            version_verdict(&env, &run, "ssl", "openssl", &real)
+            version_verdict(&env, &cc, &[], &run, "ssl", "openssl", &real, false)
         );
         match verdict.map(|d| d.missing) {
             Some(Missing::TooOld { found, .. }) => assert!(found.starts_with("3."), "{found}"),
@@ -1193,7 +1479,7 @@ mod tests {
         let d = [Dep {
             name: "uuid",
             required: true,
-            missing: Missing::Link("uuid/uuid.h".into()),
+            missing: Missing::Link("-luuid".into()),
             lib: "libuuid",
         }];
         let os = "ID=debian
@@ -1203,7 +1489,7 @@ mod tests {
             refuse,
             [
                 "pyenv: cannot build Python: missing build dependencies:",
-                "  uuid (uuid/uuid.h)",
+                "  uuid (can't link -luuid)",
                 "Install them with:",
                 "  sudo apt-get install uuid-dev",
                 "To build anyway, set RPYENV_SKIP_PREFLIGHT=1.",
@@ -1214,7 +1500,7 @@ mod tests {
             warn,
             [
                 "pyenv: the build will lack these optional modules:",
-                "  uuid (uuid/uuid.h)",
+                "  uuid (can't link -luuid)",
                 "Install them with:",
                 "  apt-get install uuid-dev",
             ]
@@ -1225,6 +1511,32 @@ mod tests {
             "  sudo apt-get update && sudo apt-get install uuid-dev"
         );
         assert!(report_deps(&[], Some(os), false, true).is_empty());
+    }
+
+    /// Ruling R15: on Rocky the printed report names CRB before the dnf command, without sudo
+    /// for root; in lenient mode too.
+    #[test]
+    fn rocky_reports_show_the_crb_line_before_the_command() {
+        let d = [Dep {
+            name: "uuid",
+            required: true,
+            missing: Missing::Header("uuid/uuid.h".into()),
+            lib: "libuuid",
+        }];
+        let rocky = "NAME=\"Rocky Linux\"\nID=\"rocky\"\nID_LIKE=\"rhel centos fedora\"\nVERSION_ID=\"9.6\"\n";
+        for (root, refuse) in [(true, true), (false, false)] {
+            let lines = report_deps(&d, Some(rocky), root, refuse);
+            let sudo = if root { "" } else { "sudo " };
+            let crb = format!("Some packages live in the CRB repository; enable it first: {sudo}dnf install dnf-plugins-core && {sudo}dnf config-manager --set-enabled crb");
+            let at = lines
+                .iter()
+                .position(|l| *l == crb)
+                .unwrap_or_else(|| panic!("{lines:?}"));
+            assert_eq!(lines[at + 1], "Install them with:");
+            assert_eq!(lines[at + 2], format!("  {sudo}dnf install libuuid-devel"));
+        }
+        let debian = report_deps(&d, Some("ID=debian\n"), false, true);
+        assert!(!debian.iter().any(|l| l.contains("CRB")), "{debian:?}");
     }
 
     #[test]

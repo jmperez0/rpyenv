@@ -234,7 +234,7 @@ fn skip_preflight_turns_the_failure_into_a_warning() {
     assert_eq!(r.code, 0, "{}", r.stderr);
     assert!(
         r.stderr.contains(
-            "pyenv: warning: 3.12.99 was built without: ssl certificates (no CA file or directory; needs ca-certificates)"
+            "pyenv: warning: 3.12.99 was built without: ssl certificates (no CA file /fake/ssl/cert.pem and no certificates in /fake/ssl/certs; needs ca-certificates, or set SSL_CERT_FILE or SSL_CERT_DIR)"
         ),
         "{}",
         r.stderr
@@ -929,4 +929,312 @@ fn help_and_completion_list_the_deps_option() {
     assert!(h.stdout.contains("--deps=<route>"), "{}", h.stdout);
     let c = run(&f, &["install", "--complete"], &[]);
     assert!(c.stdout.lines().any(|l| l == "--deps="), "{}", c.stdout);
+}
+
+const ROCKY: &str =
+    "NAME=\"Rocky Linux\"\nID=\"rocky\"\nID_LIKE=\"rhel centos fedora\"\nVERSION_ID=\"9.6\"\n";
+const CRB: &str = "Some packages live in the CRB repository; enable it first: sudo dnf install dnf-plugins-core && sudo dnf config-manager --set-enabled crb";
+
+/// A Rocky 9 os-release for RPYENV_TEST_OS_RELEASE, and a `dnf` stub that logs and exits
+/// `dnf_exit`.
+fn rocky(f: &Fixture, dnf_exit: i32) -> String {
+    let os = f.base.join("os-release-rocky");
+    f.file(&os, ROCKY);
+    let l = log_path(f).display().to_string();
+    stub(
+        f,
+        "dnf",
+        &format!("echo \"dnf $*\" >> '{l}'\nexit {dnf_exit}"),
+    );
+    os.display().to_string()
+}
+
+/// Ruling R15: on a RHEL-family system the printed report names CRB before the dnf command,
+/// for `--deps=system` and in lenient mode alike.
+// allowlist D-120
+#[test]
+fn rocky_reports_show_the_crb_line_before_the_command() {
+    let f = Fixture::new();
+    plugin_def(&f);
+    stubs(&f, 0);
+    let os = rocky(&f, 0);
+    let want = format!("\n{CRB}\nInstall them with:\n  sudo dnf install libuuid-devel\n");
+    let r = run(
+        &f,
+        &["install", "--deps=system", "3.12.99"],
+        &[
+            ("RPYENV_TEST_OS_RELEASE", &os),
+            ("RPYENV_TEST_PREFLIGHT", "libuuid"),
+        ],
+    );
+    assert_eq!(r.code, 1, "{}", r.stderr);
+    assert!(r.stderr.contains(&want), "{}", r.stderr);
+    // Lenient mode: OpenSSL stops the build; the report still names CRB.
+    let r = run(
+        &f,
+        &["install", "3.12.99"],
+        &[
+            ("RPYENV_TEST_OS_RELEASE", &os),
+            ("RPYENV_TEST_PREFLIGHT", "openssl"),
+        ],
+    );
+    assert_eq!(r.code, 1, "{}", r.stderr);
+    assert!(
+        r.stderr.contains(&format!(
+            "\n{CRB}\nInstall them with:\n  sudo dnf install openssl-devel\n"
+        )),
+        "{}",
+        r.stderr
+    );
+    assert_eq!(log(&f), "", "nothing ran");
+}
+
+/// Ruling R15: the prompt shows the CRB line, and a failed install does not repeat it.
+#[test]
+fn rocky_prompt_shows_crb_once_per_prompt() {
+    let f = Fixture::new();
+    plugin_def(&f);
+    stubs(&f, 0);
+    let os = rocky(&f, 1);
+    let r = run_input(
+        &f,
+        &["install", "3.12.99"],
+        &[
+            ("RPYENV_TEST_TTY", "1"),
+            ("RPYENV_TEST_OS_RELEASE", &os),
+            ("RPYENV_TEST_PREFLIGHT", "libuuid"),
+        ],
+        "i\n\n",
+    );
+    assert_eq!(r.code, 1, "{}", r.stderr);
+    assert!(
+        r.stderr
+            .contains(&format!("{CRB}\nHow should rpyenv get them?\n")),
+        "{}",
+        r.stderr
+    );
+    // Not repeated after the failure: the next prompt follows at once (it shows it again).
+    assert!(
+        r.stderr.contains(
+            "pyenv: the install command failed\npyenv: 3.12.99 can't build these modules: uuid\n"
+        ),
+        "{}",
+        r.stderr
+    );
+    assert!(
+        r.stderr.contains("pyenv: the install command failed\n"),
+        "{}",
+        r.stderr
+    );
+    assert!(
+        log(&f).contains("dnf install libuuid-devel\n"),
+        "{}",
+        log(&f)
+    );
+}
+
+/// Ruling R15: `--deps=install` shows no prompt, so the CRB line comes once, after the failure.
+#[test]
+fn rocky_deps_install_shows_crb_after_a_failure() {
+    let f = Fixture::new();
+    plugin_def(&f);
+    stubs(&f, 0);
+    let os = rocky(&f, 1);
+    let r = run(
+        &f,
+        &["install", "--deps=install", "3.12.99"],
+        &[
+            ("RPYENV_TEST_OS_RELEASE", &os),
+            ("RPYENV_TEST_PREFLIGHT", "libuuid"),
+        ],
+    );
+    assert_eq!(r.code, 1, "{}", r.stderr);
+    assert!(
+        r.stderr
+            .contains(&format!("pyenv: the install command failed\n{CRB}\n")),
+        "{}",
+        r.stderr
+    );
+    assert_eq!(r.stderr.matches(CRB).count(), 1, "{}", r.stderr);
+    assert!(!installed(&f));
+}
+
+/// Final review M7: RPYENV_SKIP_PREFLIGHT=1 in lenient mode gives P1's warning line, not the
+/// summary that promises a later release will stop the build.
+// allowlist D-122
+#[test]
+fn skip_preflight_in_lenient_mode_warns_without_the_summary() {
+    let f = Fixture::new();
+    plugin_def(&f);
+    stubs(&f, 0);
+    let r = run(
+        &f,
+        &["install", "3.12.99"],
+        &[("RPYENV_SKIP_PREFLIGHT", "1"), ("FAKE_PY_MISSING", "_uuid")],
+    );
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert!(
+        r.stderr.contains(
+            "pyenv: warning: 3.12.99 was built without: uuid (import _uuid failed; needs libuuid)\n"
+        ),
+        "{}",
+        r.stderr
+    );
+    assert!(
+        !r.stderr.contains("In a later rpyenv release"),
+        "{}",
+        r.stderr
+    );
+    assert!(!r.stderr.contains("Add them:"), "{}", r.stderr);
+    assert!(installed(&f));
+}
+
+/// Final review M8: the lenient mode is rpyenv's to set; a user's RPYENV_DEPS_MODE is dropped.
+#[test]
+fn a_users_deps_mode_does_not_make_a_strict_run_lenient() {
+    let f = Fixture::new();
+    plugin_def(&f);
+    stubs(&f, 0);
+    let r = run(
+        &f,
+        &["install", "--deps=system", "3.12.99"],
+        &[
+            ("RPYENV_DEPS_MODE", "lenient"),
+            ("RPYENV_TEST_PREFLIGHT", ""),
+            ("FAKE_PY_MISSING", "_uuid"),
+        ],
+    );
+    assert_eq!(r.code, 1, "{}", r.stderr);
+    assert!(
+        r.stderr.contains(
+            "pyenv: 3.12.99 was built without: uuid (import _uuid failed; needs libuuid)\n"
+        ),
+        "{}",
+        r.stderr
+    );
+    assert!(
+        !r.stderr.contains("In a later rpyenv release"),
+        "{}",
+        r.stderr
+    );
+    assert!(!installed(&f));
+}
+
+/// Final review M10: a bad RPYENV_BUILD_DEPS names the variable, not the flag.
+#[test]
+fn a_bad_build_deps_value_names_the_variable() {
+    let f = Fixture::new();
+    plugin_def(&f);
+    stubs(&f, 0);
+    let r = run(
+        &f,
+        &["install", "3.12.99"],
+        &[
+            ("RPYENV_TEST_PREFLIGHT", "libuuid"),
+            ("RPYENV_BUILD_DEPS", "yes"),
+        ],
+    );
+    assert_eq!(r.code, 1, "{}", r.stderr);
+    assert!(
+        r.stderr
+            .contains("pyenv: RPYENV_BUILD_DEPS takes system, install, build or prebuilt\n"),
+        "{}",
+        r.stderr
+    );
+    assert!(!r.stderr.contains("--deps takes"), "{}", r.stderr);
+    assert!(!installed(&f));
+}
+
+/// Final review M1: Ctrl+C while detection runs its compilers ends the run with 130, before
+/// any prompt, report or install command. The compiler stub sleeps on its first run and
+/// fails at once after the interrupt, so detection would report it missing.
+#[test]
+fn an_interrupt_during_detection_ends_the_run_before_any_install() {
+    use std::os::unix::process::CommandExt;
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+    // A stub that fails to start (ETXTBSY, another test's fork holding it) never logs; such
+    // an attempt is retried with a fresh fixture.
+    for attempt in 1..=20 {
+        let f = Fixture::new();
+        plugin_def(&f);
+        stubs(&f, 0);
+        let marker = f.base.join("interrupted");
+        let cclog = f.base.join("cc.log");
+        stub(
+            &f,
+            "slowcc",
+            &format!(
+                "[ -e '{}' ] && exit 1\necho started >> '{}'\nexec sleep 30",
+                marker.display(),
+                cclog.display()
+            ),
+        );
+        // By name, found on PATH: the fixture's path has spaces, and `$CC` is split into words.
+        let owned = env(&f, &[("CC", "slowcc")]);
+        let mut cmd = f.command(
+            std::path::Path::new(env!("CARGO_BIN_EXE_pyenv")),
+            &f.work,
+            &[],
+        );
+        for (k, v) in &owned {
+            cmd.env(k, v);
+        }
+        let mut child = cmd
+            .args(["install", "--deps=install", "3.12.99"])
+            .process_group(0)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stderr = child.stderr.take().unwrap();
+        let reader = std::thread::spawn(move || {
+            let mut s = String::new();
+            std::io::Read::read_to_string(&mut { stderr }, &mut s).ok();
+            s
+        });
+        let start = Instant::now();
+        let started = loop {
+            if cclog.exists() {
+                break true;
+            }
+            if child.try_wait().unwrap().is_some() {
+                break false;
+            }
+            assert!(
+                start.elapsed() < Duration::from_secs(10),
+                "the compiler stub never started"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        if !started {
+            let err = reader.join().unwrap();
+            assert!(
+                attempt < 20,
+                "the compiler stub never started in 20 attempts: {err}"
+            );
+            continue;
+        }
+        f.file(&marker, "");
+        common::sigint_group(child.id());
+        let start = Instant::now();
+        let status = loop {
+            if let Some(st) = child.try_wait().unwrap() {
+                break st;
+            }
+            if start.elapsed() > Duration::from_secs(10) {
+                let _ = child.kill();
+                panic!("pyenv did not stop after SIGINT");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let err = reader.join().unwrap();
+        assert_eq!(status.code(), Some(130), "{err}");
+        assert!(!err.contains("pyenv: running:"), "{err}");
+        assert!(!err.contains("missing build dependencies"), "{err}");
+        assert_eq!(log(&f), "", "no package manager ran: {err}");
+        assert!(!installed(&f), "{err}");
+        return;
+    }
 }

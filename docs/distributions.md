@@ -23,17 +23,23 @@ CPython 3 needs some system libraries to build. If one is missing, the matching 
 before it builds, so you find out first.
 
 **What is checked.** For each library, rpyenv compiles and links a small program. It
-also checks the minimum versions below, and that CA certificates exist. `tkinter` is
-checked without needing a display.
+also checks the versions below, and that CA certificates exist. `tkinter` is checked
+without needing a display.
 
-| Library | Minimum version |
+| Library | Version |
 |---|---|
-| OpenSSL | 1.1.1 for Python 3.10 and later; 1.0.2 for 3.7 to 3.9 |
-| SQLite | 3.15.2 for Python 3.13 and later |
-| zstd | 1.4.5, for 3.14's `compression.zstd` |
-| CA certificates | A file or directory must exist |
+| OpenSSL | 1.1.1 or later for Python 3.10 and later; 1.0.2 or later for 3.7 to 3.9 |
+| SQLite | 3.15.2 or later for Python 3.13 and later |
+| zstd | 1.4.5 or later, for 3.14's `compression.zstd` |
+| Tk | 8.5 or 8.6 for Python 3.12 and older, which can't use Tk 9 |
+| CA certificates | A file or directory must exist. `SSL_CERT_FILE` and `SSL_CERT_DIR`, when set, are where rpyenv and the built Python look |
 
-Python 2.x, PyPy and conda keep their old behavior.
+Fedora 42 and later ship Tk 9 as `tk-devel`. To build Python 3.12 or older there, install
+`tk8-devel` instead.
+
+These checks are for CPython built from source. Python 2.x, PyPy and conda keep their
+old behavior: no check before the install, and only upstream pyenv's module check after
+it.
 
 **The prompt.** At a terminal, rpyenv lists the missing modules and the packages that
 provide them. Then you choose:
@@ -44,8 +50,15 @@ provide them. Then you choose:
 | `i` | Runs the command through `sudo` (no `sudo` when you are root; no `-y`), then checks again |
 
 `i` is left out, with the reason, when `sudo` can't be used or rpyenv doesn't know your
-distribution. On RHEL-family systems the prompt adds a hint about the CRB repository.
-rpyenv knows apt, dnf, zypper and pacman. Alpine comes later.
+distribution. rpyenv knows apt, dnf, zypper and pacman. Alpine comes later.
+
+On RHEL, Rocky, Alma and CentOS Stream, some `-devel` packages are in the CRB repository
+(PowerTools on version 8), which is off by default. The prompt and the printed list show
+the command that turns it on, before the `dnf install` command:
+
+```
+Some packages live in the CRB repository; enable it first: sudo dnf install dnf-plugins-core && sudo dnf config-manager --set-enabled crb
+```
 
 **`--deps` and `RPYENV_BUILD_DEPS`.** Either one picks the route and skips the prompt,
 even at a terminal. The flag wins over the variable.
@@ -65,9 +78,10 @@ that summary stop the build. To choose now, use `--deps=install` or `--deps=syst
 
 **After the build.** rpyenv imports every standard-library module, checks that CA
 certificates exist, and starts Tcl. If one fails, it removes the build and tells you
-which module and which package. In lenient mode, or with `RPYENV_SKIP_PREFLIGHT=1`,
-this is a warning and the build stays. `RPYENV_SKIP_PREFLIGHT=1` also skips the check
-before the build.
+which module and which package. For missing CA certificates, it names the file and the
+directory the built Python looked in. In lenient mode this is the three-line summary,
+and the build stays. With `RPYENV_SKIP_PREFLIGHT=1` it is a one-line warning, and the
+build stays. `RPYENV_SKIP_PREFLIGHT=1` also skips the check before the build.
 
 ## PyPy
 
