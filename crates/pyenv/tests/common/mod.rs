@@ -118,6 +118,29 @@ impl Fixture {
         self.run(&self.work, args, env)
     }
 
+    /// `pyenv args` with `input` on stdin (the prompt tests set RPYENV_TEST_TTY=1).
+    pub fn pyenv_input(&self, args: &[&str], env: &[(&str, &str)], input: &str) -> Run {
+        use std::io::Write;
+        let mut c = self.command(Path::new(env!("CARGO_BIN_EXE_pyenv")), &self.work, env);
+        c.args(args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let mut child = c.spawn().unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(input.as_bytes())
+            .unwrap();
+        let out = child.wait_with_output().unwrap();
+        Run {
+            stdout: decode(&out.stdout),
+            stderr: decode(&out.stderr),
+            code: out.status.code().unwrap_or(-1),
+        }
+    }
+
     pub fn pyenv_in(&self, dir: &Path, args: &[&str]) -> Run {
         self.run(dir, args, &[])
     }

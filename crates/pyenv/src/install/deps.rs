@@ -135,6 +135,25 @@ pub fn install_argv(m: Manager, pkgs: &[String], sudo: bool, assume_yes: bool) -
     v
 }
 
+/// `apt-get update`, for a system whose package lists are empty (M8 design §5.3).
+pub fn apt_update_argv(sudo: bool) -> Vec<String> {
+    let mut v: Vec<String> = Vec::new();
+    if sudo {
+        v.push("sudo".into());
+    }
+    v.extend(["apt-get", "update"].map(String::from));
+    v
+}
+
+/// True when `dir` (apt's `/var/lib/apt/lists`) holds a package list (`*_Packages`, possibly
+/// compressed). Minimal images have none, so `apt-get install` can't find any package.
+pub fn apt_lists_present(dir: &std::path::Path) -> bool {
+    std::fs::read_dir(dir).is_ok_and(|rd| {
+        rd.flatten()
+            .any(|e| e.file_name().to_string_lossy().contains("_Packages"))
+    })
+}
+
 pub enum SudoUse {
     Root,
     Allowed,
@@ -335,6 +354,25 @@ mod tests {
             install_argv(Manager::Dnf, &p, true, false),
             ["sudo", "dnf", "install", "libssl-dev"]
         );
+    }
+
+    #[test]
+    fn apt_update_is_its_own_command_and_lists_are_found_by_name() {
+        assert_eq!(apt_update_argv(true), ["sudo", "apt-get", "update"]);
+        assert_eq!(apt_update_argv(false), ["apt-get", "update"]);
+        let d = std::env::temp_dir().join(format!("rpyenv-lists-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        assert!(!apt_lists_present(&d));
+        std::fs::write(d.join("lock"), "").unwrap();
+        assert!(!apt_lists_present(&d));
+        std::fs::write(
+            d.join("deb.debian.org_debian_dists_bookworm_main_binary-amd64_Packages.lz4"),
+            "",
+        )
+        .unwrap();
+        assert!(apt_lists_present(&d));
+        std::fs::remove_dir_all(&d).unwrap();
+        assert!(!apt_lists_present(&d));
     }
 
     #[test]
