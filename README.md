@@ -212,7 +212,7 @@ variables. The build-dependency check and its settings are described in
 | `HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY` | Both | The proxy for rpyenv's downloads. rpyenv uses the first one set of `ALL_PROXY`, `HTTPS_PROXY` and `HTTP_PROXY`; lower-case names work too. |
 | `NO_PROXY` | Both | Hosts, separated by commas, that rpyenv's downloads reach without the proxy. Lower case works too. |
 | `RPYENV_BUILD_DEPS` | Linux | How `pyenv install` gets missing build libraries: `system`, `install`, `build` or `prebuilt`, as `--deps=` (the flag wins). With it set, rpyenv doesn't ask. |
-| `RPYENV_SKIP_PREFLIGHT` | Linux | `1` skips the dependency check before a build. A missing optional library is then a one-line warning at the end. |
+| `RPYENV_SKIP_PREFLIGHT` | Linux | `1` skips the dependency check before a build, and turns a failed check after it into a one-line warning: the build stays. |
 
 ### Virtual environments
 
