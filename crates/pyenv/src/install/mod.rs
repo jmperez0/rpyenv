@@ -20,8 +20,12 @@ pub mod openpgp;
 #[cfg(unix)]
 pub mod preflight;
 pub mod pypy;
+#[cfg(unix)]
+pub mod record;
 mod reply;
 pub mod stdlib;
+#[cfg(unix)]
+pub mod store;
 pub mod txn;
 #[cfg(unix)]
 pub mod verify;
