@@ -28,9 +28,25 @@ fn link(b: &mut tar::Builder<Vec<u8>>, top: &str, path: &str, target: &str) {
 /// `<top>.tar.bz2` bytes. With `real_pypy` false, `bin/pypy3.11` is a link to a missing file,
 /// so `bin/` has no regular `pypy*` executable.
 pub fn tarball_bz2(top: &str, real_pypy: bool) -> Vec<u8> {
+    build(top, real_pypy.then_some(PYPY))
+}
+
+/// As `tarball_bz2` with a real interpreter, but `-c "import <missing>"` fails, as `_uuid`
+/// does in the real PyPy 3.11 (M8a final review, probe P-c).
+pub fn tarball_bz2_lacking(top: &str, missing: &str) -> Vec<u8> {
+    let script = PYPY.replacen(
+        "-c) exit 0;;",
+        &format!("-c) [ \"$2\" = \"import {missing}\" ] && exit 1; exit 0;;"),
+        1,
+    );
+    assert_ne!(script, PYPY, "the -c case was not found");
+    build(top, Some(&script))
+}
+
+fn build(top: &str, pypy: Option<&str>) -> Vec<u8> {
     let mut b = tar::Builder::new(Vec::new());
-    if real_pypy {
-        file(&mut b, top, "bin/pypy3.11", PYPY.as_bytes(), 0o755);
+    if let Some(script) = pypy {
+        file(&mut b, top, "bin/pypy3.11", script.as_bytes(), 0o755);
     } else {
         link(&mut b, top, "bin/pypy3.11", "missing");
     }
