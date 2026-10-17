@@ -160,7 +160,9 @@ if [ -n "${BUILD:-}" ]; then
   if grep -q '^Building ' /tmp/build2.log; then
     grep '^Building ' /tmp/build2.log; echo "::error::$distro: a library was built again"; exit 1
   fi
-  grep -q '^Using openssl ' /tmp/build2.log || { echo "::error::$distro: OpenSSL was not reused"; exit 1; }
+  if [ "$distro" != arch ]; then   # Arch builds no OpenSSL (see above)
+    grep -q '^Using openssl ' /tmp/build2.log || { echo "::error::$distro: OpenSSL was not reused"; exit 1; }
+  fi
   # Stage B3 (Review Focus 3): the store is only a cache.
   mv "$root/cache/deps" "$root/cache/deps.off"
   imports "$v"
