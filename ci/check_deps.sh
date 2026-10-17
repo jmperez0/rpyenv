@@ -62,6 +62,17 @@ else
   esac
 fi
 
+# What "no -dev package" means on this distribution: the development packages stage 0 left.
+if [ -n "${BUILD:-}" ]; then
+  echo "== development packages installed:"
+  case "$distro" in
+    debian|ubuntu) dpkg-query -W -f '${Status} ${Package}\n' '*-dev' 2>/dev/null | awk '$3 == "installed" {print "  " $4}' || true ;;
+    fedora|rocky|tumbleweed) rpm -qa '*-devel' | sort | sed 's/^/  /' || true ;;
+    # Arch has no -dev packages: each package ships its headers.
+    arch) pacman -Qq | sed 's/^/  /' || true ;;
+  esac
+fi
+
 root="$(mktemp -d)/root"
 mkdir -p "$root"
 export PYENV_ROOT="$root"

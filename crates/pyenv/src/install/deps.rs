@@ -372,7 +372,8 @@ pub fn prompt_lines(
         }
     }
     // Only optional libraries missing: the user may build without them, as a script does,
-    // instead of being stopped (a user without sudo has no other way until M8b).
+    // instead of being stopped (for a user without sudo, the other way is `[b]`, when it can
+    // build them here).
     if continue_offered {
         out.push("  [c] continue without them (the build warns about them at the end)".into());
     }

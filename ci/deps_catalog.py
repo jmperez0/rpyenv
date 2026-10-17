@@ -126,14 +126,24 @@ def latest(lib):
     if kind == "sqlite":
         return sqlite_latest(get("https://sqlite.org/download.html"))
     if kind == "kernel":
-        base = "https://mirrors.edge.kernel.org/pub/linux/utils/util-linux/"
-        series = newest(matches(get(base), r"v(\d+\.\d+)/"))
-        v = newest(matches(get(f"{base}v{series}/"), r"util-linux-(\d+\.\d+(?:\.\d+)?)\.tar\.xz"))
-        return v, f"{base}v{series}/util-linux-{v}.tar.xz"
+        return kernel_latest(get)
     if kind == "cacert":
         d = cacert_latest(get("https://curl.se/docs/caextract.html"))
         return d, f"https://curl.se/ca/cacert-{d}.pem"
     raise ValueError(kind)
+
+
+KERNEL = "https://mirrors.edge.kernel.org/pub/linux/utils/util-linux/"
+
+
+def kernel_latest(fetch):
+    """util-linux's newest release: the newest `vX.Y/` series that holds a release tarball. A
+    series with only release candidates (`-rc1`) so far is skipped for the next lower one."""
+    for series in reversed(matches(fetch(KERNEL), r"v(\d+\.\d+)/")):
+        v = newest(matches(fetch(f"{KERNEL}v{series}/"), r"util-linux-(\d+\.\d+(?:\.\d+)?)\.tar\.xz"))
+        if v:
+            return v, f"{KERNEL}v{series}/util-linux-{v}.tar.xz"
+    return None, None
 
 
 def read_rows(text):
