@@ -37,8 +37,8 @@ with_yes() {
 detect_empty() {
   local out
   out=$(PYENV_ROOT="$(mktemp -d)" timeout 20 "$bin" install --deps=system "$v" 2>&1 </dev/null) || true
-  printf '%s\n' "$out" | head -20
-  ! printf '%s\n' "$out" | grep -q 'missing build dependencies'
+  head -20 <<<"$out"
+  ! grep -q 'missing build dependencies' <<<"$out"
 }
 
 root="$(mktemp -d)/root"
@@ -56,9 +56,9 @@ echo "$out"
 if [ "$rc" -eq 0 ]; then
   echo "::error::$distro: install succeeded with nothing installed"; exit 1
 fi
-printf '%s\n' "$out" | grep -q '^pyenv: cannot build Python: missing build dependencies:' ||
+grep -q '^pyenv: cannot build Python: missing build dependencies:' <<<"$out" ||
   { echo "::error::$distro: no missing-dependencies report"; exit 1; }
-cmd=$(printf '%s\n' "$out" | sed -n '/^Install them with:/{n;s/^  //;p;q}')
+cmd=$(sed -n '/^Install them with:/{n;s/^  //;p;q}' <<<"$out")
 [ -n "$cmd" ] || { echo "::error::$distro: no install command printed"; exit 1; }
 case "$cmd" in sudo*) echo "::error::$distro: root was told to use sudo: $cmd"; exit 1 ;; esac
 if [ "$distro" = debian ] || [ "$distro" = ubuntu ]; then
@@ -77,7 +77,7 @@ if ! eval "$(with_yes "$cmd")"; then
   hint_out=$(PYENV_ROOT="$(mktemp -d)" "$bin" install --deps=install "$v" 2>&1 </dev/null) && {
     echo "::error::rocky: --deps=install worked where the printed command failed"; exit 1; }
   echo "$hint_out"
-  hint=$(printf '%s\n' "$hint_out" | sed -n 's/^pyenv: some packages live in the CRB repository: //p' | head -1)
+  hint=$(sed -n 's/^pyenv: some packages live in the CRB repository: //p;T;q' <<<"$hint_out")
   [ -n "$hint" ] || { echo "::error::rocky: no CRB hint after a failed install"; exit 1; }
   echo "== CRB hint seen: $hint"
   dnf install -y dnf-plugins-core
@@ -98,7 +98,7 @@ if [ -n "${DISCRIMINATE:-}" ]; then
   rc=0
   out=$(PYENV_ROOT="$(mktemp -d)" timeout 20 "$bin" install --deps=system "$v" 2>&1 </dev/null) || rc=$?
   echo "$out"
-  { [ "$rc" -ne 0 ] && printf '%s\n' "$out" | grep -q '^  uuid'; } ||
+  { [ "$rc" -ne 0 ] && grep -q '^  uuid' <<<"$out"; } ||
     { echo "::error::$distro: removing uuid-dev did not make --deps=system fail naming uuid"; exit 1; }
   echo "== discriminating run: failed naming uuid, as it must"
   # Removing uuid-dev took tk-dev with it (a dependency): the printed command puts both back.

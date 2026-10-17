@@ -20,6 +20,8 @@ on:
       - ".github/workflows/install-linux.yml"
   schedule:
     - cron: "17 3 * * *"
+    # Sundays: the deps job builds on all six distributions (the other jobs skip this entry).
+    - cron: "41 4 * * 0"
   workflow_dispatch:
 
 permissions:
@@ -27,6 +29,7 @@ permissions:
 
 jobs:
   versions:
+    if: github.event.schedule != '41 4 * * 0'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     outputs:
@@ -104,6 +107,7 @@ jobs:
   # M7a design §8: a real PyPy binary install on both Linux architectures, every time the
   # Linux build runs (it compiles nothing, so it takes about a minute).
   pypy:
+    if: github.event.schedule != '41 4 * * 0'
     strategy:
       fail-fast: false
       matrix:
@@ -132,6 +136,7 @@ jobs:
   # miniforge3-latest (the publisher's .sha256 path). Anaconda's ~1 GB installer is left to the
   # tier-1 fake: its step is Miniconda's without `conda install`.
   conda:
+    if: github.event.schedule != '41 4 * * 0'
     strategy:
       fail-fast: false
       matrix:
@@ -176,8 +181,9 @@ jobs:
   # compiler and make; `pyenv install` with no flags must fail and print a package command;
   # running that command must make detection come back empty; then (full legs) `--deps=install`
   # builds a CPython whose every standard-library module imports. A pull request runs Ubuntu and
-  # Fedora in full and detection only on the other four; the scheduled run, and a manual one,
-  # build on all six. pyenv is the release's static musl build: a glibc binary from this runner
+  # Fedora in full and detection only on the other four; the Sunday run, and a manual one,
+  # build on all six; the nightly run keeps the pull request's set. pyenv is the release's
+  # static musl build: a glibc binary from this runner
   # would not start on Rocky 9.
   deps:
     runs-on: ubuntu-latest
@@ -205,7 +211,7 @@ jobs:
         env:
           IMAGE: ${{ matrix.image }}
           DISTRO: ${{ matrix.distro }}
-          FULL: ${{ matrix.full || github.event_name != 'pull_request' }}
+          FULL: ${{ matrix.full || github.event.schedule == '41 4 * * 0' || github.event_name == 'workflow_dispatch' }}
         run: |
           bin="$PWD/target/x86_64-unknown-linux-musl/release"
           args=()
