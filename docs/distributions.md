@@ -34,8 +34,8 @@ without needing a display.
 | Tk | 8.5 or 8.6 for Python 3.12 and older, which can't use Tk 9 |
 | CA certificates | A file or directory must exist. `SSL_CERT_FILE` and `SSL_CERT_DIR`, when set, are where rpyenv and the built Python look |
 
-Fedora 42 and later ship Tk 9 as `tk-devel`. To build Python 3.12 or older there, install
-`tk8-devel` instead.
+Fedora 42 and later ship Tk 9 as `tk-devel`. To build Python 3.12 or older there, rpyenv
+asks for `tk8-devel` (Tk 8.6) instead.
 
 These checks are for CPython built from source. Python 2.x, PyPy and conda keep their
 old behavior: no check before the install, and only upstream pyenv's module check after
@@ -53,8 +53,8 @@ provide them. Then you choose:
 distribution. rpyenv knows apt, dnf, zypper and pacman. Alpine comes later.
 
 On RHEL, Rocky, Alma and CentOS Stream, some `-devel` packages are in the CRB repository
-(PowerTools on version 8), which is off by default. The prompt and the printed list show
-the command that turns it on, before the `dnf install` command:
+(PowerTools on version 8), which is off by default. The prompt, the printed list and the
+summary at the end of a script's run show the command that turns it on:
 
 ```
 Some packages live in the CRB repository; enable it first: sudo dnf install dnf-plugins-core && sudo dnf config-manager --set-enabled crb
