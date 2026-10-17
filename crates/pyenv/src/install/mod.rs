@@ -98,6 +98,17 @@ pub fn interrupted() -> bool {
     INTERRUPTED.load(Ordering::SeqCst)
 }
 
+/// A child killed by SIGINT means Ctrl+C reached this process group too. Record it at once:
+/// the handler thread may not have run yet when the caller checks `interrupted()` right after
+/// the child exits (measured: CI exited 1 instead of 130 about once in three runs).
+#[cfg(unix)]
+pub fn note_child_status(status: &std::process::ExitStatus) {
+    use std::os::unix::process::ExitStatusExt;
+    if status.signal() == Some(2) {
+        INTERRUPTED.store(true, Ordering::SeqCst);
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum InstallError {
     /// Ctrl+C: roll back, then exit 130.
