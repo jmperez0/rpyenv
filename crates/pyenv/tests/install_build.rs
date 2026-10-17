@@ -223,7 +223,7 @@ fn a_missing_optional_module_warns_and_a_missing_ssl_fails_and_rolls_back() {
 ",
     );
     assert!(
-        said.contains("was built without: bz2 (import bz2 failed)"),
+        said.contains("was built without: bz2 (import bz2 failed; needs bzip2)"),
         "{said}"
     );
     let b = build(
