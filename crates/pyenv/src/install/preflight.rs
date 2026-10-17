@@ -3,12 +3,23 @@
 //! refuse the build before downloading; missing optional ones warn. Results are structured
 //! for M8 (spec §15.2).
 
+use super::stdlib;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Missing {
     Program(String),
     Header(String),
+    /// The header is there but a program using it does not link (M8 design §4.2).
+    Link(String),
+    /// Installed, below CPython's minimum: `found` is the raw version number, `need` the
+    /// minimum as people write it.
+    TooOld {
+        found: String,
+        need: &'static str,
+    },
+    Certificates,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -17,6 +28,8 @@ pub struct Dep {
     pub name: &'static str,
     pub required: bool,
     pub missing: Missing,
+    /// A `stdlib` key, or `compiler`, `make`, `patch`, `pkg-config` for programs.
+    pub lib: &'static str,
 }
 
 pub enum Probe<'a> {
@@ -141,6 +154,24 @@ fn rows(compiler: &'static str, make: &'static str) -> Vec<Row> {
     ]
 }
 
+/// The `stdlib` key (or program name) behind a row of the old table.
+fn lib_of(name: &str) -> &'static str {
+    match name {
+        "C compiler" => "compiler",
+        "make" => "make",
+        "patch" => "patch",
+        "ssl" => "openssl",
+        "zlib" => "zlib",
+        "bz2" => "bzip2",
+        "readline" => "readline",
+        "sqlite3" => "sqlite",
+        "ctypes" => "libffi",
+        "curses" => "ncurses",
+        "lzma" => "xz",
+        _ => "tk",
+    }
+}
+
 /// Which missing items there are, given a way to test each probe. `display`: tkinter is only
 /// checked by upstream when `$DISPLAY` is set, so it is only probed then.
 pub fn evaluate(present: &dyn Fn(&Probe) -> bool, needs_patch: bool, display: bool) -> Vec<Dep> {
@@ -176,6 +207,7 @@ fn evaluate_with(
                 name,
                 required,
                 missing,
+                lib: lib_of(name),
             });
         }
     }
@@ -217,7 +249,9 @@ fn manager(os_release: &str) -> Option<(usize, &'static str)> {
 fn shown(d: &Dep) -> String {
     let what = match &d.missing {
         Missing::Program(p) => p.clone(),
-        Missing::Header(h) => h.clone(),
+        Missing::Header(h) | Missing::Link(h) => h.clone(),
+        Missing::TooOld { found, need } => format!("{found}, needs {need}"),
+        Missing::Certificates => "CA certificates".to_string(),
     };
     format!("{} ({what})", d.name)
 }
@@ -392,6 +426,263 @@ pub fn check(env: &dyn Fn(&str) -> Option<String>, needs_patch: bool) -> Vec<Dep
     evaluate(&present, needs_patch, display)
 }
 
+/// `<cc> CPPFLAGS... -x c - -o <out> LDFLAGS... <libs>`: compiles and links a program that
+/// includes `header` (M8 design §4.2 item 3). `run(program, args)` runs it with the source on
+/// stdin; the caller deletes `out`.
+fn link_probe(
+    env: &dyn Fn(&str) -> Option<String>,
+    run: &dyn Fn(&str, &[&str]) -> bool,
+    header: &str,
+    libs: &[&str],
+    out: &str,
+) -> bool {
+    let cc = env("CC")
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "cc".into());
+    let words = |k: &str| {
+        env(k)
+            .map(|v| v.split_whitespace().map(str::to_string).collect::<Vec<_>>())
+            .unwrap_or_default()
+    };
+    let mut args: Vec<String> = Vec::new();
+    args.extend(words("CPPFLAGS"));
+    args.extend(words("PYTHON_CPPFLAGS"));
+    args.extend(["-x".into(), "c".into(), "-".into(), "-o".into(), out.into()]);
+    args.extend(words("LDFLAGS"));
+    args.extend(words("PYTHON_LDFLAGS"));
+    args.extend(libs.iter().map(|l| l.to_string()));
+    let _ = header; // the source text is passed by `run`
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    run(&cc, &refs)
+}
+
+/// The number a version macro expands to: the last non-empty, non-`#` line, hex or decimal,
+/// with C suffixes (`L`, `UL`) dropped.
+pub(crate) fn parse_version(preprocessed: &str) -> Option<u64> {
+    let last = preprocessed
+        .lines()
+        .map(str::trim)
+        .rfind(|l| !l.is_empty() && !l.starts_with('#'))?;
+    let digits = last.trim_end_matches(['L', 'l', 'U', 'u']);
+    match digits
+        .strip_prefix("0x")
+        .or_else(|| digits.strip_prefix("0X"))
+    {
+        Some(h) => u64::from_str_radix(h, 16).ok(),
+        None => digits.parse().ok(),
+    }
+}
+
+fn too_old(
+    name: &'static str,
+    lib: &'static str,
+    found: u64,
+    need: &stdlib::MinVersion,
+) -> Option<Dep> {
+    (found < need.need).then(|| Dep {
+        name,
+        required: true,
+        missing: Missing::TooOld {
+            found: format!("{found:#x}"),
+            need: need.shown,
+        },
+        lib,
+    })
+}
+
+/// CA certificates where the system's OpenSSL looks (`openssl version -d`), else the
+/// distributions' bundle files (M8 design §4.3).
+pub(crate) fn ca_present(
+    openssldir: Option<&str>,
+    exists: &dyn Fn(&str) -> bool,
+    has_files: &dyn Fn(&str) -> bool,
+) -> bool {
+    if let Some(d) = openssldir {
+        if exists(&format!("{d}/cert.pem")) || has_files(&format!("{d}/certs")) {
+            return true;
+        }
+    }
+    [
+        "/etc/ssl/certs/ca-certificates.crt",
+        "/etc/pki/tls/certs/ca-bundle.crt",
+        "/etc/ssl/ca-bundle.pem",
+        "/etc/ssl/cert.pem",
+    ]
+    .iter()
+    .any(|p| exists(p))
+}
+
+/// A fresh output path for one link probe: unique per process and per call, so parallel
+/// probes (and parallel tests) never share a file.
+fn probe_path() -> std::path::PathBuf {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    std::env::temp_dir().join(format!(
+        "rpyenv-probe-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ))
+}
+
+/// CPython 3.`minor` (M8 design §4): programs as `check`, then every module of the table:
+/// header, link, minimum version; then CA certificates. Every item is required (spec D1).
+/// Debug builds: `RPYENV_TEST_PREFLIGHT` lists the library keys to report missing instead.
+pub fn check3(env: &dyn Fn(&str) -> Option<String>, needs_patch: bool, minor: u32) -> Vec<Dep> {
+    if cfg!(debug_assertions) {
+        if let Some(list) = env("RPYENV_TEST_PREFLIGHT") {
+            let keys: Vec<&str> = list
+                .split(',')
+                .map(str::trim)
+                .filter(|k| !k.is_empty())
+                .collect();
+            let mut out = Vec::new();
+            for k in keys {
+                let name = stdlib::modules(minor)
+                    .iter()
+                    .find(|m| m.lib == k)
+                    .map(|m| m.name)
+                    .unwrap_or(match k {
+                        stdlib::CA_KEY => "ssl certificates",
+                        _ => "build tools",
+                    });
+                let lib = stdlib::lib(k).map(|l| l.key).unwrap_or("compiler");
+                out.push(Dep {
+                    name,
+                    required: true,
+                    missing: Missing::Header(k.to_string()),
+                    lib,
+                });
+            }
+            return out;
+        }
+    }
+    // Programs first, exactly as `check` (a missing compiler hides the rest).
+    let mut out: Vec<Dep> = check(env, needs_patch)
+        .into_iter()
+        .filter(|d| matches!(d.missing, Missing::Program(_)))
+        .map(|d| Dep {
+            required: true,
+            ..d
+        })
+        .collect();
+    if out.iter().any(|d| d.lib == "compiler") {
+        return out;
+    }
+    let path = env("PATH");
+    let runs_with_input =
+        |program: &str, args: &[&str], input: &str, capture: bool| -> Option<(bool, String)> {
+            let mut words = program.split_whitespace();
+            let mut c = Command::new(words.next()?);
+            c.args(words).args(args);
+            if let Some(p) = &path {
+                c.env("PATH", p);
+            }
+            c.stdin(Stdio::piped())
+                .stdout(if capture {
+                    Stdio::piped()
+                } else {
+                    Stdio::null()
+                })
+                .stderr(Stdio::null());
+            let mut child = c.spawn().ok()?;
+            if let Some(mut s) = child.stdin.take() {
+                use std::io::Write;
+                let _ = s.write_all(input.as_bytes());
+            }
+            let o = child.wait_with_output().ok()?;
+            Some((
+                o.status.success(),
+                String::from_utf8_lossy(&o.stdout).into_owned(),
+            ))
+        };
+    if runs_with_input("pkg-config", &["--version"], "", false).is_none_or(|(ok, _)| !ok) {
+        out.push(Dep {
+            name: "pkg-config",
+            required: true,
+            missing: Missing::Program("pkg-config".into()),
+            lib: "pkg-config",
+        });
+    }
+    for m in stdlib::modules(minor) {
+        let Some(l) = stdlib::lib(m.lib) else {
+            continue;
+        };
+        if l.key == stdlib::CA_KEY || out.iter().any(|d| d.lib == l.key) {
+            continue;
+        }
+        let pc = l
+            .pkg_config
+            .and_then(|p| runs_with_input("pkg-config", &["--cflags", "--libs", p], "", true))
+            .filter(|(ok, _)| *ok)
+            .map(|(_, s)| s);
+        let mut found = false;
+        'h: for h in l.headers {
+            let src = format!("#include <{h}>\nint main(void) {{ return 0; }}\n");
+            let mut alts: Vec<Vec<String>> = l
+                .links
+                .iter()
+                .map(|a| a.iter().map(|s| s.to_string()).collect())
+                .collect();
+            if let Some(flags) = &pc {
+                alts.insert(0, flags.split_whitespace().map(str::to_string).collect());
+            }
+            for alt in &alts {
+                let libs: Vec<&str> = alt.iter().map(String::as_str).collect();
+                let tmp = probe_path();
+                let linked = link_probe(
+                    env,
+                    &|p, a| runs_with_input(p, a, &src, false).is_some_and(|(ok, _)| ok),
+                    h,
+                    &libs,
+                    &tmp.display().to_string(),
+                );
+                let _ = std::fs::remove_file(&tmp);
+                if linked {
+                    found = true;
+                    break 'h;
+                }
+            }
+        }
+        if !found {
+            out.push(Dep {
+                name: m.name,
+                required: true,
+                missing: Missing::Link(l.headers[0].to_string()),
+                lib: l.key,
+            });
+            continue;
+        }
+        if let Some(need) = stdlib::min_version(l.key, minor) {
+            let src = format!("#include <{}>\n{}\n", need.header, need.expr);
+            let cc = env("CC")
+                .filter(|v| !v.is_empty())
+                .unwrap_or_else(|| "cc".into());
+            let v = runs_with_input(&cc, &["-E", "-P", "-x", "c", "-"], &src, true)
+                .and_then(|(ok, s)| ok.then_some(s))
+                .and_then(|s| parse_version(&s));
+            if let Some(d) = v.and_then(|v| too_old(m.name, l.key, v, &need)) {
+                out.push(d);
+            }
+        }
+    }
+    let dir = runs_with_input("openssl", &["version", "-d"], "", true)
+        .and_then(|(ok, s)| ok.then_some(s))
+        .and_then(|s| s.split('"').nth(1).map(str::to_string));
+    let has_files = |d: &str| std::fs::read_dir(d).is_ok_and(|mut r| r.next().is_some());
+    if !ca_present(
+        dir.as_deref(),
+        &|p| std::path::Path::new(p).is_file(),
+        &has_files,
+    ) {
+        out.push(Dep {
+            name: "ssl certificates",
+            required: true,
+            missing: Missing::Certificates,
+            lib: stdlib::CA_KEY,
+        });
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -424,7 +715,8 @@ mod tests {
             vec![Dep {
                 name: "ssl",
                 required: true,
-                missing: Missing::Header("openssl/ssl.h".into())
+                missing: Missing::Header("openssl/ssl.h".into()),
+                lib: "openssl"
             }]
         );
         let r = report(&deps, Some(DEBIAN), false);
@@ -540,6 +832,110 @@ mod tests {
     }
 
     #[test]
+    fn version_macros_parse_in_hex_and_decimal() {
+        assert_eq!(
+            parse_version("# 1 \"x\"\n\n0x30000020L\n"),
+            Some(0x3000_0020)
+        );
+        assert_eq!(parse_version("3045001\n"), Some(3_045_001));
+        assert_eq!(parse_version("OPENSSL_VERSION_NUMBER\n"), None);
+    }
+
+    #[test]
+    fn ca_certificates_are_found_as_a_file_or_a_directory() {
+        let none = |_: &str| false;
+        assert!(ca_present(
+            Some("/usr/lib/ssl"),
+            &|p| p == "/usr/lib/ssl/cert.pem",
+            &none
+        ));
+        assert!(ca_present(Some("/usr/lib/ssl"), &none, &|d| d == "/usr/lib/ssl/certs"));
+        // No openssl binary: the distributions' bundle paths.
+        assert!(ca_present(
+            None,
+            &|p| p == "/etc/pki/tls/certs/ca-bundle.crt",
+            &none
+        ));
+        assert!(!ca_present(Some("/usr/lib/ssl"), &none, &none));
+    }
+
+    /// Review focus 4: a compiler wrapper and custom flags reach the link probe.
+    #[test]
+    fn the_link_probe_passes_cppflags_and_ldflags() {
+        let seen = std::cell::RefCell::new(Vec::<Vec<String>>::new());
+        let run = |program: &str, args: &[&str]| -> bool {
+            seen.borrow_mut().push(
+                std::iter::once(program.to_string())
+                    .chain(args.iter().map(|a| a.to_string()))
+                    .collect(),
+            );
+            true
+        };
+        let env = |k: &str| match k {
+            "CC" => Some("ccache gcc".to_string()),
+            "CPPFLAGS" => Some("-I/opt/x/include".to_string()),
+            "LDFLAGS" => Some("-L/opt/x/lib".to_string()),
+            _ => None,
+        };
+        assert!(link_probe(&env, &run, "zlib.h", &["-lz"], "/tmp/out"));
+        let call = &seen.borrow()[0];
+        assert_eq!(call[0], "ccache gcc");
+        for want in ["-I/opt/x/include", "-L/opt/x/lib", "-lz", "-o", "/tmp/out"] {
+            assert!(
+                call.iter().any(|a| a == want),
+                "{want} missing from {call:?}"
+            );
+        }
+        // Libraries after the source, as linkers need.
+        let src = call.iter().position(|a| a == "-").unwrap();
+        assert!(call.iter().position(|a| a == "-lz").unwrap() > src);
+    }
+
+    #[test]
+    fn the_test_hook_reports_exactly_the_listed_libraries() {
+        let env = |k: &str| match k {
+            "RPYENV_TEST_PREFLIGHT" => Some("openssl,libuuid".to_string()),
+            _ => None,
+        };
+        let deps = check3(&env, false, 12);
+        let libs: Vec<&str> = deps.iter().map(|d| d.lib).collect();
+        assert_eq!(libs, ["openssl", "libuuid"]);
+        assert!(deps.iter().all(|d| d.required));
+        assert_eq!(deps[0].name, "ssl");
+        let none = |k: &str| (k == "RPYENV_TEST_PREFLIGHT").then(String::new);
+        assert!(check3(&none, false, 12).is_empty());
+    }
+
+    #[test]
+    fn a_too_old_library_is_reported_with_both_versions() {
+        let d = too_old(
+            "ssl",
+            "openssl",
+            0x1000_2000,
+            &crate::install::stdlib::min_version("openssl", 13).unwrap(),
+        );
+        assert_eq!(
+            d.unwrap().missing,
+            Missing::TooOld {
+                found: "0x10002000".into(),
+                need: "1.1.1"
+            }
+        );
+        assert!(too_old(
+            "ssl",
+            "openssl",
+            0x3000_0000,
+            &crate::install::stdlib::min_version("openssl", 13).unwrap()
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn probe_files_are_unique_per_call() {
+        assert_ne!(probe_path(), probe_path());
+    }
+
+    #[test]
     #[ignore = "probes this machine; run by hand"]
     fn probe_this_machine() {
         let env = |k: &str| std::env::var(k).ok();
@@ -549,5 +945,8 @@ mod tests {
             eprintln!("{l}");
         }
         eprintln!("{deps:?}");
+        for minor in [13, 14] {
+            eprintln!("check3 3.{minor}: {:#?}", check3(&env, true, minor));
+        }
     }
 }
