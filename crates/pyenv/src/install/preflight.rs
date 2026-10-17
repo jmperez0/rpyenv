@@ -168,7 +168,8 @@ fn lib_of(name: &str) -> &'static str {
         "ctypes" => "libffi",
         "curses" => "ncurses",
         "lzma" => "xz",
-        _ => "tk",
+        "tkinter" => "tk",
+        _ => unreachable!("lib_of: no library for the old-table row {name:?}"),
     }
 }
 
@@ -456,34 +457,93 @@ fn link_probe(
     run(&cc, &refs)
 }
 
-/// The number a version macro expands to: the last non-empty, non-`#` line, hex or decimal,
-/// with C suffixes (`L`, `UL`) dropped.
-pub(crate) fn parse_version(preprocessed: &str) -> Option<u64> {
-    let last = preprocessed
-        .lines()
-        .map(str::trim)
-        .rfind(|l| !l.is_empty() && !l.starts_with('#'))?;
-    let digits = last.trim_end_matches(['L', 'l', 'U', 'u']);
-    match digits
-        .strip_prefix("0x")
-        .or_else(|| digits.strip_prefix("0X"))
-    {
-        Some(h) => u64::from_str_radix(h, 16).ok(),
-        None => digits.parse().ok(),
-    }
+/// The program a version check compiles (R6): the preprocessor evaluates the macro, so
+/// OpenSSL 3's `( (3<<28) |(5<<20) ... )` is compared correctly. A failed `#error` means the
+/// library is older than `need`.
+fn version_source(need: &stdlib::MinVersion) -> String {
+    format!(
+        "#include <{}>\n#if {} < {:#x}\n#error too old\n#endif\n",
+        need.header, need.expr, need.need
+    )
 }
 
-fn too_old(
+/// The source that prints the installed version's text: one line per macro of `need.text`.
+fn version_text_source(need: &stdlib::MinVersion) -> String {
+    let mut src = format!("#include <{}>\n", need.header);
+    for name in need.text.split(' ') {
+        src.push_str(name);
+        src.push('\n');
+    }
+    src
+}
+
+/// The readable version out of the preprocessed `version_text_source`: the quoted text of a
+/// string macro (OpenSSL's `"OpenSSL 3.5.5 30 Sep 2026"` gives `3.5.5`), or the `names`
+/// integers joined with dots.
+fn readable_version(preprocessed: &str, names: usize) -> Option<String> {
+    let lines: Vec<&str> = preprocessed
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .collect();
+    let tail = lines.get(lines.len().checked_sub(names)?..)?;
+    if names == 1 {
+        let line = tail[0];
+        let inner = line.get(line.find('"')? + 1..line.rfind('"')?)?;
+        let inner = inner.strip_prefix("OpenSSL ").unwrap_or(inner);
+        let word = inner.split_whitespace().next()?;
+        return Some(word.to_string());
+    }
+    let parts: Vec<String> = tail
+        .iter()
+        .map(|l| l.parse::<u64>().ok().map(|n| n.to_string()))
+        .collect::<Option<_>>()?;
+    Some(parts.join("."))
+}
+
+type Runner<'a> = &'a dyn Fn(&str, &[&str], &str, bool) -> Option<(bool, String)>;
+
+/// Whether the installed library meets `need` (R6): `Some(Dep)` only when the header
+/// compiles on its own but the `#if` version test fails. `run(program, args, stdin, capture)`.
+fn version_verdict(
+    env: &dyn Fn(&str) -> Option<String>,
+    run: Runner,
     name: &'static str,
     lib: &'static str,
-    found: u64,
     need: &stdlib::MinVersion,
 ) -> Option<Dep> {
-    (found < need.need).then(|| Dep {
+    let cc = env("CC")
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "cc".into());
+    let flags: Vec<String> = ["CPPFLAGS", "PYTHON_CPPFLAGS"]
+        .iter()
+        .filter_map(|k| env(k))
+        .flat_map(|v| v.split_whitespace().map(str::to_string).collect::<Vec<_>>())
+        .collect();
+    let compile = |mode: &[&str], src: &str, capture: bool| {
+        let mut args: Vec<&str> = flags.iter().map(String::as_str).collect();
+        args.extend(mode);
+        args.extend(["-x", "c", "-"]);
+        run(&cc, &args, src, capture)
+    };
+    let ok = |r: Option<(bool, String)>| r.is_some_and(|(ok, _)| ok);
+    if ok(compile(&["-fsyntax-only"], &version_source(need), false)) {
+        return None;
+    }
+    // The header must be includable, or the failure says nothing about the version.
+    let include = format!("#include <{}>\n", need.header);
+    if !ok(compile(&["-fsyntax-only"], &include, false)) {
+        return None;
+    }
+    let found = compile(&["-E", "-P"], &version_text_source(need), true)
+        .and_then(|(ok, s)| ok.then_some(s))
+        .and_then(|s| readable_version(&s, need.text.split(' ').count()))
+        .unwrap_or_else(|| "an older version".to_string());
+    Some(Dep {
         name,
         required: true,
         missing: Missing::TooOld {
-            found: format!("{found:#x}"),
+            found,
             need: need.shown,
         },
         lib,
@@ -512,6 +572,40 @@ pub(crate) fn ca_present(
     .any(|p| exists(p))
 }
 
+/// Runs `program` (its words split, as `$CC` may be `ccache gcc`) with `input` on stdin;
+/// `(success, stdout)` when it could be started. Stderr is dropped.
+fn run_with_input(
+    path: Option<&str>,
+    program: &str,
+    args: &[&str],
+    input: &str,
+    capture: bool,
+) -> Option<(bool, String)> {
+    let mut words = program.split_whitespace();
+    let mut c = Command::new(words.next()?);
+    c.args(words).args(args);
+    if let Some(p) = path {
+        c.env("PATH", p);
+    }
+    c.stdin(Stdio::piped())
+        .stdout(if capture {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stderr(Stdio::null());
+    let mut child = c.spawn().ok()?;
+    if let Some(mut s) = child.stdin.take() {
+        use std::io::Write;
+        let _ = s.write_all(input.as_bytes());
+    }
+    let o = child.wait_with_output().ok()?;
+    Some((
+        o.status.success(),
+        String::from_utf8_lossy(&o.stdout).into_owned(),
+    ))
+}
+
 /// A fresh output path for one link probe: unique per process and per call, so parallel
 /// probes (and parallel tests) never share a file.
 fn probe_path() -> std::path::PathBuf {
@@ -536,20 +630,34 @@ pub fn check3(env: &dyn Fn(&str) -> Option<String>, needs_patch: bool, minor: u3
                 .collect();
             let mut out = Vec::new();
             for k in keys {
+                let program = match k {
+                    "compiler" => Some(("C compiler", "compiler", "cc")),
+                    "make" => Some(("make", "make", "make")),
+                    "patch" => Some(("patch", "patch", "patch")),
+                    "pkg-config" => Some(("pkg-config", "pkg-config", "pkg-config")),
+                    _ => None,
+                };
+                if let Some((name, lib, prog)) = program {
+                    out.push(Dep {
+                        name,
+                        required: true,
+                        missing: Missing::Program(prog.to_string()),
+                        lib,
+                    });
+                    continue;
+                }
+                let Some(l) = stdlib::lib(k) else {
+                    panic!("RPYENV_TEST_PREFLIGHT: unknown key {k:?} (a stdlib library key, compiler, make, patch or pkg-config)");
+                };
                 let name = stdlib::modules(minor)
                     .iter()
                     .find(|m| m.lib == k)
-                    .map(|m| m.name)
-                    .unwrap_or(match k {
-                        stdlib::CA_KEY => "ssl certificates",
-                        _ => "build tools",
-                    });
-                let lib = stdlib::lib(k).map(|l| l.key).unwrap_or("compiler");
+                    .map_or("ssl certificates", |m| m.name);
                 out.push(Dep {
                     name,
                     required: true,
                     missing: Missing::Header(k.to_string()),
-                    lib,
+                    lib: l.key,
                 });
             }
             return out;
@@ -570,29 +678,7 @@ pub fn check3(env: &dyn Fn(&str) -> Option<String>, needs_patch: bool, minor: u3
     let path = env("PATH");
     let runs_with_input =
         |program: &str, args: &[&str], input: &str, capture: bool| -> Option<(bool, String)> {
-            let mut words = program.split_whitespace();
-            let mut c = Command::new(words.next()?);
-            c.args(words).args(args);
-            if let Some(p) = &path {
-                c.env("PATH", p);
-            }
-            c.stdin(Stdio::piped())
-                .stdout(if capture {
-                    Stdio::piped()
-                } else {
-                    Stdio::null()
-                })
-                .stderr(Stdio::null());
-            let mut child = c.spawn().ok()?;
-            if let Some(mut s) = child.stdin.take() {
-                use std::io::Write;
-                let _ = s.write_all(input.as_bytes());
-            }
-            let o = child.wait_with_output().ok()?;
-            Some((
-                o.status.success(),
-                String::from_utf8_lossy(&o.stdout).into_owned(),
-            ))
+            run_with_input(path.as_deref(), program, args, input, capture)
         };
     if runs_with_input("pkg-config", &["--version"], "", false).is_none_or(|(ok, _)| !ok) {
         out.push(Dep {
@@ -652,16 +738,7 @@ pub fn check3(env: &dyn Fn(&str) -> Option<String>, needs_patch: bool, minor: u3
             continue;
         }
         if let Some(need) = stdlib::min_version(l.key, minor) {
-            let src = format!("#include <{}>\n{}\n", need.header, need.expr);
-            let cc = env("CC")
-                .filter(|v| !v.is_empty())
-                .unwrap_or_else(|| "cc".into());
-            let v = runs_with_input(&cc, &["-E", "-P", "-x", "c", "-"], &src, true)
-                .and_then(|(ok, s)| ok.then_some(s))
-                .and_then(|s| parse_version(&s));
-            if let Some(d) = v.and_then(|v| too_old(m.name, l.key, v, &need)) {
-                out.push(d);
-            }
+            out.extend(version_verdict(env, &runs_with_input, m.name, l.key, &need));
         }
     }
     let dir = runs_with_input("openssl", &["version", "-d"], "", true)
@@ -832,16 +909,6 @@ mod tests {
     }
 
     #[test]
-    fn version_macros_parse_in_hex_and_decimal() {
-        assert_eq!(
-            parse_version("# 1 \"x\"\n\n0x30000020L\n"),
-            Some(0x3000_0020)
-        );
-        assert_eq!(parse_version("3045001\n"), Some(3_045_001));
-        assert_eq!(parse_version("OPENSSL_VERSION_NUMBER\n"), None);
-    }
-
-    #[test]
     fn ca_certificates_are_found_as_a_file_or_a_directory() {
         let none = |_: &str| false;
         assert!(ca_present(
@@ -907,27 +974,114 @@ mod tests {
     }
 
     #[test]
-    fn a_too_old_library_is_reported_with_both_versions() {
-        let d = too_old(
-            "ssl",
-            "openssl",
-            0x1000_2000,
-            &crate::install::stdlib::min_version("openssl", 13).unwrap(),
+    fn the_version_test_is_an_if_on_the_macro() {
+        let need = crate::install::stdlib::min_version("openssl", 13).unwrap();
+        let src = version_source(&need);
+        assert!(
+            src.contains(
+                "#include <openssl/opensslv.h>\n#if OPENSSL_VERSION_NUMBER < 0x1010100f\n#error"
+            ),
+            "{src}"
+        );
+    }
+
+    #[test]
+    fn readable_versions_come_from_the_string_macros() {
+        assert_eq!(
+            readable_version("# 1 \"x\"\n\"OpenSSL 3.5.5 30 Sep 2026\"\n", 1).as_deref(),
+            Some("3.5.5")
         );
         assert_eq!(
-            d.unwrap().missing,
+            readable_version("\"3.45.1\"\n", 1).as_deref(),
+            Some("3.45.1")
+        );
+        assert_eq!(readable_version("1\n5\n5\n", 3).as_deref(), Some("1.5.5"));
+        assert_eq!(readable_version("OPENSSL_VERSION_TEXT\n", 1), None);
+        assert_eq!(readable_version("", 1), None);
+    }
+
+    /// A fake compiler: `#error` programs fail when `old`; `-E` prints OpenSSL 3.5.5's text.
+    fn fake_cc(
+        old: bool,
+        includable: bool,
+    ) -> impl Fn(&str, &[&str], &str, bool) -> Option<(bool, String)> {
+        move |_, args, src, _| {
+            if args.contains(&"-E") {
+                return Some((true, "\"OpenSSL 3.5.5 30 Sep 2026\"\n".into()));
+            }
+            Some((
+                includable && !(old && src.contains("#error")),
+                String::new(),
+            ))
+        }
+    }
+
+    #[test]
+    fn a_too_old_library_is_reported_with_both_versions() {
+        let need = crate::install::stdlib::min_version("openssl", 13).unwrap();
+        let env = |_: &str| None;
+        let d = version_verdict(&env, &fake_cc(true, true), "ssl", "openssl", &need).unwrap();
+        assert_eq!(
+            d.missing,
             Missing::TooOld {
-                found: "0x10002000".into(),
+                found: "3.5.5".into(),
                 need: "1.1.1"
             }
         );
-        assert!(too_old(
-            "ssl",
-            "openssl",
-            0x3000_0000,
-            &crate::install::stdlib::min_version("openssl", 13).unwrap()
-        )
-        .is_none());
+        assert!(version_verdict(&env, &fake_cc(false, true), "ssl", "openssl", &need).is_none());
+        // A header that does not compile at all is not "too old".
+        assert!(version_verdict(&env, &fake_cc(true, false), "ssl", "openssl", &need).is_none());
+    }
+
+    #[test]
+    fn the_version_test_gets_the_compiler_words_and_cppflags() {
+        let seen = std::cell::RefCell::new(Vec::<(String, Vec<String>)>::new());
+        let run = |p: &str, a: &[&str], _: &str, _: bool| {
+            seen.borrow_mut()
+                .push((p.to_string(), a.iter().map(|s| s.to_string()).collect()));
+            Some((true, String::new()))
+        };
+        let env = |k: &str| match k {
+            "CC" => Some("ccache gcc".to_string()),
+            "CPPFLAGS" => Some("-I/opt/x/include".to_string()),
+            _ => None,
+        };
+        let need = crate::install::stdlib::min_version("openssl", 13).unwrap();
+        assert!(version_verdict(&env, &run, "ssl", "openssl", &need).is_none());
+        let (prog, args) = &seen.borrow()[0];
+        assert_eq!(prog, "ccache gcc");
+        assert!(
+            args.contains(&"-I/opt/x/include".to_string())
+                && args.contains(&"-fsyntax-only".to_string())
+        );
+    }
+
+    #[test]
+    fn the_test_hook_knows_program_keys() {
+        let env = |k: &str| {
+            (k == "RPYENV_TEST_PREFLIGHT").then(|| "make,pkg-config,compiler".to_string())
+        };
+        let deps = check3(&env, false, 12);
+        let got: Vec<(&str, &str)> = deps.iter().map(|d| (d.name, d.lib)).collect();
+        assert_eq!(
+            got,
+            [
+                ("make", "make"),
+                ("pkg-config", "pkg-config"),
+                ("C compiler", "compiler")
+            ]
+        );
+        assert!(deps
+            .iter()
+            .all(|d| matches!(d.missing, Missing::Program(_))));
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "unknown key")]
+    fn the_test_hook_rejects_a_typo() {
+        let env = |k: &str| (k == "RPYENV_TEST_PREFLIGHT").then(|| "opnssl".to_string());
+        check3(&env, false, 12);
     }
 
     #[test]
@@ -945,6 +1099,26 @@ mod tests {
             eprintln!("{l}");
         }
         eprintln!("{deps:?}");
+        // R6: the version decision on the real headers. A need above the real version must
+        // come back TooOld with the real version; the real minimum must pass.
+        let run = |p: &str, a: &[&str], i: &str, c: bool| run_with_input(None, p, a, i, c);
+        let real = stdlib::min_version("openssl", 13).unwrap();
+        let future = stdlib::MinVersion {
+            need: 0x4000_0000,
+            shown: "4.0.0",
+            ..real
+        };
+        let verdict = version_verdict(&env, &run, "ssl", "openssl", &future);
+        eprintln!("openssl need 4.0.0: {verdict:?}");
+        let real = stdlib::min_version("openssl", 13).unwrap();
+        eprintln!(
+            "openssl need 1.1.1: {:?}",
+            version_verdict(&env, &run, "ssl", "openssl", &real)
+        );
+        match verdict.map(|d| d.missing) {
+            Some(Missing::TooOld { found, .. }) => assert!(found.starts_with("3."), "{found}"),
+            other => panic!("expected TooOld, got {other:?}"),
+        }
         for minor in [13, 14] {
             eprintln!("check3 3.{minor}: {:#?}", check3(&env, true, minor));
         }
