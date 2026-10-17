@@ -223,13 +223,14 @@ impl Plan {
         } else {
             String::new()
         };
-        // The store's flags come after the user's own (plan ruling P8).
+        let ldflags = join(&[&format!("-L{p}/lib"), &rpath, &user_ld]);
+        let libs = join(&[&format!("-L{p}/lib"), &rpath, &var("LIBS")]);
+        let cppflags = join(&[&format!("-I{p}/include"), &var("CPPFLAGS")]);
+        // The store's flags come after every flag of the user's, `PYTHON_` variants included
+        // (plan ruling P8): the compiler and linker take the first match.
         let store = job.store;
         let store_ld = store.map(|s| s.ldflags.join(" ")).unwrap_or_default();
         let store_cpp = store.map(|s| s.cppflags.join(" ")).unwrap_or_default();
-        let ldflags = join(&[&format!("-L{p}/lib"), &rpath, &user_ld, &store_ld]);
-        let libs = join(&[&format!("-L{p}/lib"), &rpath, &var("LIBS")]);
-        let cppflags = join(&[&format!("-I{p}/include"), &var("CPPFLAGS"), &store_cpp]);
         let py_cflags = if job.opts.debug {
             format!("-O0 {}", var("PYTHON_CFLAGS"))
         } else {
@@ -246,10 +247,15 @@ impl Plan {
         }
         configure_env.push((
             "CPPFLAGS".into(),
-            join(&[&cppflags, &var("PYTHON_CPPFLAGS")]),
+            join(&[&cppflags, &var("PYTHON_CPPFLAGS"), &store_cpp]),
         ));
-        configure_env.push(("LDFLAGS".into(), join(&[&ldflags, &var("PYTHON_LDFLAGS")])));
+        configure_env.push((
+            "LDFLAGS".into(),
+            join(&[&ldflags, &var("PYTHON_LDFLAGS"), &store_ld]),
+        ));
         let mut child_env = env.to_vec();
+        let cppflags = join(&[&cppflags, &store_cpp]);
+        let ldflags = join(&[&ldflags, &store_ld]);
         for (k, v) in [("CPPFLAGS", cppflags), ("LDFLAGS", ldflags), ("LIBS", libs)] {
             child_env.push((k.into(), v.into()));
         }
@@ -1391,6 +1397,101 @@ mod tests {
         }
     }
 
+    /// Plan ruling P8: every flag of the user's, `PYTHON_CPPFLAGS` and `PYTHON_LDFLAGS`
+    /// included, comes before the store's (the compiler and linker take the first match); the
+    /// store's configure arguments come before the user's options; the store's pkg-config
+    /// folders and pkgconf's `bin/` come first.
+    #[test]
+    fn the_users_flags_come_before_the_stores() {
+        let found = Found {
+            name: "3.12.99".into(),
+            text: String::new(),
+            origin: Origin::Builtin,
+        };
+        let definition = Definition::default();
+        let env: Vec<(OsString, OsString)> = [
+            ("CPPFLAGS", "-I/user/cpp"),
+            ("PYTHON_CPPFLAGS", "-I/user/pycpp"),
+            ("LDFLAGS", "-L/user/ld"),
+            ("PYTHON_LDFLAGS", "-L/user/pyld"),
+            ("CONFIGURE_OPTS", "--user-conf"),
+            ("PYTHON_CONFIGURE_OPTS", "--user-pyconf"),
+            ("PKG_CONFIG_PATH", "/user/pc"),
+            ("PATH", "/usr/bin"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.into(), v.into()))
+        .collect();
+        let store = super::super::store::Linked {
+            entries: Vec::new(),
+            cppflags: vec!["-I/store/inc".into()],
+            ldflags: vec!["-L/store/lib".into()],
+            pkg_config_path: vec![PathBuf::from("/store/pc")],
+            path: Some(PathBuf::from("/store/bin")),
+            configure: vec!["--with-openssl=/store/ssl".into()],
+            configure_env: Vec::new(),
+            scripts: Vec::new(),
+        };
+        let fetcher = Fetcher::from_env(&|_| None, None);
+        let job = Job {
+            found: &found,
+            definition: &definition,
+            prefix: PathBuf::from("/r/versions/3.12.99"),
+            opts: Options {
+                keep: false,
+                verbose: false,
+                debug: false,
+                stdin_patch: None,
+            },
+            env: &env,
+            fetcher: &fetcher,
+            store: Some(&store),
+        };
+        let plan = Plan::new(&job, job.prefix.clone()).unwrap();
+        let conf = |k: &str| {
+            plan.configure_env
+                .iter()
+                .rev()
+                .find(|(n, _)| n == k)
+                .map(|(_, v)| v.clone())
+                .unwrap_or_default()
+        };
+        let p = "/r/versions/3.12.99";
+        assert_eq!(
+            conf("CPPFLAGS"),
+            format!("-I{p}/include -I/user/cpp -I/user/pycpp -I/store/inc")
+        );
+        assert_eq!(
+            conf("LDFLAGS"),
+            format!("-L{p}/lib -Wl,-rpath,{p}/lib -L/user/ld -L/user/pyld -L/store/lib")
+        );
+        // The children's environment has no `PYTHON_` variants; the store still comes last.
+        assert_eq!(
+            get(&plan.env, "CPPFLAGS").unwrap(),
+            format!("-I{p}/include -I/user/cpp -I/store/inc")
+        );
+        assert_eq!(
+            get(&plan.env, "LDFLAGS").unwrap(),
+            format!("-L{p}/lib -Wl,-rpath,{p}/lib -L/user/ld -L/store/lib")
+        );
+        let at = |a: &str| plan.configure.iter().position(|x| x == a).unwrap();
+        assert!(
+            at("--with-openssl=/store/ssl") < at("--user-conf"),
+            "{:?}",
+            plan.configure
+        );
+        assert!(
+            at("--user-conf") < at("--user-pyconf"),
+            "{:?}",
+            plan.configure
+        );
+        assert_eq!(
+            get(&plan.env, "PKG_CONFIG_PATH").unwrap(),
+            "/store/pc:/user/pc"
+        );
+        assert_eq!(get(&plan.env, "PATH").unwrap(), "/store/bin:/usr/bin");
+    }
+
     /// M8 design §4.4's last clause, deferred from M8a: when the build route supplied Tcl/Tk,
     /// Tcl's `info library` must lie inside the version.
     #[test]
@@ -1399,13 +1500,7 @@ mod tests {
         let says = |lib: &'static str| {
             move |args: &[&str]| -> (bool, String) {
                 if args[1].contains("tkinter.Tcl") {
-                    (
-                        true,
-                        format!(
-                            "{lib}
-"
-                        ),
-                    )
+                    (true, format!("{lib}\n"))
                 } else {
                     (true, String::new())
                 }
