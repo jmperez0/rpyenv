@@ -110,6 +110,7 @@ How should rpyenv get them?
   [i] install with sudo: sudo apt-get install libssl-dev tk-dev uuid-dev
   [b] build them from source for rpyenv, no root
   [s] use a prebuilt CPython instead
+  [c] continue without them (the build warns about them at the end)
 ```
 
 - **`p`** prints the commands and exits as today. Enter chooses it.
@@ -120,6 +121,10 @@ How should rpyenv get them?
   `sudo -n true` reports the user may not use it, or when the distribution is not
   recognized. Running as root (most containers), `i` runs the command without `sudo`.
 - **`b`** appears from M8b on, **`s`** from M8d on.
+- **`c`** (added after M8a, user decision) builds without the missing libraries and ends
+  with D13's summary, without its "later release" notice. It is offered only when nothing
+  in D13's hard set (compiler, `make`, `patch`, OpenSSL, zlib) is missing, so a user
+  without sudo is never stuck before M8b brings `b`.
 
 ### 5.2 Without a terminal
 

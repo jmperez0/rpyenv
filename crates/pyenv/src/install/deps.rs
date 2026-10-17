@@ -10,6 +10,18 @@ pub enum Route {
     Install,
     Build,
     Prebuilt,
+    /// The prompt's `[c]`: build without the optional libraries, warning at the end. Not a
+    /// `--deps` value (scripts get the same through lenient mode, D13).
+    Continue,
+}
+
+/// What stops any build: CPython can't be built or used without these (M8 design D13).
+const HARD: [&str; 5] = ["compiler", "make", "patch", "openssl", "zlib"];
+
+/// True when `lib` (a `Dep::lib`) is in the set that stops the build in lenient mode and
+/// keeps `[c]` out of the prompt.
+pub fn is_hard(lib: &str) -> bool {
+    HARD.contains(&lib)
 }
 
 impl Route {
@@ -280,6 +292,7 @@ pub fn prompt_lines(
     m: Option<Manager>,
     install: Result<Vec<String>, &'static str>,
     crb: Option<&str>,
+    continue_offered: bool,
 ) -> Vec<String> {
     let names = |module: bool| {
         deps.iter()
@@ -334,6 +347,11 @@ pub fn prompt_lines(
         }
         Err(reason) => out.push(format!("  [i] not offered: {reason}")),
     }
+    // Only optional libraries missing: the user may build without them, as a script does,
+    // instead of being stopped (a user without sudo has no other way until M8b).
+    if continue_offered {
+        out.push("  [c] continue without them (the build warns about them at the end)".into());
+    }
     out
 }
 
@@ -343,10 +361,11 @@ fn is_module(d: &Dep) -> bool {
     !matches!(d.missing, Missing::Program(_)) && d.lib != stdlib::CA_KEY
 }
 
-pub fn choice(line: &str, install_offered: bool) -> Option<Route> {
+pub fn choice(line: &str, install_offered: bool, continue_offered: bool) -> Option<Route> {
     match line.trim().to_ascii_lowercase().as_str() {
         "" | "p" => Some(Route::System),
         "i" if install_offered => Some(Route::Install),
+        "c" if continue_offered => Some(Route::Continue),
         _ => None,
     }
 }
@@ -587,7 +606,7 @@ mod tests {
             },
         ];
         let argv = install_argv(Manager::Apt, &packages(Manager::Apt, &d), true, false);
-        let lines = prompt_lines("3.13.1", &d, Some(Manager::Apt), Ok(argv), None);
+        let lines = prompt_lines("3.13.1", &d, Some(Manager::Apt), Ok(argv), None, false);
         assert_eq!(
             lines,
             [
@@ -599,13 +618,13 @@ mod tests {
                 "  [i] install with sudo: sudo apt-get install libssl-dev uuid-dev",
             ]
         );
-        let lines = prompt_lines("3.13.1", &d, None, Err("no sudo on PATH"), None);
+        let lines = prompt_lines("3.13.1", &d, None, Err("no sudo on PATH"), None, false);
         assert!(
             lines.contains(&"  [i] not offered: no sudo on PATH".to_string()),
             "{lines:?}"
         );
         let root = install_argv(Manager::Apt, &packages(Manager::Apt, &d), false, false);
-        let lines = prompt_lines("3.13.1", &d, Some(Manager::Apt), Ok(root), None);
+        let lines = prompt_lines("3.13.1", &d, Some(Manager::Apt), Ok(root), None, false);
         assert_eq!(
             lines[5],
             "  [i] install: apt-get install libssl-dev uuid-dev"
@@ -631,7 +650,7 @@ mod tests {
                 lib: "libuuid",
             },
         ];
-        let lines = prompt_lines("3.13.1", &d, None, Err("no sudo on PATH"), None);
+        let lines = prompt_lines("3.13.1", &d, None, Err("no sudo on PATH"), None, false);
         assert_eq!(lines[1], "  ssl       OpenSSL 1.0.2 found, needs 1.1.1+");
         assert_eq!(lines[2], "  uuid      can't link -luuid");
     }
@@ -669,7 +688,7 @@ mod tests {
                 lib: stdlib::CA_KEY,
             },
         ];
-        let lines = prompt_lines("3.12.14", &d, None, Err("no sudo on PATH"), None);
+        let lines = prompt_lines("3.12.14", &d, None, Err("no sudo on PATH"), None, false);
         assert_eq!(
             lines[0],
             "pyenv: 3.12.14 can't build these modules: dbm, tkinter"
@@ -680,7 +699,7 @@ mod tests {
         );
         assert_eq!(lines[2], "  dbm       can't link -lgdbm -lgdbm_compat");
         assert_eq!(lines[3], "  tkinter   Tk 9.0.2 found, needs 8.5 or 8.6");
-        let only = prompt_lines("3.12.14", &d[2..], None, Err("x"), None);
+        let only = prompt_lines("3.12.14", &d[2..], None, Err("x"), None, false);
         assert_eq!(
             only[0],
             "pyenv: 3.12.14 needs: pkg-config, ssl certificates"
@@ -693,18 +712,25 @@ mod tests {
     fn the_prompt_shows_the_crb_line_before_the_question() {
         let d = [dep("uuid", "libuuid")];
         let crb = "Some packages live in the CRB repository; enable it first: x";
-        let lines = prompt_lines("3.12.14", &d, Some(Manager::Dnf), Err("x"), Some(crb));
+        let lines = prompt_lines(
+            "3.12.14",
+            &d,
+            Some(Manager::Dnf),
+            Err("x"),
+            Some(crb),
+            false,
+        );
         let at = lines.iter().position(|l| l == crb).expect("the CRB line");
         assert_eq!(lines[at + 1], "How should rpyenv get them?");
     }
 
     #[test]
     fn choices() {
-        assert!(matches!(choice("", true), Some(Route::System)));
-        assert!(matches!(choice("p", true), Some(Route::System)));
-        assert!(matches!(choice("I", true), Some(Route::Install)));
-        assert!(choice("i", false).is_none());
-        assert!(choice("x", true).is_none());
+        assert!(matches!(choice("", true, false), Some(Route::System)));
+        assert!(matches!(choice("p", true, false), Some(Route::System)));
+        assert!(matches!(choice("I", true, false), Some(Route::Install)));
+        assert!(choice("i", false, false).is_none());
+        assert!(choice("x", true, false).is_none());
         assert!(matches!(Route::parse("install"), Some(Route::Install)));
         assert!(matches!(Route::parse("prebuilt"), Some(Route::Prebuilt)));
         assert!(Route::parse("yes").is_none());
@@ -747,4 +773,30 @@ mod tests {
         ));
         assert!(!fedora_tk9("ID=fedora\n"));
     }
+
+    /// `[c]` is offered only when nothing in the hard set is missing (M8a follow-up: a user
+    /// without sudo can still build without the optional libraries).
+    #[test]
+    fn continue_is_offered_only_for_optional_libraries() {
+        let d = [dep("tkinter", "tk"), dep("uuid", "libuuid")];
+        let lines = prompt_lines("3.12.14", &d, None, Err("no sudo on PATH"), None, true);
+        assert_eq!(
+            lines.last().unwrap(),
+            "  [c] continue without them (the build warns about them at the end)"
+        );
+        let without = prompt_lines("3.12.14", &d, None, Err("no sudo on PATH"), None, false);
+        assert!(!without.iter().any(|l| l.contains("[c]")), "{without:?}");
+        assert!(matches!(choice("c", false, true), Some(Route::Continue)));
+        assert!(matches!(choice(" C ", false, true), Some(Route::Continue)));
+        assert!(choice("c", true, false).is_none());
+        assert!(Route::parse("continue").is_none(), "not a --deps value");
+        for hard in ["compiler", "make", "patch", "openssl", "zlib"] {
+            assert!(is_hard(hard), "{hard}");
+        }
+        for soft in ["tk", "libuuid", "gdbm", "pkg-config", CA_KEY_FOR_TEST] {
+            assert!(!is_hard(soft), "{soft}");
+        }
+    }
+
+    const CA_KEY_FOR_TEST: &str = stdlib::CA_KEY;
 }

@@ -286,7 +286,7 @@ fn resolve_deps(
     minor: u32,
     patch: bool,
     flag: Option<&str>,
-) -> Result<(), i32> {
+) -> Result<bool, i32> {
     use crate::install::deps::{self, Route, SudoUse};
     use crate::install::Reply;
     // The flag wins over the variable; a bad value names where it came from (review M10).
@@ -367,8 +367,10 @@ fn resolve_deps(
             return Err(130);
         }
         if missing.is_empty() {
-            return Ok(());
+            return Ok(false);
         }
+        // `[c]`: only optional libraries are missing (M8a follow-up).
+        let continue_offered = !missing.iter().any(|d| deps::is_hard(d.lib));
         if (tty || chosen == Some(Route::Install)) && sudo_probe.is_none() {
             let has_sudo = run_probe(get, "sudo", &["--version"]).is_some();
             let sudo_n = if has_sudo {
@@ -419,19 +421,27 @@ fn resolve_deps(
                 }
                 one
             });
-            for l in deps::prompt_lines(version, &missing, manager, shown, crb.as_deref()) {
+            for l in deps::prompt_lines(
+                version,
+                &missing,
+                manager,
+                shown,
+                crb.as_deref(),
+                continue_offered,
+            ) {
                 say(&l);
             }
             loop {
                 match crate::install::prompt("> ") {
                     Reply::Interrupted => return Err(130),
                     Reply::Eof => return Err(1),
-                    Reply::Line(l) => match deps::choice(&l, offer.is_ok()) {
+                    Reply::Line(l) => match deps::choice(&l, offer.is_ok(), continue_offered) {
                         Some(r) => break r,
-                        None => say(if offer.is_ok() {
-                            "pyenv: answer p or i"
-                        } else {
-                            "pyenv: answer p"
+                        None => say(match (offer.is_ok(), continue_offered) {
+                            (true, true) => "pyenv: answer p, i or c",
+                            (true, false) => "pyenv: answer p or i",
+                            (false, true) => "pyenv: answer p or c",
+                            (false, false) => "pyenv: answer p",
                         }),
                     },
                 }
@@ -441,8 +451,7 @@ fn resolve_deps(
         } else {
             // D13, lenient mode: only the hard set stops the build; the rest warns and the
             // build goes on (the builder prints the end summary).
-            const HARD: [&str; 5] = ["compiler", "make", "patch", "openssl", "zlib"];
-            let hard_missing = missing.iter().any(|d| HARD.contains(&d.lib));
+            let hard_missing = missing.iter().any(|d| deps::is_hard(d.lib));
             for l in preflight::report_deps_with(
                 &missing,
                 os.as_deref(),
@@ -452,9 +461,11 @@ fn resolve_deps(
             ) {
                 say(&l);
             }
-            return if hard_missing { Err(1) } else { Ok(()) };
+            return if hard_missing { Err(1) } else { Ok(false) };
         };
         match (route, offer) {
+            // The builder warns at the end instead of rolling back (`RPYENV_DEPS_MODE=continue`).
+            (Route::Continue, _) => return Ok(true),
             (Route::Install, Ok(cmds)) => {
                 last_failed = false;
                 for argv in cmds {
@@ -473,7 +484,14 @@ fn resolve_deps(
                     if !tty {
                         c.stdin(std::process::Stdio::null());
                     }
-                    let ok = c.status().is_ok_and(|s| s.success());
+                    // A command that can't even start (not found, "Text file busy") says why.
+                    let ok = match c.status() {
+                        Ok(st) => st.success(),
+                        Err(e) => {
+                            say(&format!("pyenv: cannot run {}: {e}", argv[0]));
+                            false
+                        }
+                    };
                     // Ctrl+C reached the command too: end the run before any hint.
                     if interrupted() {
                         return Err(130);
@@ -737,16 +755,25 @@ pub fn install(ctx: &Ctx, args: &[&str]) -> Output {
             let ok = match minor {
                 Some(m) => resolve_deps(&job_get, &name, m, patch, f.deps.as_deref()),
                 // CPython 2.x keeps today's check (plan ruling P2).
-                None => old_preflight(&job_get, patch),
+                None => old_preflight(&job_get, patch).map(|()| false),
             };
-            if let Err(code) = ok {
-                if code == 130 {
-                    return Output::new().with_code(130);
+            match ok {
+                Err(code) => {
+                    if code == 130 {
+                        return Output::new().with_code(130);
+                    }
+                    status = status.max(code);
+                    break;
                 }
-                status = status.max(code);
-                break;
+                // `[c]`: build without the optional libraries; the builder warns at the end.
+                Ok(true) => {
+                    job_env.retain(|(k, _)| k != "RPYENV_DEPS_MODE");
+                    job_env.push(("RPYENV_DEPS_MODE".into(), "continue".into()));
+                }
+                Ok(false) => {}
             }
         }
+        let job_get = |k: &str| builder::get(&job_env, k);
         let mut txn = match Txn::begin(&ctx.versions_dir(), &name) {
             Ok(t) => t,
             Err(m) => {
