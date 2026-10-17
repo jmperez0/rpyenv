@@ -17,6 +17,7 @@ pub mod openpgp;
 pub mod preflight;
 pub mod pypy;
 mod reply;
+pub mod stdlib;
 pub mod txn;
 #[cfg(unix)]
 pub mod verify;
