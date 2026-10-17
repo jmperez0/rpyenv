@@ -969,6 +969,7 @@ mod tests {
         );
     }
 
+    // allowlist D-119
     #[test]
     fn ca_certificates_are_found_as_a_file_or_a_directory() {
         let none = |_: &str| false;
@@ -988,6 +989,7 @@ mod tests {
     }
 
     /// Review focus 4: a compiler wrapper and custom flags reach the link probe.
+    // allowlist D-118
     #[test]
     fn the_link_probe_passes_cppflags_and_ldflags() {
         let seen = std::cell::RefCell::new(Vec::<Vec<String>>::new());
@@ -1077,6 +1079,7 @@ mod tests {
         }
     }
 
+    // allowlist D-118
     #[test]
     fn a_too_old_library_is_reported_with_both_versions() {
         let need = crate::install::stdlib::min_version("openssl", 13).unwrap();

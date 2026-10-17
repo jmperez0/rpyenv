@@ -51,7 +51,8 @@ the child's exit code, and leaves your console as it found it.
   against the real tools, check this.
 - **Official builds only.** rpyenv installs three kinds of Python:
   - **CPython:** python.org's packages on Windows, extracted with no installer and no
-    registry writes; compiled from source on Linux, as pyenv does.
+    registry writes; compiled from source on Linux, as pyenv does. On Linux, missing
+    libraries are found before the build and can be installed for you.
   - **PyPy:** PyPy's official binaries, on Linux (x64, aarch64) and Windows (x64),
     each checked against the SHA-256 PyPy publishes.
   - **Anaconda, Miniconda and Miniforge:** the publishers' installers, on Linux (x64,
@@ -160,6 +161,7 @@ integration.
 | `PYENV_VERSION` | Overrides the selected version for the current shell |
 | `PYENV_DEBUG` | Prints where the version came from and which executable was chosen |
 | `PYTHON_BUILD_MIRROR_URL` | Alternate download mirror for CPython sources and packages |
+| `RPYENV_BUILD_DEPS` | Linux: how `pyenv install` gets missing build libraries: `system`, `install`, `build` or `prebuilt` (same as `--deps=`). See `docs/distributions.md` |
 
 rpyenv-only settings use the `RPYENV_` prefix, for example
 `RPYENV_LIVE_REHASH=1` to rehash while long-running programs such as Jupyter

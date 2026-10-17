@@ -889,7 +889,7 @@ without `--source-ref`, a dry run's attestation from any branch would pass too).
 | `RPYENV_BATCH_FORWARD` | rpyenv | `;`-separated batch-target names that get a `.cmd` forwarder instead of an exe shim (Windows) |
 | `RPYENV_CATALOG_URL` | rpyenv | Unused: M7a builds the PyPy tables in CI and publishes no catalog; M7b may revisit it for conda (§15.1) |
 | `RPYENV_SKIP_PREFLIGHT` | rpyenv | `1` skips the Linux build pre-flight check (§9.2), for headers in places the check doesn't look |
-| `RPYENV_BUILD_DEPS` | rpyenv (M8) | `system`, `install`, or `build`: how `pyenv install` resolves missing Linux build dependencies when there is no terminal to ask |
+| `RPYENV_BUILD_DEPS` | rpyenv (M8) | `system`, `install`, `build` or `prebuilt`: how `pyenv install` resolves missing Linux build dependencies when there is no terminal to ask |
 
 `RPYENV_FORWARD_CP`, `RPYENV_FORWARD_PYENV`, `RPYENV_FORWARD_TARGET` and `RPYENV_FORWARD_DIR` are internal helpers that `.cmd` forwarders set and clear while they run; they are not user settings (allowlist D-47).
 
@@ -1064,6 +1064,8 @@ each milestone.
      Miniconda, and upstream pyenv already lists `miniforge3-*` versions.
 
 ### 15.2 Missing Linux build dependencies (M8)
+
+Designed in docs/superpowers/specs/2026-10-17-m8-linux-build-deps-design.md.
 
 **Goal:** `pyenv install` on Linux succeeds even when library headers that
 CPython needs aren't installed. It either installs them through the

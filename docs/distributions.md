@@ -16,6 +16,59 @@ rpyenv checks it, and what it does not support.
   installer and writes nothing to the registry.
 - **Linux:** rpyenv compiles CPython from source, as pyenv does.
 
+### Missing libraries on Linux
+
+CPython 3 needs some system libraries to build. If one is missing, the matching module
+(`ssl`, `sqlite3`, `tkinter` and so on) is left out of Python. rpyenv checks for them
+before it builds, so you find out first.
+
+**What is checked.** For each library, rpyenv compiles and links a small program. It
+also checks the minimum versions below, and that CA certificates exist. `tkinter` is
+checked without needing a display.
+
+| Library | Minimum version |
+|---|---|
+| OpenSSL | 1.1.1 for Python 3.10 and later; 1.0.2 for 3.7 to 3.9 |
+| SQLite | 3.15.2 for Python 3.13 and later |
+| zstd | 1.4.5, for 3.14's `compression.zstd` |
+| CA certificates | A file or directory must exist |
+
+Python 2.x, PyPy and conda keep their old behavior.
+
+**The prompt.** At a terminal, rpyenv lists the missing modules and the packages that
+provide them. Then you choose:
+
+| Key | What happens |
+|---|---|
+| `p` (default) | Prints the install command and stops |
+| `i` | Runs the command through `sudo` (no `sudo` when you are root; no `-y`), then checks again |
+
+`i` is left out, with the reason, when `sudo` can't be used or rpyenv doesn't know your
+distribution. On RHEL-family systems the prompt adds a hint about the CRB repository.
+rpyenv knows apt, dnf, zypper and pacman. Alpine comes later.
+
+**`--deps` and `RPYENV_BUILD_DEPS`.** Either one picks the route and skips the prompt,
+even at a terminal. The flag wins over the variable.
+
+| Value | What happens |
+|---|---|
+| `system` | Stops with the list of what is missing |
+| `install` | Installs the packages, then builds. Without a terminal it adds `-y` and uses `sudo -n` |
+| `build` | Says it comes in a later release |
+| `prebuilt` | Says it comes in a later release |
+
+**Scripts that set neither.** Without a terminal, `--deps` or `RPYENV_BUILD_DEPS`,
+rpyenv is lenient, as upstream is. Only the compiler, `make`, `patch` (when the
+definition needs it), OpenSSL and zlib stop the build. Any other missing library is a
+warning, and the run ends with a three-line summary. A later rpyenv release will make
+that summary stop the build. To choose now, use `--deps=install` or `--deps=system`.
+
+**After the build.** rpyenv imports every standard-library module, checks that CA
+certificates exist, and starts Tcl. If one fails, it removes the build and tells you
+which module and which package. In lenient mode, or with `RPYENV_SKIP_PREFLIGHT=1`,
+this is a warning and the build stays. `RPYENV_SKIP_PREFLIGHT=1` also skips the check
+before the build.
+
 ## PyPy
 
 rpyenv installs PyPy from PyPy's official binaries, and checks each download against
