@@ -184,9 +184,10 @@ CASES = (
          env=(("PATH", r"{sysroot}\System32;{sysroot}"),),
          files=(("root/shims/python.bat", ""), ("root/shims/python.exe", "")), allow=("D-54",)),
     # M2a (Linux): install, latest and uninstall. {v0} is the fixture's first version.
-    Case("install --help", ("install", "--help"), os="Linux"),
-    Case("help install", ("help", "install"), os="Linux"),
-    Case("install with a bad option", ("install", "-x"), os="Linux"),
+    # D-121: the help text has rpyenv's `--deps=<route>` line.
+    Case("install --help", ("install", "--help"), os="Linux", allow=("D-121",)),
+    Case("help install", ("help", "install"), os="Linux", allow=("D-121",)),
+    Case("install with a bad option", ("install", "-x"), os="Linux", allow=("D-121",)),
     Case("install an unknown version", ("install", "9.9.9"), os="Linux"),
     # The pre-release-only cases use a plugin definition, 3.99.0rc1: the vendored
     # pre-releases come and go (pyenv 2.8.9 replaced 3.15.0rc3 by 3.15.0, and the old
