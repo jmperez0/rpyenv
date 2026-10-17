@@ -1,0 +1,408 @@
+//! Which standard-library extension modules each CPython 3 minor version builds, the
+//! library each needs, how to probe it, and its package per distribution (M8 design §4.2).
+//! Package columns: apt, dnf, zypper, pacman, apk.
+
+pub struct Lib {
+    pub key: &'static str,
+    /// Any one of these headers is enough.
+    pub headers: &'static [&'static str],
+    /// Alternatives for the link probe, each a list of `-l` flags.
+    pub links: &'static [&'static [&'static str]],
+    /// When set, `pkg-config --cflags --libs <it>` is tried too (Tk).
+    pub pkg_config: Option<&'static str>,
+    pub packages: [&'static str; 5],
+}
+
+pub struct Module {
+    /// What the user loses, as in the prompt: `ssl`, `tkinter`.
+    pub name: &'static str,
+    pub lib: &'static str,
+    /// What the post-build check imports (M8 design §4.4).
+    pub imports: &'static [&'static str],
+    pub since: u32,
+    /// The last 3.x minor that has the module.
+    pub until: Option<u32>,
+}
+
+pub struct MinVersion {
+    pub header: &'static str,
+    /// A macro whose preprocessed value is a number (`0x30000020L`, `3045001`).
+    pub expr: &'static str,
+    pub need: u64,
+    pub shown: &'static str,
+}
+
+pub const CA_KEY: &str = "ca-certificates";
+
+static LIBS: &[Lib] = &[
+    Lib {
+        key: "openssl",
+        headers: &["openssl/ssl.h"],
+        links: &[&["-lssl", "-lcrypto"]],
+        pkg_config: None,
+        packages: [
+            "libssl-dev",
+            "openssl-devel",
+            "libopenssl-devel",
+            "openssl",
+            "openssl-dev",
+        ],
+    },
+    Lib {
+        key: "zlib",
+        headers: &["zlib.h"],
+        links: &[&["-lz"]],
+        pkg_config: None,
+        packages: ["zlib1g-dev", "zlib-devel", "zlib-devel", "zlib", "zlib-dev"],
+    },
+    Lib {
+        key: "bzip2",
+        headers: &["bzlib.h"],
+        links: &[&["-lbz2"]],
+        pkg_config: None,
+        packages: [
+            "libbz2-dev",
+            "bzip2-devel",
+            "libbz2-devel",
+            "bzip2",
+            "bzip2-dev",
+        ],
+    },
+    Lib {
+        key: "xz",
+        headers: &["lzma.h"],
+        links: &[&["-llzma"]],
+        pkg_config: None,
+        packages: ["liblzma-dev", "xz-devel", "xz-devel", "xz", "xz-dev"],
+    },
+    Lib {
+        key: "readline",
+        headers: &["readline/readline.h", "editline/readline.h"],
+        links: &[&["-lreadline"], &["-ledit"]],
+        pkg_config: None,
+        packages: [
+            "libreadline-dev",
+            "readline-devel",
+            "readline-devel",
+            "readline",
+            "readline-dev",
+        ],
+    },
+    Lib {
+        key: "sqlite",
+        headers: &["sqlite3.h"],
+        links: &[&["-lsqlite3"]],
+        pkg_config: None,
+        packages: [
+            "libsqlite3-dev",
+            "sqlite-devel",
+            "sqlite3-devel",
+            "sqlite",
+            "sqlite-dev",
+        ],
+    },
+    Lib {
+        key: "libffi",
+        headers: &["ffi.h"],
+        links: &[&["-lffi"]],
+        pkg_config: None,
+        packages: [
+            "libffi-dev",
+            "libffi-devel",
+            "libffi-devel",
+            "libffi",
+            "libffi-dev",
+        ],
+    },
+    Lib {
+        key: "ncurses",
+        headers: &["ncursesw/ncurses.h", "ncurses.h", "curses.h"],
+        links: &[&["-lncursesw", "-lpanelw"], &["-lncurses", "-lpanel"]],
+        pkg_config: None,
+        packages: [
+            "libncurses-dev",
+            "ncurses-devel",
+            "ncurses-devel",
+            "ncurses",
+            "ncurses-dev",
+        ],
+    },
+    Lib {
+        key: "tk",
+        headers: &["tk.h"],
+        links: &[&["-ltk8.6", "-ltcl8.6"], &["-ltk", "-ltcl"]],
+        pkg_config: Some("tk"),
+        packages: ["tk-dev", "tk-devel", "tk-devel", "tk", "tk-dev"],
+    },
+    Lib {
+        key: "gdbm",
+        headers: &["gdbm.h"],
+        links: &[&["-lgdbm", "-lgdbm_compat"]],
+        pkg_config: None,
+        packages: [
+            "libgdbm-dev libgdbm-compat-dev",
+            "gdbm-devel",
+            "gdbm-devel",
+            "gdbm",
+            "gdbm-dev",
+        ],
+    },
+    Lib {
+        key: "libuuid",
+        headers: &["uuid/uuid.h"],
+        links: &[&["-luuid"]],
+        pkg_config: None,
+        packages: [
+            "uuid-dev",
+            "libuuid-devel",
+            "libuuid-devel",
+            "util-linux-libs",
+            "util-linux-dev",
+        ],
+    },
+    Lib {
+        key: "libcrypt",
+        headers: &["crypt.h"],
+        links: &[&["-lcrypt"]],
+        pkg_config: None,
+        packages: [
+            "libcrypt-dev",
+            "libxcrypt-devel",
+            "libxcrypt-devel",
+            "libxcrypt",
+            "libxcrypt-dev",
+        ],
+    },
+    Lib {
+        key: "libnsl",
+        headers: &["rpcsvc/yp_prot.h"],
+        links: &[&["-lnsl", "-ltirpc"]],
+        pkg_config: None,
+        packages: [
+            "libnsl-dev libtirpc-dev",
+            "libnsl2-devel libtirpc-devel",
+            "libnsl-devel libtirpc-devel",
+            "libnsl libtirpc",
+            "libnsl-dev libtirpc-dev",
+        ],
+    },
+    Lib {
+        key: CA_KEY,
+        headers: &[],
+        links: &[],
+        pkg_config: None,
+        packages: [
+            "ca-certificates",
+            "ca-certificates",
+            "ca-certificates",
+            "ca-certificates",
+            "ca-certificates",
+        ],
+    },
+];
+
+static MODULES: &[Module] = &[
+    Module {
+        name: "ssl",
+        lib: "openssl",
+        imports: &["ssl", "_hashlib"],
+        since: 0,
+        until: None,
+    },
+    Module {
+        name: "zlib",
+        lib: "zlib",
+        imports: &["zlib"],
+        since: 0,
+        until: None,
+    },
+    Module {
+        name: "bz2",
+        lib: "bzip2",
+        imports: &["bz2"],
+        since: 0,
+        until: None,
+    },
+    Module {
+        name: "lzma",
+        lib: "xz",
+        imports: &["lzma"],
+        since: 3,
+        until: None,
+    },
+    Module {
+        name: "readline",
+        lib: "readline",
+        imports: &["readline"],
+        since: 0,
+        until: None,
+    },
+    Module {
+        name: "sqlite3",
+        lib: "sqlite",
+        imports: &["sqlite3"],
+        since: 0,
+        until: None,
+    },
+    Module {
+        name: "ctypes",
+        lib: "libffi",
+        imports: &["ctypes"],
+        since: 7,
+        until: None,
+    },
+    Module {
+        name: "curses",
+        lib: "ncurses",
+        imports: &["curses", "curses.panel"],
+        since: 0,
+        until: None,
+    },
+    Module {
+        name: "tkinter",
+        lib: "tk",
+        imports: &["tkinter"],
+        since: 0,
+        until: None,
+    },
+    Module {
+        name: "dbm",
+        lib: "gdbm",
+        imports: &["dbm.gnu", "dbm.ndbm"],
+        since: 0,
+        until: None,
+    },
+    Module {
+        name: "uuid",
+        lib: "libuuid",
+        imports: &["_uuid"],
+        since: 7,
+        until: None,
+    },
+    Module {
+        name: "crypt",
+        lib: "libcrypt",
+        imports: &["crypt"],
+        since: 0,
+        until: Some(12),
+    },
+    Module {
+        name: "nis",
+        lib: "libnsl",
+        imports: &["nis"],
+        since: 0,
+        until: Some(12),
+    },
+];
+
+pub fn lib(key: &str) -> Option<&'static Lib> {
+    LIBS.iter().find(|l| l.key == key)
+}
+
+/// The modules CPython 3.`minor` builds that need an outside library.
+pub fn modules(minor: u32) -> Vec<&'static Module> {
+    MODULES
+        .iter()
+        .filter(|m| minor >= m.since && m.until.is_none_or(|u| minor <= u))
+        .collect()
+}
+
+/// CPython's `configure` minimums (PEP 644 for OpenSSL; `configure.ac` for SQLite).
+pub fn min_version(key: &str, minor: u32) -> Option<MinVersion> {
+    match key {
+        "openssl" if minor >= 10 => Some(MinVersion {
+            header: "openssl/opensslv.h",
+            expr: "OPENSSL_VERSION_NUMBER",
+            need: 0x1010_100f,
+            shown: "1.1.1",
+        }),
+        "openssl" if minor >= 7 => Some(MinVersion {
+            header: "openssl/opensslv.h",
+            expr: "OPENSSL_VERSION_NUMBER",
+            need: 0x1000_2000,
+            shown: "1.0.2",
+        }),
+        "sqlite" if minor >= 13 => Some(MinVersion {
+            header: "sqlite3.h",
+            expr: "SQLITE_VERSION_NUMBER",
+            need: 3_015_002,
+            shown: "3.15.2",
+        }),
+        "sqlite" if minor >= 11 => Some(MinVersion {
+            header: "sqlite3.h",
+            expr: "SQLITE_VERSION_NUMBER",
+            need: 3_007_015,
+            shown: "3.7.15",
+        }),
+        _ => None,
+    }
+}
+
+/// `verify_py312` → 12; `verify_py3_latest` → the newest (`u32::MAX`); 2.x and others → `None`.
+pub fn minor_of_step(step: &str) -> Option<u32> {
+    let tag = step.strip_prefix("verify_py3")?;
+    if tag == "_latest" {
+        return Some(u32::MAX);
+    }
+    tag.parse().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn names(minor: u32) -> Vec<&'static str> {
+        modules(minor).iter().map(|m| m.name).collect()
+    }
+
+    #[test]
+    fn modules_follow_cpythons_releases() {
+        let m312 = names(12);
+        for n in [
+            "ssl", "zlib", "bz2", "lzma", "readline", "sqlite3", "ctypes", "curses", "tkinter",
+            "dbm", "uuid", "crypt", "nis",
+        ] {
+            assert!(m312.contains(&n), "3.12 lacks {n}");
+        }
+        let m313 = names(13);
+        assert!(
+            !m313.contains(&"crypt") && !m313.contains(&"nis"),
+            "{m313:?}"
+        );
+        assert!(!names(6).contains(&"uuid"), "_uuid is 3.7+");
+        assert!(!names(6).contains(&"ctypes"), "3.6 bundles libffi");
+        assert!(names(u32::MAX).contains(&"tkinter"));
+    }
+
+    #[test]
+    fn every_module_names_a_known_library_with_five_packages() {
+        for minor in [7, 12, 13] {
+            for m in modules(minor) {
+                let l = lib(m.lib).unwrap_or_else(|| panic!("{}: no lib {}", m.name, m.lib));
+                assert!(l.packages.iter().all(|p| !p.is_empty()), "{}", l.key);
+                assert!(!m.imports.is_empty(), "{}", m.name);
+            }
+        }
+        assert!(lib(CA_KEY).is_some());
+    }
+
+    #[test]
+    fn minimum_versions_come_from_cpythons_configure() {
+        let ssl310 = min_version("openssl", 10).unwrap();
+        assert_eq!((ssl310.need, ssl310.shown), (0x1010_100f, "1.1.1"));
+        assert_eq!(min_version("openssl", 9).unwrap().shown, "1.0.2");
+        assert!(min_version("openssl", 6).is_none());
+        assert_eq!(min_version("sqlite", 13).unwrap().need, 3_015_002);
+        assert_eq!(min_version("sqlite", 11).unwrap().shown, "3.7.15");
+        assert!(min_version("zlib", 13).is_none());
+    }
+
+    #[test]
+    fn the_minor_comes_from_the_verify_step() {
+        assert_eq!(minor_of_step("verify_py312"), Some(12));
+        assert_eq!(minor_of_step("verify_py39"), Some(9));
+        assert_eq!(minor_of_step("verify_py3_latest"), Some(u32::MAX));
+        assert_eq!(minor_of_step("verify_py27"), None);
+        assert_eq!(minor_of_step("standard"), None);
+    }
+}
