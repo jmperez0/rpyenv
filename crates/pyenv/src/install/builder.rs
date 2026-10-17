@@ -444,7 +444,14 @@ fn colorize(word: &str) -> String {
     }
 }
 
-fn verify(job: &Job, plan: &Plan, step: &str, python: &Path, say: &mut dyn FnMut(&str)) -> R<()> {
+fn verify(
+    job: &Job,
+    plan: &Plan,
+    pkg: &Package,
+    step: &str,
+    python: &Path,
+    say: &mut dyn FnMut(&str),
+) -> R<()> {
     let (xy, checks) = verify_plan(step)
         .ok_or_else(|| InstallError::Message(format!("rpyenv cannot run build step `{step}'")))?;
     symlink_version_suffix(&plan.prefix, plan);
@@ -511,7 +518,10 @@ fn verify(job: &Job, plan: &Plan, step: &str, python: &Path, say: &mut dyn FnMut
             c.lib
         ));
     }
-    if let Some(minor) = super::stdlib::minor_of_step(step) {
+    // M8 design §4.4 is for CPython built from source (ruling R14): PyPy's and conda's
+    // `verify_py*` steps keep upstream's checks only.
+    let from_source = pkg.steps.iter().any(|s| s == "standard");
+    if let Some(minor) = super::stdlib::minor_of_step(step).filter(|_| from_source) {
         stdlib_check(job, plan, minor, python, say)?;
     }
     Ok(())
@@ -1150,7 +1160,7 @@ fn run_step(
             }
             Ok(())
         }
-        s if s.starts_with("verify_py") => verify(job, plan, s, python, say),
+        s if s.starts_with("verify_py") => verify(job, plan, pkg, s, python, say),
         "ensurepip" | "ensurepip_lt21" => {
             let isolation = if step == "ensurepip" { "-I" } else { "-s" };
             let mut c = command(python, &plan.env);

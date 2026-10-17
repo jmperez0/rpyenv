@@ -106,6 +106,41 @@ fn a_miniconda_definition_installs_in_place_and_adds_pip() {
     );
 }
 
+/// Ruling R14: M8 design §4.4's module check is for CPython built from source. A conda base
+/// whose Python lacks `_uuid` installs as before M8a, at a terminal or not.
+#[test]
+fn a_conda_python_without_uuid_installs_with_upstreams_checks_only() {
+    let fake_python = r#"printf '#!/bin/sh\nexit 0\n'"#;
+    let lacking = r#"printf '#!/bin/sh\n[ "$2" = "import _uuid" ] && exit 1\nexit 0\n'"#;
+    let body = installer("3.12");
+    assert!(body.contains(fake_python), "{body}");
+    let body = body.replacen(fake_python, lacking, 1);
+    let mut bad: Vec<String> = Vec::new();
+    for tty in ["1", ""] {
+        let f = Fixture::new();
+        let (s, sha) = serve(&body);
+        let def = def_file(&f, &s, &sha, "miniconda3-t", "miniconda", "");
+        let r = run(&f, &["install", &def], &[("RPYENV_TEST_TTY", tty)]);
+        // Both runs are judged before any assertion, so a failure shows both.
+        let ok = r.code == 0
+            && !r.stderr.contains("was built without")
+            && !r.stderr.contains("In a later rpyenv release")
+            && left_in_versions(&f) == ["miniconda3-t"];
+        if !ok {
+            bad.push(format!("tty={tty:?}: exit {}\n{}", r.code, r.stderr));
+            continue;
+        }
+        // The fake really lacks `_uuid`: the check would have had something to find.
+        let py = f.root.join("versions/miniconda3-t/bin/python3.12");
+        let o = std::process::Command::new(&py)
+            .args(["-c", "import _uuid"])
+            .status()
+            .unwrap();
+        assert!(!o.success(), "the fake python imports _uuid");
+    }
+    assert!(bad.is_empty(), "{}", bad.join("\n---\n"));
+}
+
 /// A caller with another conda env active: conda follows CONDA_PREFIX, so neither the
 /// installer nor `conda install pip` may see it (M7c ruling R18, now on Linux too).
 // allowlist D-116

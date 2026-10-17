@@ -4,7 +4,7 @@
 
 mod common;
 
-use common::fakepypy::{sha256, tarball_bz2};
+use common::fakepypy::{sha256, tarball_bz2, tarball_bz2_lacking};
 use common::server::{start, Reply, Server};
 use common::Fixture;
 use std::path::Path;
@@ -97,6 +97,31 @@ fn a_pypy_definition_installs_with_upstreams_links_and_pip() {
         "{}",
         r.stderr
     );
+}
+
+/// Ruling R14: M8 design §4.4's module check is for CPython built from source. A PyPy that
+/// lacks `_uuid` (the real PyPy 3.11 does) installs as before M8a, at a terminal or not: only
+/// upstream's checks, no "was built without" and no lenient summary.
+#[test]
+fn a_pypy_without_uuid_installs_with_upstreams_checks_only() {
+    let mut bad: Vec<String> = Vec::new();
+    for tty in ["1", ""] {
+        let f = Fixture::new();
+        let body = tarball_bz2_lacking(TOP, "_uuid");
+        let sha = sha256(&body);
+        let s = start(vec![(&format!("/{TOP}.tar.bz2"), vec![Reply::Body(body)])]);
+        let def = def_file(&f, &s, &sha);
+        let r = run(&f, &["install", &def], &[("RPYENV_TEST_TTY", tty)]);
+        // Both runs are judged before any assertion, so a failure shows both.
+        let ok = r.code == 0
+            && !r.stderr.contains("was built without")
+            && !r.stderr.contains("In a later rpyenv release")
+            && left_in_versions(&f) == ["pypy3.11-7.3.99"];
+        if !ok {
+            bad.push(format!("tty={tty:?}: exit {}\n{}", r.code, r.stderr));
+        }
+    }
+    assert!(bad.is_empty(), "{}", bad.join("\n---\n"));
 }
 
 /// Review focus 2.
