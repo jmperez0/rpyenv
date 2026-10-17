@@ -17,7 +17,11 @@ printf 'all:\n\t@sleep $${FAKE_MAKE_SLEEP:-0}\n\t@env | grep -E "^(CFLAGS|CPPFLA
 
 const PYTHON: &str = r#"#!/bin/sh
 case "$1" in
-  -c) mod="${2#import }"
+  -c) case "$2" in
+        *get_default_verify_paths*) [ -n "$FAKE_PY_NO_CA" ] && exit 1; exit 0;;
+        *tkinter.Tcl*) [ -n "$FAKE_PY_NO_TCL" ] && exit 1; exit 0;;
+      esac
+      mod="${2#import }"
       for m in $FAKE_PY_MISSING; do
         if [ "$m" = "$mod" ]; then echo "ModuleNotFoundError: No module named '_$mod'" >&2; exit 1; fi
       done
