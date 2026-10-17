@@ -18,7 +18,8 @@ printf 'all:\n\t@sleep $${FAKE_MAKE_SLEEP:-0}\n\t@env | grep -E "^(CFLAGS|CPPFLA
 const PYTHON: &str = r#"#!/bin/sh
 case "$1" in
   -c) case "$2" in
-        *get_default_verify_paths*) [ -n "$FAKE_PY_NO_CA" ] && exit 1; exit 0;;
+        *get_default_verify_paths*) [ -n "$FAKE_PY_NO_CA" ] || exit 0
+          echo /fake/ssl/cert.pem; echo /fake/ssl/certs; exit 1;;
         *tkinter.Tcl*) [ -n "$FAKE_PY_NO_TCL" ] && exit 1; exit 0;;
       esac
       mod="${2#import }"

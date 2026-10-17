@@ -33,12 +33,23 @@ pub enum Manager {
     Apk,
 }
 
+/// An os-release value without its quotes: os-release(5) allows `"…"` and `'…'`.
+pub(crate) fn unquote(v: &str) -> &str {
+    let v = v.trim();
+    for q in ['"', '\''] {
+        if let Some(inner) = v.strip_prefix(q).and_then(|r| r.strip_suffix(q)) {
+            return inner;
+        }
+    }
+    v
+}
+
 fn ids(os_release: &str) -> Vec<String> {
     os_release
         .lines()
         .filter_map(|l| l.strip_prefix("ID=").or_else(|| l.strip_prefix("ID_LIKE=")))
         .flat_map(|v| {
-            v.trim_matches('"')
+            unquote(v)
                 .split_whitespace()
                 .map(str::to_string)
                 .collect::<Vec<_>>()
@@ -176,69 +187,101 @@ pub fn classify_sudo(is_root: bool, has_sudo: bool, n_status: Option<(bool, Stri
 }
 
 /// Some `-devel` packages sit in a repo that is off by default. Rocky, Alma and CentOS Stream
-/// have CRB (9) or PowerTools (8) for `dnf config-manager`; real RHEL needs
-/// `subscription-manager` for its CodeReady Builder repo (M8 design §5.1).
-pub fn rhel_crb_hint(os_release: &str) -> Option<String> {
+/// have CRB (9) or PowerTools (8) for `dnf config-manager`, which `dnf-plugins-core` provides
+/// (minimal images lack it); real RHEL needs `subscription-manager` for its CodeReady Builder
+/// repo (M8 design §5.3). `root`: no `sudo`.
+pub fn rhel_crb_hint(os_release: &str, root: bool) -> Option<String> {
     if !ids(os_release).iter().any(|i| i == "rhel") {
         return None;
     }
-    let major: u32 = os_release
+    let version = os_release
         .lines()
-        .find_map(|l| l.strip_prefix("VERSION_ID="))?
-        .trim_matches('"')
-        .split('.')
-        .next()?
-        .parse()
-        .ok()?;
+        .find_map(|l| l.strip_prefix("VERSION_ID="))?;
+    let major: u32 = unquote(version).split('.').next()?.parse().ok()?;
     let id = os_release
         .lines()
         .find_map(|l| l.strip_prefix("ID="))
-        .map(|v| v.trim_matches('"'));
+        .map(unquote);
+    let sudo = if root { "" } else { "sudo " };
     if id == Some("rhel") {
         return Some(format!(
-            "sudo subscription-manager repos --enable codeready-builder-for-rhel-{major}-$(arch)-rpms"
+            "{sudo}subscription-manager repos --enable codeready-builder-for-rhel-{major}-$(arch)-rpms"
         ));
     }
     let repo = if major >= 9 { "crb" } else { "powertools" };
-    Some(format!("sudo dnf config-manager --set-enabled {repo}"))
+    Some(format!(
+        "{sudo}dnf install dnf-plugins-core && {sudo}dnf config-manager --set-enabled {repo}"
+    ))
+}
+
+/// The CRB line RHEL-family systems see wherever rpyenv offers or prints a `dnf install`
+/// (ruling R15, M8 design §5.3): in the prompt, in the printed report, and after a failed
+/// install that showed neither.
+pub fn crb_line(os_release: &str, root: bool) -> Option<String> {
+    rhel_crb_hint(os_release, root)
+        .map(|cmd| format!("Some packages live in the CRB repository; enable it first: {cmd}"))
+}
+
+/// The library's name as its project writes it, for the version messages.
+fn lib_name(d: &Dep) -> &str {
+    match d.lib {
+        "openssl" => "OpenSSL",
+        "sqlite" => "SQLite",
+        "tk" => "Tk",
+        other => other,
+    }
 }
 
 /// The reason a module or program is missing, as the prompt words it (M8 design §5.1).
 fn why(d: &Dep) -> String {
     match &d.missing {
         Missing::Program(p) => format!("no {p} program"),
-        Missing::Header(h) | Missing::Link(h) => format!("no usable {h}"),
-        Missing::TooOld { found, need } => {
-            let name = match d.lib {
-                "openssl" => "OpenSSL",
-                "sqlite" => "SQLite",
-                "zstd" => "zstd",
-                other => other,
-            };
-            format!("{name} {found} found, needs {need}+")
-        }
+        Missing::Header(h) => format!("no usable {h}"),
+        Missing::Link(flags) => format!("can't link {flags}"),
+        Missing::TooOld { found, need } => format!("{} {found} found, needs {need}+", lib_name(d)),
+        Missing::TooNew { found, need } => format!("{} {found} found, needs {need}", lib_name(d)),
         Missing::Certificates => "no CA certificates".to_string(),
     }
 }
 
 /// The prompt's lines (M8 design §5.1). The reason column is as wide as the longest reason
-/// among `deps`, so the package names line up within one prompt (ruling R7).
+/// among `deps`, so the package names line up within one prompt (ruling R7). Programs and CA
+/// certificates are not modules: they get a heading of their own (final review M5). `crb`:
+/// the CRB line (ruling R15).
 pub fn prompt_lines(
     version: &str,
     deps: &[Dep],
     m: Option<Manager>,
     install: Result<Vec<String>, &'static str>,
+    crb: Option<&str>,
 ) -> Vec<String> {
-    let names: Vec<&str> = deps.iter().map(|d| d.name).fold(Vec::new(), |mut v, n| {
-        if !v.contains(&n) {
-            v.push(n);
-        }
-        v
-    });
-    let mut out = vec![format!(
-        "pyenv: {version} can't build these modules: {}",
-        names.join(", ")
-    )];
+    let names = |module: bool| {
+        deps.iter()
+            .filter(|d| is_module(d) == module)
+            .map(|d| d.name)
+            .fold(Vec::new(), |mut v: Vec<&str>, n| {
+                if !v.contains(&n) {
+                    v.push(n);
+                }
+                v
+            })
+    };
+    let (modules, others) = (names(true), names(false));
+    let mut out = Vec::new();
+    if !modules.is_empty() {
+        out.push(format!(
+            "pyenv: {version} can't build these modules: {}",
+            modules.join(", ")
+        ));
+    }
+    if !others.is_empty() {
+        let head = if modules.is_empty() {
+            "needs"
+        } else {
+            "also needs"
+        };
+        out.push(format!("pyenv: {version} {head}: {}", others.join(", ")));
+    }
     let reasons: Vec<String> = deps.iter().map(why).collect();
     let width = reasons.iter().map(|r| r.chars().count()).max().unwrap_or(0);
     for (d, reason) in deps.iter().zip(&reasons) {
@@ -251,6 +294,7 @@ pub fn prompt_lines(
             format!("  {:<9} {:<width$}  ({pkg})", d.name, reason)
         });
     }
+    out.extend(crb.map(str::to_string));
     out.push("How should rpyenv get them?".into());
     out.push("  [p] print the commands and stop (default)".into());
     match install {
@@ -265,6 +309,12 @@ pub fn prompt_lines(
         Err(reason) => out.push(format!("  [i] not offered: {reason}")),
     }
     out
+}
+
+/// A standard-library module, not a program (compiler, `make`, `pkg-config`) and not the CA
+/// certificates.
+fn is_module(d: &Dep) -> bool {
+    !matches!(d.missing, Missing::Program(_)) && d.lib != stdlib::CA_KEY
 }
 
 pub fn choice(line: &str, install_offered: bool) -> Option<Route> {
@@ -404,28 +454,78 @@ mod tests {
     #[test]
     fn rhel_family_gets_the_crb_hint_and_fedora_does_not() {
         assert_eq!(
-            rhel_crb_hint("ID=rocky\nID_LIKE=\"rhel centos fedora\"\nVERSION_ID=\"9.4\"\n")
-                .unwrap(),
-            "sudo dnf config-manager --set-enabled crb"
+            rhel_crb_hint(
+                "ID=rocky\nID_LIKE=\"rhel centos fedora\"\nVERSION_ID=\"9.4\"\n",
+                false
+            )
+            .unwrap(),
+            "sudo dnf install dnf-plugins-core && sudo dnf config-manager --set-enabled crb"
         );
         assert_eq!(
-            rhel_crb_hint("ID=almalinux\nID_LIKE=\"rhel centos fedora\"\nVERSION_ID=\"8.10\"\n")
-                .unwrap(),
-            "sudo dnf config-manager --set-enabled powertools"
+            rhel_crb_hint(
+                "ID=almalinux\nID_LIKE=\"rhel centos fedora\"\nVERSION_ID=\"8.10\"\n",
+                false
+            )
+            .unwrap(),
+            "sudo dnf install dnf-plugins-core && sudo dnf config-manager --set-enabled powertools"
         );
-        assert!(rhel_crb_hint("ID=fedora\nVERSION_ID=41\n").is_none());
+        assert!(rhel_crb_hint("ID=fedora\nVERSION_ID=41\n", false).is_none());
     }
 
     #[test]
     fn real_rhel_gets_the_subscription_manager_repo_and_centos_stream_gets_crb() {
         assert_eq!(
-            rhel_crb_hint("ID=\"rhel\"\nVERSION_ID=\"9.4\"\n").unwrap(),
+            rhel_crb_hint("ID=\"rhel\"\nVERSION_ID=\"9.4\"\n", false).unwrap(),
             "sudo subscription-manager repos --enable codeready-builder-for-rhel-9-$(arch)-rpms"
         );
         assert_eq!(
-            rhel_crb_hint("ID=centos\nID_LIKE=\"rhel fedora\"\nVERSION_ID=\"9\"\n").unwrap(),
-            "sudo dnf config-manager --set-enabled crb"
+            rhel_crb_hint(
+                "ID=centos\nID_LIKE=\"rhel fedora\"\nVERSION_ID=\"9\"\n",
+                false
+            )
+            .unwrap(),
+            "sudo dnf install dnf-plugins-core && sudo dnf config-manager --set-enabled crb"
         );
+    }
+
+    /// Ruling R15: root gets the commands without sudo; the line names CRB and says "first".
+    #[test]
+    fn the_crb_line_drops_sudo_for_root() {
+        let rocky = "ID=\"rocky\"\nID_LIKE=\"rhel centos fedora\"\nVERSION_ID=\"9.6\"\n";
+        assert_eq!(
+            crb_line(rocky, true).unwrap(),
+            "Some packages live in the CRB repository; enable it first: dnf install dnf-plugins-core && dnf config-manager --set-enabled crb"
+        );
+        assert_eq!(
+            rhel_crb_hint("ID=rhel\nVERSION_ID=9.4\n", true).unwrap(),
+            "subscription-manager repos --enable codeready-builder-for-rhel-9-$(arch)-rpms"
+        );
+        assert!(crb_line("ID=debian\nVERSION_ID=\"12\"\n", false).is_none());
+    }
+
+    /// Final review T3: os-release(5) allows single quotes too.
+    #[test]
+    fn single_quoted_os_release_values_are_read() {
+        assert!(matches!(
+            Manager::from_os_release("ID='ubuntu'\nID_LIKE='debian'\n"),
+            Some(Manager::Apt)
+        ));
+        assert!(matches!(
+            Manager::from_os_release("ID='rocky'\nID_LIKE='rhel centos fedora'\n"),
+            Some(Manager::Dnf)
+        ));
+        assert_eq!(
+            rhel_crb_hint(
+                "ID='almalinux'\nID_LIKE='rhel centos fedora'\nVERSION_ID='9.4'\n",
+                true
+            )
+            .unwrap(),
+            "dnf install dnf-plugins-core && dnf config-manager --set-enabled crb"
+        );
+        assert_eq!(unquote("'a b'"), "a b");
+        assert_eq!(unquote("\"a b\""), "a b");
+        assert_eq!(unquote("plain"), "plain");
+        assert_eq!(unquote("'"), "'");
     }
 
     #[test]
@@ -456,30 +556,30 @@ mod tests {
             Dep {
                 name: "uuid",
                 required: true,
-                missing: Missing::Link("uuid/uuid.h".into()),
+                missing: Missing::Link("-luuid".into()),
                 lib: "libuuid",
             },
         ];
         let argv = install_argv(Manager::Apt, &packages(Manager::Apt, &d), true, false);
-        let lines = prompt_lines("3.13.1", &d, Some(Manager::Apt), Ok(argv));
+        let lines = prompt_lines("3.13.1", &d, Some(Manager::Apt), Ok(argv), None);
         assert_eq!(
             lines,
             [
                 "pyenv: 3.13.1 can't build these modules: ssl, uuid",
                 "  ssl       OpenSSL 1.0.2 found, needs 1.1.1+  (libssl-dev)",
-                "  uuid      no usable uuid/uuid.h              (uuid-dev)",
+                "  uuid      can't link -luuid                  (uuid-dev)",
                 "How should rpyenv get them?",
                 "  [p] print the commands and stop (default)",
                 "  [i] install with sudo: sudo apt-get install libssl-dev uuid-dev",
             ]
         );
-        let lines = prompt_lines("3.13.1", &d, None, Err("no sudo on PATH"));
+        let lines = prompt_lines("3.13.1", &d, None, Err("no sudo on PATH"), None);
         assert!(
             lines.contains(&"  [i] not offered: no sudo on PATH".to_string()),
             "{lines:?}"
         );
         let root = install_argv(Manager::Apt, &packages(Manager::Apt, &d), false, false);
-        let lines = prompt_lines("3.13.1", &d, Some(Manager::Apt), Ok(root));
+        let lines = prompt_lines("3.13.1", &d, Some(Manager::Apt), Ok(root), None);
         assert_eq!(
             lines[5],
             "  [i] install: apt-get install libssl-dev uuid-dev"
@@ -501,13 +601,75 @@ mod tests {
             Dep {
                 name: "uuid",
                 required: true,
-                missing: Missing::Link("uuid/uuid.h".into()),
+                missing: Missing::Link("-luuid".into()),
                 lib: "libuuid",
             },
         ];
-        let lines = prompt_lines("3.13.1", &d, None, Err("no sudo on PATH"));
+        let lines = prompt_lines("3.13.1", &d, None, Err("no sudo on PATH"), None);
         assert_eq!(lines[1], "  ssl       OpenSSL 1.0.2 found, needs 1.1.1+");
-        assert_eq!(lines[2], "  uuid      no usable uuid/uuid.h");
+        assert_eq!(lines[2], "  uuid      can't link -luuid");
+    }
+
+    /// Final review M5: programs and certificates are not "modules", and a header that compiles
+    /// but doesn't link says so. M4: a Tk that is too new gives the version found and needed.
+    #[test]
+    fn programs_and_certificates_get_their_own_heading() {
+        let d = [
+            Dep {
+                name: "dbm",
+                required: true,
+                missing: Missing::Link("-lgdbm -lgdbm_compat".into()),
+                lib: "gdbm",
+            },
+            Dep {
+                name: "tkinter",
+                required: true,
+                missing: Missing::TooNew {
+                    found: "9.0.2".into(),
+                    need: "8.5 or 8.6",
+                },
+                lib: "tk",
+            },
+            Dep {
+                name: "pkg-config",
+                required: true,
+                missing: Missing::Program("pkg-config".into()),
+                lib: "pkg-config",
+            },
+            Dep {
+                name: "ssl certificates",
+                required: true,
+                missing: Missing::Certificates,
+                lib: stdlib::CA_KEY,
+            },
+        ];
+        let lines = prompt_lines("3.12.14", &d, None, Err("no sudo on PATH"), None);
+        assert_eq!(
+            lines[0],
+            "pyenv: 3.12.14 can't build these modules: dbm, tkinter"
+        );
+        assert_eq!(
+            lines[1],
+            "pyenv: 3.12.14 also needs: pkg-config, ssl certificates"
+        );
+        assert_eq!(lines[2], "  dbm       can't link -lgdbm -lgdbm_compat");
+        assert_eq!(lines[3], "  tkinter   Tk 9.0.2 found, needs 8.5 or 8.6");
+        let only = prompt_lines("3.12.14", &d[2..], None, Err("x"), None);
+        assert_eq!(
+            only[0],
+            "pyenv: 3.12.14 needs: pkg-config, ssl certificates"
+        );
+        assert!(!only.iter().any(|l| l.contains("modules")), "{only:?}");
+    }
+
+    /// Ruling R15: the CRB line comes before the question.
+    #[test]
+    fn the_prompt_shows_the_crb_line_before_the_question() {
+        let d = [dep("uuid", "libuuid")];
+        let crb = "Some packages live in the CRB repository; enable it first: x";
+        let lines = prompt_lines("3.12.14", &d, Some(Manager::Dnf), Err("x"), Some(crb));
+        let at = lines.iter().position(|l| l == crb).expect("the CRB line");
+        assert_eq!(lines[at + 1], "How should rpyenv get them?");
     }
 
     #[test]

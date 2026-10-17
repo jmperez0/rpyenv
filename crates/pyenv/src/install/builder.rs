@@ -527,26 +527,45 @@ fn verify(
     Ok(())
 }
 
+/// The §4.4 CA check. On a failure it prints the file and the directory the built Python
+/// looked in: `SSL_CERT_FILE` and `SSL_CERT_DIR` when set, else its OpenSSL's defaults.
+const CA_CHECK: &str = "import os, ssl
+p = ssl.get_default_verify_paths()
+ok = (p.cafile and os.path.isfile(p.cafile)) or (p.capath and os.path.isdir(p.capath) and os.listdir(p.capath))
+if not ok:
+    print(os.environ.get(p.openssl_cafile_env, p.openssl_cafile))
+    print(os.environ.get(p.openssl_capath_env, p.openssl_capath))
+raise SystemExit(0 if ok else 1)
+";
+
 /// M8 design §4.4: every module of the table imports, CA certificates exist, Tcl runs.
-pub(crate) fn stdlib_failures(run: &dyn Fn(&[&str]) -> bool, minor: u32) -> Vec<String> {
+/// `run(args)` runs the built interpreter: its success and its stdout.
+pub(crate) fn stdlib_failures(run: &dyn Fn(&[&str]) -> (bool, String), minor: u32) -> Vec<String> {
     let mut out = Vec::new();
     for m in super::stdlib::modules(minor) {
         for i in m.imports {
             let code = format!("import {i}");
-            if !run(&["-c", &code]) {
+            if !run(&["-c", &code]).0 {
                 out.push(format!("{} (import {i} failed; needs {})", m.name, m.lib));
                 break;
             }
         }
     }
-    let ca = "import ssl, os; p = ssl.get_default_verify_paths();               ok = (p.cafile and os.path.isfile(p.cafile)) or (p.capath and os.path.isdir(p.capath) and os.listdir(p.capath));               raise SystemExit(0 if ok else 1)";
-    if !run(&["-c", ca]) {
+    let (ok, looked) = run(&["-c", CA_CHECK]);
+    if !ok {
+        // Name where Python looked (final review M3): a custom OpenSSL may look elsewhere than
+        // the system's ca-certificates.
+        let mut paths = looked.lines().map(str::trim).filter(|l| !l.is_empty());
+        let place = match (paths.next(), paths.next()) {
+            (Some(file), Some(dir)) => format!("no CA file {file} and no certificates in {dir}"),
+            _ => "no CA file or directory".to_string(),
+        };
         out.push(format!(
-            "ssl certificates (no CA file or directory; needs {})",
+            "ssl certificates ({place}; needs {}, or set SSL_CERT_FILE or SSL_CERT_DIR)",
             super::stdlib::CA_KEY
         ));
     }
-    if !run(&["-c", "import tkinter; tkinter.Tcl().eval('info library')"]) {
+    if !run(&["-c", "import tkinter; tkinter.Tcl().eval('info library')"]).0 {
         out.push("tkinter (Tcl doesn't start; needs tk)".into());
     }
     out
@@ -562,20 +581,25 @@ fn stdlib_check(
     say: &mut dyn FnMut(&str),
 ) -> R<()> {
     let sigint_seen = std::cell::Cell::new(false);
-    let run = |args: &[&str]| -> bool {
+    let run = |args: &[&str]| -> (bool, String) {
         if interrupted() {
-            return true;
+            return (true, String::new());
         }
-        let status = command(python, &plan.env)
+        let out = command(python, &plan.env)
             .args(args)
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .status();
-        if status.as_ref().is_ok_and(sigint) {
+            .output();
+        if out.as_ref().is_ok_and(|o| sigint(&o.status)) {
             sigint_seen.set(true);
         }
-        status.is_ok_and(|s| s.success())
+        match out {
+            Ok(o) => (
+                o.status.success(),
+                String::from_utf8_lossy(&o.stdout).into_owned(),
+            ),
+            Err(_) => (false, String::new()),
+        }
     };
     let fails = stdlib_failures(&run, minor);
     if interrupted() || sigint_seen.get() {
@@ -589,7 +613,9 @@ fn stdlib_check(
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    if get(job.env, "RPYENV_DEPS_MODE").as_deref() == Some("lenient") {
+    // RPYENV_SKIP_PREFLIGHT=1 always gives P1's warning, lenient mode included (review M7).
+    let skip = get(job.env, "RPYENV_SKIP_PREFLIGHT").as_deref() == Some("1");
+    if !skip && get(job.env, "RPYENV_DEPS_MODE").as_deref() == Some("lenient") {
         // Spec §5.2's summary, verbatim; the build counts as installed (D13). Root is read
         // the way `pyenv install` reads it: `id -u` on the build's PATH.
         let root = command("id", job.env)
@@ -608,7 +634,6 @@ fn stdlib_check(
         say(&lenient_summary(&name, &fails, minor, os.as_deref(), root));
         return Ok(());
     }
-    let skip = get(job.env, "RPYENV_SKIP_PREFLIGHT").as_deref() == Some("1");
     let lead = if skip { "pyenv: warning: " } else { "pyenv: " };
     say(&format!(
         "{lead}{name} was built without: {}",
@@ -1213,8 +1238,9 @@ mod tests {
 
     #[test]
     fn stdlib_failures_name_each_missing_import_and_the_certificates() {
-        let fails = |args: &[&str]| -> bool {
-            !(args[1] == "import _uuid" || args[1].contains("get_default_verify_paths"))
+        let fails = |args: &[&str]| -> (bool, String) {
+            let ok = !(args[1] == "import _uuid" || args[1].contains("get_default_verify_paths"));
+            (ok, String::new())
         };
         let f = stdlib_failures(&fails, 12);
         assert!(
@@ -1223,11 +1249,38 @@ mod tests {
         );
         assert!(
             f.contains(
-                &"ssl certificates (no CA file or directory; needs ca-certificates)".to_string()
+                &"ssl certificates (no CA file or directory; needs ca-certificates, or set SSL_CERT_FILE or SSL_CERT_DIR)".to_string()
             ),
             "{f:?}"
         );
-        assert!(stdlib_failures(&|_| true, 12).is_empty());
+        assert!(stdlib_failures(&|_| (true, String::new()), 12).is_empty());
+    }
+
+    /// Final review M3: a failed CA check names the file and directory the built Python looked
+    /// in (a custom OpenSSL's, here) and the variables that point it elsewhere.
+    #[test]
+    fn a_missing_ca_names_where_python_looked() {
+        let run = |args: &[&str]| -> (bool, String) {
+            if args[1].contains("get_default_verify_paths") {
+                (
+                    false,
+                    "/opt/openssl/ssl/cert.pem\n/opt/openssl/ssl/certs\n".into(),
+                )
+            } else {
+                (true, String::new())
+            }
+        };
+        assert_eq!(
+            stdlib_failures(&run, 13),
+            ["ssl certificates (no CA file /opt/openssl/ssl/cert.pem and no certificates in /opt/openssl/ssl/certs; needs ca-certificates, or set SSL_CERT_FILE or SSL_CERT_DIR)"]
+        );
+        // The script prints both places and honors the variables, as Python's own lookup does.
+        for want in [
+            "p.openssl_cafile_env, p.openssl_cafile",
+            "p.openssl_capath_env, p.openssl_capath",
+        ] {
+            assert!(CA_CHECK.contains(want), "{want}");
+        }
     }
 
     #[test]
