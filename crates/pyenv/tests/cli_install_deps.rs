@@ -152,6 +152,7 @@ fn without_a_terminal_or_flag_openssl_still_stops_the_build() {
     assert!(!installed(&f));
 }
 
+// allowlist D-117
 #[test]
 fn without_a_terminal_or_flag_other_libraries_only_warn_and_the_build_goes_on() {
     let f = Fixture::new();
@@ -197,6 +198,7 @@ fn without_a_terminal_or_flag_other_libraries_only_warn_and_the_build_goes_on() 
     assert_eq!(log(&f), "");
 }
 
+// allowlist D-122
 #[test]
 fn a_build_missing_a_module_is_not_installed() {
     let f = Fixture::new();
@@ -218,6 +220,7 @@ fn a_build_missing_a_module_is_not_installed() {
     assert!(!installed(&f), "{}", r.stderr);
 }
 
+// allowlist D-122
 #[test]
 fn skip_preflight_turns_the_failure_into_a_warning() {
     let f = Fixture::new();
@@ -259,6 +262,7 @@ fn a_tcl_that_does_not_start_fails_the_check() {
     assert!(!installed(&f));
 }
 
+// allowlist D-117
 #[test]
 fn deps_system_without_a_terminal_makes_every_module_required() {
     let f = Fixture::new();
@@ -280,6 +284,7 @@ fn deps_system_without_a_terminal_makes_every_module_required() {
     assert_eq!(log(&f), "");
 }
 
+// allowlist D-120
 #[test]
 fn the_build_deps_variable_chooses_a_route_like_the_flag() {
     let f = Fixture::new();
@@ -462,6 +467,7 @@ fn a_failed_install_reprompts_without_i_and_builds_nothing() {
     assert!(!installed(&f));
 }
 
+// allowlist D-120
 #[test]
 fn at_a_terminal_enter_prints_and_stops() {
     let f = Fixture::new();
@@ -913,4 +919,14 @@ sleep 30"
     assert_eq!(status.code(), Some(130), "{err}");
     assert!(!err.contains("install command failed"), "{err}");
     assert!(!installed(&f), "{err}");
+}
+
+// allowlist D-121
+#[test]
+fn help_and_completion_list_the_deps_option() {
+    let f = Fixture::new();
+    let h = run(&f, &["install", "--help"], &[]);
+    assert!(h.stdout.contains("--deps=<route>"), "{}", h.stdout);
+    let c = run(&f, &["install", "--complete"], &[]);
+    assert!(c.stdout.lines().any(|l| l == "--deps="), "{}", c.stdout);
 }
