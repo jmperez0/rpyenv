@@ -10,6 +10,8 @@ pub struct Lib {
     pub links: &'static [&'static [&'static str]],
     /// When set, `pkg-config --cflags --libs <it>` is tried too (Tk).
     pub pkg_config: Option<&'static str>,
+    /// One package per distribution: apt, dnf, zypper, pacman, apk. An entry may hold several
+    /// names separated by spaces; callers split on whitespace.
     pub packages: [&'static str; 5],
 }
 
@@ -187,6 +189,19 @@ static LIBS: &[Lib] = &[
         ],
     },
     Lib {
+        key: "zstd",
+        headers: &["zstd.h"],
+        links: &[&["-lzstd"]],
+        pkg_config: None,
+        packages: [
+            "libzstd-dev",
+            "libzstd-devel",
+            "libzstd-devel",
+            "zstd",
+            "zstd-dev",
+        ],
+    },
+    Lib {
         key: CA_KEY,
         headers: &[],
         links: &[],
@@ -293,6 +308,13 @@ static MODULES: &[Module] = &[
         since: 0,
         until: Some(12),
     },
+    Module {
+        name: "zstd",
+        lib: "zstd",
+        imports: &["compression.zstd"],
+        since: 14,
+        until: None,
+    },
 ];
 
 pub fn lib(key: &str) -> Option<&'static Lib> {
@@ -334,6 +356,12 @@ pub fn min_version(key: &str, minor: u32) -> Option<MinVersion> {
             need: 3_007_015,
             shown: "3.7.15",
         }),
+        "zstd" if minor >= 14 => Some(MinVersion {
+            header: "zstd.h",
+            expr: "ZSTD_VERSION_NUMBER",
+            need: 10405,
+            shown: "1.4.5",
+        }),
         _ => None,
     }
 }
@@ -369,6 +397,8 @@ mod tests {
             !m313.contains(&"crypt") && !m313.contains(&"nis"),
             "{m313:?}"
         );
+        assert!(!names(13).contains(&"zstd"), "compression.zstd is 3.14+");
+        assert!(names(14).contains(&"zstd") && names(u32::MAX).contains(&"zstd"));
         assert!(!names(6).contains(&"uuid"), "_uuid is 3.7+");
         assert!(!names(6).contains(&"ctypes"), "3.6 bundles libffi");
         assert!(names(u32::MAX).contains(&"tkinter"));
@@ -395,6 +425,8 @@ mod tests {
         assert_eq!(min_version("sqlite", 13).unwrap().need, 3_015_002);
         assert_eq!(min_version("sqlite", 11).unwrap().shown, "3.7.15");
         assert!(min_version("zlib", 13).is_none());
+        assert_eq!(min_version("zstd", 14).unwrap().shown, "1.4.5");
+        assert!(min_version("zstd", 13).is_none());
     }
 
     #[test]
