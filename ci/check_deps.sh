@@ -124,6 +124,8 @@ if [ -n "${BUILD:-}" ]; then
       { echo "::error::$distro: a store without libuuid.a did not fail the check naming uuid"; exit 1; }
     imports "$v"
     echo "== the check after the build failed naming uuid, as it must"
+    # The next build compiles libuuid again.
+    rm -rf "$root"/cache/deps/libuuid-*
   fi
   if [ -n "${WEEKLY:-}" ]; then
     for w in "$(newest 3.14)" "$(newest 3.8)"; do
