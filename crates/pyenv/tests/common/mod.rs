@@ -35,6 +35,17 @@ pub struct Fixture {
 
 impl Fixture {
     pub fn new() -> Fixture {
+        // Review focus 2: a space and a non-ASCII letter in every path.
+        Fixture::under("py env ñ")
+    }
+
+    /// As `new`, but every path is plain (no space or shell character): the build route
+    /// refuses a `PYENV_ROOT` that isn't (M8b plan ruling P5).
+    pub fn plain() -> Fixture {
+        Fixture::under("pyenv-plain")
+    }
+
+    fn under(dir: &str) -> Fixture {
         // The binaries honor the RPYENV_TEST_* overrides only in debug builds (plan M6a, R1):
         // a release binary would edit the real user PATH and PowerShell profiles.
         if !cfg!(debug_assertions) {
@@ -43,8 +54,7 @@ impl Fixture {
             );
         }
         let tmp = tempfile::tempdir().unwrap();
-        // Review focus 2: a space and a non-ASCII letter in every path.
-        let base = tmp.path().join("py env ñ");
+        let base = tmp.path().join(dir);
         let root = base.join("root");
         let work = base.join("work");
         let syspath = base.join("sys").join("bin");
