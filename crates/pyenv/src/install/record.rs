@@ -50,6 +50,54 @@ pub fn parse(text: &str) -> Option<Record> {
     })
 }
 
+/// One line per installed version whose recorded libraries differ from what rpyenv would build
+/// today (M8 design §6.3, ruling P12), in name order. `now(library, definition, origin)`: that
+/// version, or `None` when unknown (the line then leaves the library out).
+pub fn stale_lines(
+    versions: &std::path::Path,
+    now: &dyn Fn(&str, &str, Origin) -> Option<String>,
+) -> Vec<String> {
+    let Ok(rd) = std::fs::read_dir(versions) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = rd
+        .filter_map(Result::ok)
+        .filter(|e| e.path().is_dir())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    let mut out = Vec::new();
+    for name in names {
+        let Ok(t) = std::fs::read_to_string(versions.join(&name).join(FILE)) else {
+            continue;
+        };
+        let Some(r) = parse(&t) else { continue };
+        let (mut was, mut is) = (Vec::new(), Vec::new());
+        for (lib, v, origin) in &r.libs {
+            if let Some(cur) = now(lib, &r.definition, *origin) {
+                if &cur != v {
+                    was.push(format!("{lib} {v}"));
+                    is.push(format!("{lib} {cur}"));
+                }
+            }
+        }
+        if was.is_empty() {
+            continue;
+        }
+        let rebuild = if name == r.definition {
+            name.clone()
+        } else {
+            format!("{}:{name}", r.definition)
+        };
+        out.push(format!(
+            "pyenv: {name} was built with {}; rpyenv now builds {}. To rebuild it: pyenv install -f {rebuild}",
+            was.join(", "),
+            is.join(", ")
+        ));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -93,6 +141,52 @@ mod tests {
         assert!(
             parse("openssl 3.6.5 catalog\n").is_none(),
             "no definition line"
+        );
+    }
+
+    #[test]
+    fn stale_lines_name_each_changed_library_and_how_to_rebuild() {
+        let tmp = tempfile::tempdir().unwrap();
+        let v = tmp.path();
+        let put = |name: &str, body: &str| {
+            std::fs::create_dir_all(v.join(name)).unwrap();
+            std::fs::write(v.join(name).join(FILE), body).unwrap();
+        };
+        put(
+            "3.12.15",
+            "definition 3.12.15
+openssl 3.6.4 definition
+sqlite 3.54.0 catalog
+zlib 1.3.2 catalog
+",
+        );
+        put(
+            "fresh",
+            "definition 3.13.16
+zlib 1.3.2 catalog
+",
+        );
+        put(
+            "mine",
+            "definition 3.14.8
+sqlite 3.54.0 catalog
+",
+        );
+        std::fs::create_dir_all(v.join("no-record")).unwrap();
+        let now = |lib: &str, def: &str, o: Origin| -> Option<String> {
+            match (lib, o) {
+                ("openssl", Origin::Definition) => (def == "3.12.15").then(|| "3.6.5".to_string()),
+                ("sqlite", _) => Some("3.54.1".into()),
+                ("zlib", _) => Some("1.3.2".into()),
+                _ => None,
+            }
+        };
+        assert_eq!(
+            stale_lines(v, &now),
+            [
+                "pyenv: 3.12.15 was built with openssl 3.6.4, sqlite 3.54.0; rpyenv now builds openssl 3.6.5, sqlite 3.54.1. To rebuild it: pyenv install -f 3.12.15",
+                "pyenv: mine was built with sqlite 3.54.0; rpyenv now builds sqlite 3.54.1. To rebuild it: pyenv install -f 3.14.8:mine",
+            ]
         );
     }
 }

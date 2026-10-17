@@ -696,10 +696,53 @@ pub fn install(ctx: &Ctx, args: &[&str]) -> Output {
         };
     }
     watch_interrupt();
-    let mut status = 0;
-    let mut stdin_patch: Option<Vec<u8>> = None;
     // Reads the two small pages a conda `-latest` name needs; no cache.
     let probe = Fetcher::from_env(&env, None);
+    // M8 design §6.3 and §6.5: once per run, before any version is installed.
+    if let Ok(rows) = catalog::table(&env) {
+        let now = |lib: &str, def: &str, origin: catalog::Origin| -> Option<String> {
+            if origin == catalog::Origin::Definition {
+                let pinned = defs::find(&ctx.root, def, &env)
+                    .and_then(|found| {
+                        defs::parse(&found, &env, &|n| defs::find(&ctx.root, n, &env)).ok()
+                    })
+                    .and_then(|d| catalog::pinned(lib, &d));
+                if let Some(r) = pinned {
+                    return Some(r.version);
+                }
+            }
+            rows.iter()
+                .find(|r| r.key == lib)
+                .map(|r| r.version.clone())
+        };
+        for l in crate::install::record::stale_lines(&ctx.versions_dir(), &now) {
+            say(&l);
+        }
+        let bundle = store::ca_dir(&ctx.root).join("cert.pem");
+        if bundle.is_file() {
+            let version = rows
+                .iter()
+                .find(|r| r.key == "cacert")
+                .map(|r| r.version.clone())
+                .unwrap_or_default();
+            match store::place_ca(&ctx.root, &rows, &probe, &mut |s: &str| say(s)) {
+                Ok(true) => say(&format!(
+                    "pyenv: updated the CA bundle in {} ({version})",
+                    bundle.display()
+                )),
+                Ok(false) => {}
+                Err(InstallError::Message(m)) => {
+                    say(&format!("pyenv: warning: cannot update the CA bundle: {m}"))
+                }
+                Err(_) => say(&format!(
+                    "pyenv: warning: cannot update the CA bundle in {}",
+                    bundle.display()
+                )),
+            }
+        }
+    }
+    let mut status = 0;
+    let mut stdin_patch: Option<Vec<u8>> = None;
     for arg in &wanted {
         // A Ctrl+C during the previous version's default packages or rehash.
         if interrupted() {
