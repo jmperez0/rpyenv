@@ -17,7 +17,7 @@ pub enum Route {
 }
 
 /// What stops any build: CPython can't be built or used without these (M8 design D13).
-const HARD: [&str; 5] = ["compiler", "make", "patch", "openssl", "zlib"];
+const HARD: [&str; 6] = ["compiler", "make", "patch", "awk", "openssl", "zlib"];
 
 /// True when `lib` (a `Dep::lib`) is in the set that stops the build in lenient mode and
 /// keeps `[c]` out of the prompt.
@@ -102,12 +102,15 @@ impl Manager {
     }
 }
 
-/// Programs (compiler, make, patch, pkg-config) by manager.
+/// Programs (compiler, make, patch, awk, pkg-config) by manager.
 fn program_packages(lib: &str) -> Option<[&'static str; 5]> {
     match lib {
         "compiler" => Some(["build-essential", "gcc", "gcc", "base-devel", "build-base"]),
         "make" => Some(["make"; 5]),
         "patch" => Some(["patch"; 5]),
+        // `awk` is a virtual provider on Debian; gawk is the package everywhere (configure only
+        // needs some awk, and the base images of Tumbleweed and Arch-like minimal ones lack it).
+        "awk" => Some(["gawk"; 5]),
         "pkg-config" => Some([
             "pkg-config",
             "pkgconf-pkg-config",
@@ -448,9 +451,11 @@ pub fn build_plan(
     }
     if missing
         .iter()
-        .any(|d| matches!(d.lib, "compiler" | "make" | "patch"))
+        .any(|d| matches!(d.lib, "compiler" | "make" | "patch" | "awk"))
     {
-        return blocked("it needs the C compiler, make and patch from the system first".into());
+        return blocked(
+            "it needs the C compiler, make, patch and awk from the system first".into(),
+        );
     }
     if let Err(why) = root_ok {
         return blocked(why);
@@ -729,6 +734,15 @@ mod tests {
             program_packages("pkg-config").unwrap()[Manager::Dnf.column()],
             "pkgconf-pkg-config"
         );
+        for m in [
+            Manager::Apt,
+            Manager::Dnf,
+            Manager::Zypper,
+            Manager::Pacman,
+            Manager::Apk,
+        ] {
+            assert_eq!(program_packages("awk").unwrap()[m.column()], "gawk");
+        }
         assert!(program_packages("no-such-lib").is_none());
     }
 
@@ -1008,7 +1022,7 @@ mod tests {
         ));
         assert!(choice("c", true, false, false).is_none());
         assert!(Route::parse("continue").is_none(), "not a --deps value");
-        for hard in ["compiler", "make", "patch", "openssl", "zlib"] {
+        for hard in ["compiler", "make", "patch", "awk", "openssl", "zlib"] {
             assert!(is_hard(hard), "{hard}");
         }
         for soft in ["tk", "libuuid", "gdbm", "pkg-config", CA_KEY_FOR_TEST] {
@@ -1117,7 +1131,7 @@ mod tests {
         );
         assert_eq!(
             p.blocked.as_deref(),
-            Some("it needs the C compiler, make and patch from the system first")
+            Some("it needs the C compiler, make, patch and awk from the system first")
         );
         let old = build_plan(&[dep("uuid", "libuuid")], 6, &ALL_TOOLS, Ok(()), None);
         assert_eq!(
@@ -1135,6 +1149,47 @@ mod tests {
             root.blocked.as_deref(),
             Some("PYENV_ROOT has a space or a shell character in its path (/a b)")
         );
+    }
+
+    #[test]
+    fn the_build_route_is_blocked_without_awk() {
+        let awk = Dep {
+            name: "awk",
+            required: true,
+            missing: Missing::Program("awk".into()),
+            lib: "awk",
+        };
+        let p = build_plan(&[awk, dep("uuid", "libuuid")], 12, &ALL_TOOLS, Ok(()), None);
+        assert_eq!(
+            p.blocked.as_deref(),
+            Some("it needs the C compiler, make, patch and awk from the system first")
+        );
+    }
+
+    #[test]
+    fn a_missing_awk_reads_like_a_missing_program_in_the_prompt() {
+        let awk = Dep {
+            name: "awk",
+            required: true,
+            missing: Missing::Program("awk".into()),
+            lib: "awk",
+        };
+        let lines = prompt_lines(
+            "3.12.14",
+            &[awk],
+            Some(Manager::Zypper),
+            Ok(vec!["zypper".into(), "install".into(), "gawk".into()]),
+            None,
+            None,
+            false,
+        );
+        let text = lines.join(
+            "
+",
+        );
+        assert!(text.contains("needs: awk"), "{text}");
+        assert!(text.contains("no awk program"), "{text}");
+        assert!(text.contains("gawk"), "{text}");
     }
 
     #[test]

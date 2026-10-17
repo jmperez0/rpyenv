@@ -357,7 +357,7 @@ pub fn report_deps_with(
         && build_route
         && !missing
             .iter()
-            .any(|d| matches!(d.lib, "compiler" | "make" | "patch"))
+            .any(|d| matches!(d.lib, "compiler" | "make" | "patch" | "awk"))
     {
         lines.push(
             "Without root, pyenv install --deps=build compiles them from source.".to_string(),
@@ -927,6 +927,7 @@ pub fn check3(env: &dyn Fn(&str) -> Option<String>, needs_patch: bool, minor: u3
                     "compiler" => Some(("C compiler", "compiler", "cc")),
                     "make" => Some(("make", "make", "make")),
                     "patch" => Some(("patch", "patch", "patch")),
+                    "awk" => Some(("awk", "awk", "awk")),
                     "pkg-config" => Some(("pkg-config", "pkg-config", "pkg-config")),
                     _ => None,
                 };
@@ -940,7 +941,7 @@ pub fn check3(env: &dyn Fn(&str) -> Option<String>, needs_patch: bool, minor: u3
                     continue;
                 }
                 let Some(l) = stdlib::lib(k) else {
-                    panic!("RPYENV_TEST_PREFLIGHT: unknown key {k:?} (a stdlib library key, compiler, make, patch or pkg-config)");
+                    panic!("RPYENV_TEST_PREFLIGHT: unknown key {k:?} (a stdlib library key, compiler, make, patch, awk or pkg-config)");
                 };
                 let name = stdlib::modules(minor)
                     .iter()
@@ -965,14 +966,24 @@ pub fn check3(env: &dyn Fn(&str) -> Option<String>, needs_patch: bool, minor: u3
             ..d
         })
         .collect();
-    if out.iter().any(|d| d.lib == "compiler") {
-        return out;
-    }
     let path = env("PATH");
     let runs_with_input =
         |program: &str, args: &[&str], input: &str, capture: bool| -> Option<(bool, String)> {
             run_with_input(path.as_deref(), program, args, input, capture)
         };
+    // CPython's configure (and the libraries' of the build route) run `awk`; some minimal
+    // images (Tumbleweed) have none. `--version` is not portable across gawk, mawk and busybox.
+    if runs_with_input("awk", &["BEGIN { exit 0 }"], "", false).is_none_or(|(ok, _)| !ok) {
+        out.push(Dep {
+            name: "awk",
+            required: true,
+            missing: Missing::Program("awk".into()),
+            lib: "awk",
+        });
+    }
+    if out.iter().any(|d| d.lib == "compiler") {
+        return out;
+    }
     if runs_with_input("pkg-config", &["--version"], "", false).is_none_or(|(ok, _)| !ok) {
         out.push(Dep {
             name: "pkg-config",
@@ -1455,6 +1466,7 @@ mod tests {
         // gcc: succeeds at everything; `-E` prints nothing, so no version text is read.
         stub("gcc", "exit 0");
         stub("make", "exit 0");
+        stub("awk", "exit 0");
         stub("pkg-config", "[ \"$1\" = --version ] && exit 0\nexit 1");
         let certs = d.join("certs.pem");
         std::fs::write(&certs, "x").unwrap();
@@ -1522,6 +1534,49 @@ mod tests {
         assert!(deps
             .iter()
             .all(|d| matches!(d.missing, Missing::Program(_))));
+    }
+
+    #[test]
+    fn the_test_hook_knows_awk() {
+        let env = |k: &str| (k == "RPYENV_TEST_PREFLIGHT").then(|| "awk".to_string());
+        let deps = check3(&env, false, 12);
+        assert_eq!(
+            deps,
+            vec![Dep {
+                name: "awk",
+                required: true,
+                missing: Missing::Program("awk".into()),
+                lib: "awk"
+            }]
+        );
+    }
+
+    #[test]
+    fn a_host_without_awk_reports_it_and_no_awk_is_not_cpython_2() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = std::env::temp_dir().join(format!("rpyenv-no-awk-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        for name in ["gcc", "make", "pkg-config"] {
+            let p = d.join(name);
+            std::fs::write(
+                &p,
+                "#!/bin/sh
+exit 0
+",
+            )
+            .unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let path = d.display().to_string();
+        let env = |k: &str| (k == "PATH").then(|| path.clone());
+        let three = check3(&env, false, 12);
+        let two = check(&env, false);
+        let _ = std::fs::remove_dir_all(&d);
+        assert!(
+            three.iter().any(|x| x.lib == "awk" && x.required),
+            "{three:#?}"
+        );
+        assert!(two.iter().all(|x| x.lib != "awk"), "{two:#?}");
     }
 
     #[cfg(debug_assertions)]

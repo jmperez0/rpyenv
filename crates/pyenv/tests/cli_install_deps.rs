@@ -217,6 +217,40 @@ fn without_a_terminal_or_flag_openssl_still_stops_the_build() {
     assert!(!installed(&f));
 }
 
+#[test]
+fn without_a_terminal_or_flag_a_missing_awk_stops_the_build_naming_gawk() {
+    let f = Fixture::new();
+    plugin_def(&f);
+    stubs(&f, 0);
+    // Lenient mode (D13): awk is in the hard set (CPython's configure runs it).
+    let r = run(
+        &f,
+        &["install", "3.12.99"],
+        &[("RPYENV_TEST_PREFLIGHT", "awk")],
+    );
+    assert_eq!(r.code, 1, "{}", r.stderr);
+    assert!(
+        r.stderr.contains(
+            "
+  awk (awk)
+"
+        ),
+        "{}",
+        r.stderr
+    );
+    assert!(
+        r.stderr.contains(
+            "
+  sudo apt-get install gawk
+"
+        ),
+        "{}",
+        r.stderr
+    );
+    assert_eq!(log(&f), "", "no package manager ran");
+    assert!(!installed(&f));
+}
+
 // allowlist D-117
 #[test]
 fn without_a_terminal_or_flag_other_libraries_only_warn_and_the_build_goes_on() {
