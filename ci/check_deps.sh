@@ -11,6 +11,13 @@
 # name uuid.
 # WEEKLY=1 (Ubuntu, full) also builds the newest 3.14, and builds once more without uuid-dev
 # under RPYENV_SKIP_PREFLIGHT=1, where the check after the build must warn naming uuid.
+# BUILD=1 (M8b, M8 design §9 row 3): the container gets a compiler, make, patch, Perl, the X11
+# headers and CA certificates, and no -dev package of any library and no pkg-config.
+# `pyenv install --deps=build` compiles every missing library into the store, builds a CPython
+# whose every module imports, and records them; a second build reuses the store; the version
+# keeps working without the store; and (Ubuntu) a store entry with its library removed makes
+# the check after the build fail naming the module. WEEKLY=1 adds the newest 3.14 (OpenSSL 4
+# and upstream's patch) and 3.8 (OpenSSL 1.1.1).
 set -euo pipefail
 distro="$1"
 bin="$PWD/pyenv"
@@ -19,16 +26,29 @@ bin="$PWD/pyenv"
 # Stage 0: the container gets only a compiler and make (and patch, pkg-config), as root, with
 # its own manager. Debian-family images then lose their package lists again, as the official
 # images ship, so the printed command must start with `apt-get update` (design §5.3).
-case "$distro" in
-  debian|ubuntu)
-    apt-get update -q
-    apt-get install -yq gcc libc6-dev make patch pkg-config
-    rm -rf /var/lib/apt/lists/* ;;
-  fedora|rocky) dnf install -y gcc make patch pkgconf-pkg-config ;;
-  tumbleweed) zypper --non-interactive install gcc make patch pkg-config ;;
-  arch) pacman -Syu --noconfirm gcc make patch pkgconf ;;
-  *) echo "::error::unknown distro $distro"; exit 1 ;;
-esac
+if [ -n "${BUILD:-}" ]; then
+  case "$distro" in
+    debian|ubuntu)
+      apt-get update -q
+      apt-get install -yq gcc libc6-dev make patch perl libx11-dev ca-certificates
+      rm -rf /var/lib/apt/lists/* ;;
+    fedora|rocky) dnf install -y gcc make patch perl-core libX11-devel ;;
+    tumbleweed) zypper --non-interactive install gcc make patch perl libX11-devel ca-certificates ;;
+    arch) pacman -Syu --noconfirm gcc make patch perl libx11 ;;
+    *) echo "::error::unknown distro $distro"; exit 1 ;;
+  esac
+else
+  case "$distro" in
+    debian|ubuntu)
+      apt-get update -q
+      apt-get install -yq gcc libc6-dev make patch pkg-config
+      rm -rf /var/lib/apt/lists/* ;;
+    fedora|rocky) dnf install -y gcc make patch pkgconf-pkg-config ;;
+    tumbleweed) zypper --non-interactive install gcc make patch pkg-config ;;
+    arch) pacman -Syu --noconfirm gcc make patch pkgconf ;;
+    *) echo "::error::unknown distro $distro"; exit 1 ;;
+  esac
+fi
 
 root="$(mktemp -d)/root"
 mkdir -p "$root"
@@ -65,6 +85,55 @@ imports() {
   if [ "$minor" -le 12 ]; then mods="$mods, crypt"; fi
   "$root/versions/$1/bin/python3" -c "import $mods; print('every module imports')"
 }
+
+if [ -n "${BUILD:-}" ]; then
+  # Stage B1: the build route, without a terminal.
+  "$bin" install --deps=build "$v" </dev/null 2>&1 | tee /tmp/build1.log
+  [ "${PIPESTATUS[0]}" -eq 0 ] || { echo "::error::$distro: --deps=build failed"; exit 1; }
+  imports "$v"
+  rec="$root/versions/$v/.rpyenv-deps"
+  [ -f "$rec" ] || { echo "::error::$distro: no $rec"; exit 1; }
+  cat "$rec"
+  # No libssl-dev was installed: OpenSSL must have come from the store.
+  grep -q '^openssl ' "$rec" || { echo "::error::$distro: OpenSSL is not in the record"; exit 1; }
+  # Tcl finds its library inside the version, not in the store (§4.4).
+  lib=$("$root/versions/$v/bin/python3" -c "import tkinter; print(tkinter.Tcl().eval('info library'))")
+  case "$lib" in "$root/versions/$v/"*) ;; *) echo "::error::$distro: Tcl's library is $lib"; exit 1 ;; esac
+  # The system itself is unchanged: strict detection still finds what is missing.
+  if detect_empty; then echo "::error::$distro: detection is empty without any -dev package"; exit 1; fi
+  # Stage B2: reuse (D6). A second build compiles no library.
+  "$bin" install -f --deps=build "$v" </dev/null > /tmp/build2.log 2>&1 ||
+    { tail -30 /tmp/build2.log; echo "::error::$distro: the second --deps=build failed"; exit 1; }
+  if grep -q '^Building ' /tmp/build2.log; then
+    grep '^Building ' /tmp/build2.log; echo "::error::$distro: a library was built again"; exit 1
+  fi
+  grep -q '^Using openssl ' /tmp/build2.log || { echo "::error::$distro: OpenSSL was not reused"; exit 1; }
+  # Stage B3 (Review Focus 3): the store is only a cache.
+  mv "$root/cache/deps" "$root/cache/deps.off"
+  imports "$v"
+  mv "$root/cache/deps.off" "$root/cache/deps"
+  # Stage B4 (Ubuntu): the check can fail. A store entry whose library is gone makes the check
+  # after the build fail naming uuid; the rollback keeps the version from stage B2.
+  if [ "$distro" = ubuntu ]; then
+    rm "$root"/cache/deps/libuuid-*/lib/libuuid.a
+    rc=0
+    out=$("$bin" install -f --deps=build "$v" 2>&1 </dev/null) || rc=$?
+    tail -5 <<<"$out"
+    { [ "$rc" -ne 0 ] && grep -q 'uuid (import _uuid failed' <<<"$out"; } ||
+      { echo "::error::$distro: a store without libuuid.a did not fail the check naming uuid"; exit 1; }
+    imports "$v"
+    echo "== the check after the build failed naming uuid, as it must"
+  fi
+  if [ -n "${WEEKLY:-}" ]; then
+    for w in "$(newest 3.14)" "$(newest 3.8)"; do
+      echo "== weekly: Python $w through the build route"
+      "$bin" install --deps=build "$w" </dev/null
+      imports "$w"
+    done
+  fi
+  echo "== the build route works on $distro"
+  exit 0
+fi
 
 # Stage 1: no terminal, no flags (lenient mode, D13): the hard set (compiler, make, patch,
 # OpenSSL, zlib) is missing, so it fails. Arch's base image already holds OpenSSL and zlib, so
