@@ -145,6 +145,14 @@ fn os_information(env: &[(OsString, OsString)]) -> String {
         .unwrap_or_default()
 }
 
+/// The `-I` flag that lets CPython's configure find `panel.h` where the system keeps it only
+/// under `ncursesw/` (openSUSE Tumbleweed; Debian, Fedora and Arch also have it at the top):
+/// without it `curses.panel` is silently not built. `exists` tells whether a path exists.
+pub(crate) fn panel_include(exists: &dyn Fn(&str) -> bool) -> Option<&'static str> {
+    (!exists("/usr/include/panel.h") && exists("/usr/include/ncursesw/panel.h"))
+        .then_some("-I/usr/include/ncursesw")
+}
+
 /// The configure, make and install commands python-build composes (reference
 /// "Environment python-build sets up" and "Build steps").
 struct Plan {
@@ -230,7 +238,13 @@ impl Plan {
         // (plan ruling P8): the compiler and linker take the first match.
         let store = job.store;
         let store_ld = store.map(|s| s.ldflags.join(" ")).unwrap_or_default();
-        let store_cpp = store.map(|s| s.cppflags.join(" ")).unwrap_or_default();
+        let mut store_cpp = store.map(|s| s.cppflags.join(" ")).unwrap_or_default();
+        // Linux, CPython 3: configure looks for `panel.h` with the flags it is given only.
+        if cfg!(target_os = "linux") && name.starts_with("3.") {
+            if let Some(flag) = panel_include(&|p| Path::new(p).exists()) {
+                store_cpp = join(&[&store_cpp, flag]);
+            }
+        }
         let py_cflags = if job.opts.debug {
             format!("-O0 {}", var("PYTHON_CFLAGS"))
         } else {
@@ -1451,6 +1465,26 @@ mod tests {
         ] {
             assert!(CA_CHECK.contains(want), "{want}");
         }
+    }
+
+    #[test]
+    fn panel_h_only_under_ncursesw_adds_the_include_flag() {
+        let only = |paths: &'static [&'static str]| move |p: &str| paths.contains(&p);
+        // Tumbleweed: only the ncursesw folder has it.
+        assert_eq!(
+            panel_include(&only(&["/usr/include/ncursesw/panel.h"])),
+            Some("-I/usr/include/ncursesw")
+        );
+        // Debian, Fedora, Arch: the top-level header is there, and no flag is needed.
+        assert_eq!(
+            panel_include(&only(&[
+                "/usr/include/panel.h",
+                "/usr/include/ncursesw/panel.h"
+            ])),
+            None
+        );
+        // No ncurses development files at all.
+        assert_eq!(panel_include(&only(&[])), None);
     }
 
     /// Plan ruling P8: every flag of the user's, `PYTHON_CPPFLAGS` and `PYTHON_LDFLAGS`
