@@ -36,7 +36,7 @@ python.org's builds.
 | D10 | Fonts in a no-root Tk | Tk built without Xft in the no-root case: fewer libraries, plainer fonts (accepted in review of §6). |
 | D11 | Tcl/Tk version | 8.6 for every source build, as CPython's own builds. Tk 9 only through the prebuilt route. |
 | D12 | Parity | Upstream pyenv has none of this. Each user-visible difference gets an allowlist entry. |
-| D13 | Scripts that set nothing (user, after a side-agent note) | **Phased.** Until M8b ships, a run with no terminal and neither `--deps` nor `RPYENV_BUILD_DEPS` keeps today's rule: the compiler, `make`, `patch`, `awk`, OpenSSL and zlib stop the build (`awk` and `patch` added after the first real runs: Tumbleweed's base image has no `awk`, and CPython's configure needs it); every other missing library only warns, and the build goes on. The run ends with a summary naming what is missing, the command that adds it, and the notice that a later release makes this stop the build. **M8c** makes the script default strict (`system`), because from then on a script without root can always answer with `--deps=build` (moved from M8b by the user on 2026-10-17: M8b can't build X11, so a script without root on a machine without X11 headers could not pass). Chosen over strict everywhere (breaks today's Dockerfiles on upgrade, while a script without root could only fail), lenient for good (scripts never get every module), a policy per pyenv root (Dockerfiles make fresh roots), automatic installs as root (installs packages nobody approved) and splitting libraries by weight (still breaks on the newly checked gdbm, uuid and crypt). |
+| D13 | Scripts that set nothing (user, after a side-agent note) | **Phased.** Until M8b ships, a run with no terminal and neither `--deps` nor `RPYENV_BUILD_DEPS` keeps today's rule: the compiler, `make`, `patch`, `awk`, OpenSSL and zlib stop the build (`awk` added after the first real runs: Tumbleweed's base image has no `awk`, and CPython's configure needs it); every other missing library only warns, and the build goes on. The run ends with a summary naming what is missing, the command that adds it, and the notice that a later release makes this stop the build. **M8c** makes the script default strict (`system`), because from then on a script without root can always answer with `--deps=build` (moved from M8b by the user on 2026-10-17: M8b can't build X11, so a script without root on a machine without X11 headers could not pass). Chosen over strict everywhere (breaks today's Dockerfiles on upgrade, while a script without root could only fail), lenient for good (scripts never get every module), a policy per pyenv root (Dockerfiles make fresh roots), automatic installs as root (installs packages nobody approved) and splitting libraries by weight (still breaks on the newly checked gdbm, uuid and crypt). |
 
 ## 3. Parts
 
@@ -217,9 +217,11 @@ no `openssl.cnf`: a distribution's config is written for its own OpenSSL and a v
 can fail on it (measured on Tumbleweed 2026-10-18: its vendor `openssl.cnf` made `ssl` raise
 `MODULE_INITIALIZATION_ERROR`). Its `cert.pem` and `certs` link to the system's
 certificates, so the distribution's updates still apply: `cert.pem` to the first existing of
-`<openssl version -d>/cert.pem`, `/etc/ssl/certs/ca-certificates.crt`,
-`/etc/pki/tls/certs/ca-bundle.crt`, `/etc/ssl/ca-bundle.pem`, `/etc/ssl/cert.pem`; `certs` to
-`/etc/ssl/certs` or `/etc/pki/tls/certs`, whichever is not empty. When the system has no
+`/etc/ssl/certs/ca-certificates.crt`, `/etc/pki/tls/certs/ca-bundle.crt`,
+`/etc/ssl/ca-bundle.pem`, `/etc/ssl/cert.pem`, and only last `<openssl version -d>/cert.pem` (an
+`openssl` first on `PATH` can be conda's or Linuxbrew's, not the system's); `certs` to
+`/etc/ssl/certs` or `/etc/pki/tls/certs`, whichever is not empty, else
+`<openssl version -d>/certs`. A link names the path as found, not its resolved target. When the system has no
 certificates and the user has no root, `cert.pem` is a regular file with a pinned Mozilla
 bundle (curl.se's `cacert.pem`, SHA-256 checked). The links are made again (under a
 temporary name, then renamed) whenever the store uses OpenSSL and at the start of every

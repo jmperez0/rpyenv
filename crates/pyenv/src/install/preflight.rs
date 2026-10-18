@@ -827,6 +827,7 @@ fn library_deps(
     cc: &str,
     run: Runner,
     minor: u32,
+    exists: &dyn Fn(&str) -> bool,
 ) -> Vec<Dep> {
     let mut out: Vec<Dep> = Vec::new();
     let ok = |r: Option<(bool, String)>| r.is_some_and(|(ok, _)| ok);
@@ -896,16 +897,18 @@ fn library_deps(
             continue;
         };
         let extra = include(alt);
-        // `curses.panel` needs `panel.h` too: at the top of the include path, or under
-        // `ncursesw/` (openSUSE), where the build adds `-I/usr/include/ncursesw` itself.
+        // `curses.panel` needs `<panel.h>` too, with the flags the build will use: where the
+        // system keeps it only under `ncursesw/` (openSUSE), the builder adds the include.
         if l.key == "ncurses" {
-            let flags = cpp_flags(env, &extra);
-            let compiles = |h: &str| {
+            let mut extra_flags = extra.clone();
+            extra_flags.extend(super::builder::panel_include(exists).map(str::to_string));
+            let flags = cpp_flags(env, &extra_flags);
+            let compiles = {
                 let mut args: Vec<&str> = flags.iter().map(String::as_str).collect();
                 args.extend(["-fsyntax-only", "-x", "c", "-"]);
-                ok(run(cc, &args, &header_probe_source(h), false))
+                ok(run(cc, &args, &header_probe_source("panel.h"), false))
             };
-            if !compiles("panel.h") && !compiles("ncursesw/panel.h") {
+            if !compiles {
                 out.push(Dep {
                     name: m.name,
                     required: true,
@@ -1013,7 +1016,9 @@ pub fn check3(env: &dyn Fn(&str) -> Option<String>, needs_patch: bool, minor: u3
     }
     // The compiler `check` found: on a host with `gcc` and no `cc`, that is gcc (M2).
     let cc = probe_compiler(env, &runs_with_input);
-    out.extend(library_deps(env, &cc, &runs_with_input, minor));
+    out.extend(library_deps(env, &cc, &runs_with_input, minor, &|p| {
+        std::path::Path::new(p).exists()
+    }));
     let dir = runs_with_input("openssl", &["version", "-d"], "", true)
         .and_then(|(ok, s)| ok.then_some(s))
         .and_then(|s| s.split('"').nth(1).map(str::to_string));
@@ -1451,7 +1456,7 @@ mod tests {
         let env = |_: &str| None;
         let cc = probe_compiler(&env, &run);
         assert_eq!(cc, "gcc");
-        let deps = library_deps(&env, &cc, &run, 12);
+        let deps = library_deps(&env, &cc, &run, 12, &|_| false);
         let got: Vec<(&str, &Missing)> = deps.iter().map(|d| (d.name, &d.missing)).collect();
         assert_eq!(
             got,
@@ -1470,24 +1475,27 @@ mod tests {
         );
     }
 
-    /// ncurses links, and `curses.panel` needs `panel.h`: found at the top, found under
-    /// `ncursesw/` (the build then adds the path), or missing (a `curses` item).
+    /// ncurses links, and `curses.panel` needs `<panel.h>` with the flags the build uses: at
+    /// the top, under `ncursesw/` (the builder's `-I` is then part of the probe), or missing.
     #[test]
     fn curses_needs_a_usable_panel_header() {
+        // `top`: /usr/include/panel.h; `under`: only /usr/include/ncursesw/panel.h.
         let probe = |top: bool, under: bool| {
-            let run = move |p: &str, _: &[&str], src: &str, _: bool| -> Option<(bool, String)> {
+            let run = move |p: &str, args: &[&str], src: &str, _: bool| -> Option<(bool, String)> {
                 if p == "pkg-config" {
                     return Some((false, String::new()));
                 }
-                if src.contains("<ncursesw/panel.h>") {
-                    return Some((under, String::new()));
-                }
                 if src.contains("<panel.h>") {
-                    return Some((top, String::new()));
+                    let flagged = args.contains(&"-I/usr/include/ncursesw");
+                    return Some((top || (under && flagged), String::new()));
                 }
                 Some((true, String::new()))
             };
-            let deps = library_deps(&|_: &str| None, "cc", &run, 12);
+            let exists = move |p: &str| {
+                (p == "/usr/include/panel.h" && top)
+                    || (p == "/usr/include/ncursesw/panel.h" && under)
+            };
+            let deps = library_deps(&|_: &str| None, "cc", &run, 12, &exists);
             deps.into_iter()
                 .map(|d| (d.name, d.lib, d.missing))
                 .collect::<Vec<_>>()
