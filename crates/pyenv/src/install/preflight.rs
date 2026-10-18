@@ -896,6 +896,25 @@ fn library_deps(
             continue;
         };
         let extra = include(alt);
+        // `curses.panel` needs `panel.h` too: at the top of the include path, or under
+        // `ncursesw/` (openSUSE), where the build adds `-I/usr/include/ncursesw` itself.
+        if l.key == "ncurses" {
+            let flags = cpp_flags(env, &extra);
+            let compiles = |h: &str| {
+                let mut args: Vec<&str> = flags.iter().map(String::as_str).collect();
+                args.extend(["-fsyntax-only", "-x", "c", "-"]);
+                ok(run(cc, &args, &header_probe_source(h), false))
+            };
+            if !compiles("panel.h") && !compiles("ncursesw/panel.h") {
+                out.push(Dep {
+                    name: m.name,
+                    required: true,
+                    missing: Missing::Header("panel.h".to_string()),
+                    lib: l.key,
+                });
+                continue;
+            }
+        }
         if let Some(need) = stdlib::min_version(l.key, minor) {
             out.extend(version_verdict(
                 env, cc, &extra, run, m.name, l.key, &need, false,
@@ -1448,6 +1467,36 @@ mod tests {
                 .all(|p| p == "gcc" || p == "pkg-config"),
             "{:?}",
             seen.borrow()
+        );
+    }
+
+    /// ncurses links, and `curses.panel` needs `panel.h`: found at the top, found under
+    /// `ncursesw/` (the build then adds the path), or missing (a `curses` item).
+    #[test]
+    fn curses_needs_a_usable_panel_header() {
+        let probe = |top: bool, under: bool| {
+            let run = move |p: &str, _: &[&str], src: &str, _: bool| -> Option<(bool, String)> {
+                if p == "pkg-config" {
+                    return Some((false, String::new()));
+                }
+                if src.contains("<ncursesw/panel.h>") {
+                    return Some((under, String::new()));
+                }
+                if src.contains("<panel.h>") {
+                    return Some((top, String::new()));
+                }
+                Some((true, String::new()))
+            };
+            let deps = library_deps(&|_: &str| None, "cc", &run, 12);
+            deps.into_iter()
+                .map(|d| (d.name, d.lib, d.missing))
+                .collect::<Vec<_>>()
+        };
+        assert!(probe(true, false).is_empty());
+        assert!(probe(false, true).is_empty(), "ncursesw/panel.h is enough");
+        assert_eq!(
+            probe(false, false),
+            [("curses", "ncurses", Missing::Header("panel.h".into()))]
         );
     }
 
