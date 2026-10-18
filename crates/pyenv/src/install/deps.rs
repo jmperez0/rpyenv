@@ -1,7 +1,8 @@
 //! How `pyenv install` gets missing build dependencies (M8 design §5): the routes, the
 //! package manager and its command, whether `sudo` can work, and the prompt's text.
 
-use super::preflight::{Dep, Missing};
+use super::catalog;
+use super::preflight::{Dep, Missing, Tools};
 use super::stdlib;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -16,7 +17,7 @@ pub enum Route {
 }
 
 /// What stops any build: CPython can't be built or used without these (M8 design D13).
-const HARD: [&str; 5] = ["compiler", "make", "patch", "openssl", "zlib"];
+const HARD: [&str; 6] = ["compiler", "make", "patch", "awk", "openssl", "zlib"];
 
 /// True when `lib` (a `Dep::lib`) is in the set that stops the build in lenient mode and
 /// keeps `[c]` out of the prompt.
@@ -101,12 +102,15 @@ impl Manager {
     }
 }
 
-/// Programs (compiler, make, patch, pkg-config) by manager.
+/// Programs (compiler, make, patch, awk, pkg-config) by manager.
 fn program_packages(lib: &str) -> Option<[&'static str; 5]> {
     match lib {
         "compiler" => Some(["build-essential", "gcc", "gcc", "base-devel", "build-base"]),
         "make" => Some(["make"; 5]),
         "patch" => Some(["patch"; 5]),
+        // `awk` is a virtual provider on Debian; gawk is the package everywhere (configure only
+        // needs some awk, and Tumbleweed's base image has none).
+        "awk" => Some(["gawk"; 5]),
         "pkg-config" => Some([
             "pkg-config",
             "pkgconf-pkg-config",
@@ -291,6 +295,7 @@ pub fn prompt_lines(
     deps: &[Dep],
     m: Option<Manager>,
     install: Result<Vec<String>, &'static str>,
+    build: Option<&BuildPlan>,
     crb: Option<&str>,
     continue_offered: bool,
 ) -> Vec<String> {
@@ -347,8 +352,31 @@ pub fn prompt_lines(
         }
         Err(reason) => out.push(format!("  [i] not offered: {reason}")),
     }
+    if let Some(p) = build {
+        match &p.blocked {
+            Some(why) => out.push(format!("  [b] not offered: {why}")),
+            None if p.not.is_empty() => {
+                out.push("  [b] build them from source for rpyenv, no root".into())
+            }
+            None => {
+                let not: Vec<String> = p
+                    .not
+                    .iter()
+                    .map(|(n, why)| {
+                        let why = why.replacen(" (", ", ", 1);
+                        format!("not {n}: {}", why.strip_suffix(')').unwrap_or(&why))
+                    })
+                    .collect();
+                out.push(format!(
+                    "  [b] build them from source for rpyenv, no root ({})",
+                    not.join("; ")
+                ));
+            }
+        }
+    }
     // Only optional libraries missing: the user may build without them, as a script does,
-    // instead of being stopped (a user without sudo has no other way until M8b).
+    // instead of being stopped (for a user without sudo, the other way is `[b]`, when it can
+    // build them here).
     if continue_offered {
         out.push("  [c] continue without them (the build warns about them at the end)".into());
     }
@@ -361,19 +389,142 @@ fn is_module(d: &Dep) -> bool {
     !matches!(d.missing, Missing::Program(_)) && d.lib != stdlib::CA_KEY
 }
 
-pub fn choice(line: &str, install_offered: bool, continue_offered: bool) -> Option<Route> {
+pub fn choice(
+    line: &str,
+    install_offered: bool,
+    build_offered: bool,
+    continue_offered: bool,
+) -> Option<Route> {
     match line.trim().to_ascii_lowercase().as_str() {
         "" | "p" => Some(Route::System),
         "i" if install_offered => Some(Route::Install),
+        "b" if build_offered => Some(Route::Build),
         "c" if continue_offered => Some(Route::Continue),
         _ => None,
     }
 }
 
+/// What `[b]` and `--deps=build` would do with `missing` (M8 design §6, plan rulings P2–P5).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuildPlan {
+    /// The `Dep::lib` values the build supplies.
+    pub libs: Vec<&'static str>,
+    /// The catalog keys to build, in `catalog::ORDER`.
+    pub keys: Vec<&'static str>,
+    /// What can't be built here: (`Dep::name`, why).
+    pub not: Vec<(&'static str, String)>,
+    /// Why the route can't run at all, when it can't.
+    pub blocked: Option<String>,
+}
+
+/// The package that brings what a build needs, per manager (apt, dnf, zypper, pacman, apk).
+fn tool_package(m: Option<Manager>, perl: bool) -> Option<&'static str> {
+    let col = m?.column();
+    Some(if perl {
+        ["perl", "perl-core", "perl", "perl", "perl"][col]
+    } else {
+        [
+            "libx11-dev",
+            "libX11-devel",
+            "libX11-devel",
+            "libx11",
+            "libx11-dev",
+        ][col]
+    })
+}
+
+pub fn build_plan(
+    missing: &[Dep],
+    minor: u32,
+    tools: &Tools,
+    root_ok: Result<(), String>,
+    m: Option<Manager>,
+) -> BuildPlan {
+    let blocked = |why: String| BuildPlan {
+        libs: Vec::new(),
+        keys: Vec::new(),
+        not: Vec::new(),
+        blocked: Some(why),
+    };
+    if minor < 7 {
+        return blocked("the build route needs CPython 3.7 or later".into());
+    }
+    if missing
+        .iter()
+        .any(|d| matches!(d.lib, "compiler" | "make" | "patch" | "awk"))
+    {
+        return blocked(
+            "it needs the C compiler, make, patch and awk from the system first".into(),
+        );
+    }
+    if let Err(why) = root_ok {
+        return blocked(why);
+    }
+    let mut libs: Vec<&'static str> = Vec::new();
+    let mut not: Vec<(&'static str, String)> = Vec::new();
+    for d in missing {
+        let keys = catalog::keys_for(d.lib);
+        if keys.is_empty() || libs.contains(&d.lib) || not.iter().any(|(n, _)| *n == d.name) {
+            continue;
+        }
+        let recipes = keys.iter().filter_map(|k| catalog::recipe(k));
+        let (needs_perl, needs_x11) =
+            recipes.fold((false, false), |(p, x), r| (p || r.perl, x || r.x11));
+        let with_package = |what: &str, perl: bool| match tool_package(m, perl) {
+            Some(p) => format!("{what} ({p})"),
+            None => what.to_string(),
+        };
+        if needs_perl && !tools.perl {
+            not.push((
+                d.name,
+                with_package("needs Perl 5 with its core modules", true),
+            ));
+        } else if needs_x11 && !tools.x11 {
+            not.push((d.name, with_package("needs the X11 headers", false)));
+        } else {
+            libs.push(d.lib);
+        }
+    }
+    let keys = catalog::plan(&libs);
+    if keys.is_empty() {
+        return BuildPlan {
+            blocked: Some("nothing missing can be built here".into()),
+            libs,
+            keys,
+            not,
+        };
+    }
+    BuildPlan {
+        libs,
+        keys,
+        not,
+        blocked: None,
+    }
+}
+
+/// The line `prompt` prints after an answer it can't use, listing the letters on offer.
+pub fn answer_hint(install_offered: bool, build_offered: bool, continue_offered: bool) -> String {
+    let mut letters = vec!["p"];
+    for (on, l) in [
+        (install_offered, "i"),
+        (build_offered, "b"),
+        (continue_offered, "c"),
+    ] {
+        if on {
+            letters.push(l);
+        }
+    }
+    let shown = match letters.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{} or {last}", rest.join(", ")),
+        _ => "p".to_string(),
+    };
+    format!("pyenv: answer {shown}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::install::preflight::{Dep, Missing};
+    use crate::install::preflight::{Dep, Missing, Tools};
 
     fn dep(name: &'static str, lib: &'static str) -> Dep {
         Dep {
@@ -583,6 +734,15 @@ mod tests {
             program_packages("pkg-config").unwrap()[Manager::Dnf.column()],
             "pkgconf-pkg-config"
         );
+        for m in [
+            Manager::Apt,
+            Manager::Dnf,
+            Manager::Zypper,
+            Manager::Pacman,
+            Manager::Apk,
+        ] {
+            assert_eq!(program_packages("awk").unwrap()[m.column()], "gawk");
+        }
         assert!(program_packages("no-such-lib").is_none());
     }
 
@@ -606,7 +766,15 @@ mod tests {
             },
         ];
         let argv = install_argv(Manager::Apt, &packages(Manager::Apt, &d), true, false);
-        let lines = prompt_lines("3.13.1", &d, Some(Manager::Apt), Ok(argv), None, false);
+        let lines = prompt_lines(
+            "3.13.1",
+            &d,
+            Some(Manager::Apt),
+            Ok(argv),
+            None,
+            None,
+            false,
+        );
         assert_eq!(
             lines,
             [
@@ -618,13 +786,29 @@ mod tests {
                 "  [i] install with sudo: sudo apt-get install libssl-dev uuid-dev",
             ]
         );
-        let lines = prompt_lines("3.13.1", &d, None, Err("no sudo on PATH"), None, false);
+        let lines = prompt_lines(
+            "3.13.1",
+            &d,
+            None,
+            Err("no sudo on PATH"),
+            None,
+            None,
+            false,
+        );
         assert!(
             lines.contains(&"  [i] not offered: no sudo on PATH".to_string()),
             "{lines:?}"
         );
         let root = install_argv(Manager::Apt, &packages(Manager::Apt, &d), false, false);
-        let lines = prompt_lines("3.13.1", &d, Some(Manager::Apt), Ok(root), None, false);
+        let lines = prompt_lines(
+            "3.13.1",
+            &d,
+            Some(Manager::Apt),
+            Ok(root),
+            None,
+            None,
+            false,
+        );
         assert_eq!(
             lines[5],
             "  [i] install: apt-get install libssl-dev uuid-dev"
@@ -650,7 +834,15 @@ mod tests {
                 lib: "libuuid",
             },
         ];
-        let lines = prompt_lines("3.13.1", &d, None, Err("no sudo on PATH"), None, false);
+        let lines = prompt_lines(
+            "3.13.1",
+            &d,
+            None,
+            Err("no sudo on PATH"),
+            None,
+            None,
+            false,
+        );
         assert_eq!(lines[1], "  ssl       OpenSSL 1.0.2 found, needs 1.1.1+");
         assert_eq!(lines[2], "  uuid      can't link -luuid");
     }
@@ -688,7 +880,15 @@ mod tests {
                 lib: stdlib::CA_KEY,
             },
         ];
-        let lines = prompt_lines("3.12.14", &d, None, Err("no sudo on PATH"), None, false);
+        let lines = prompt_lines(
+            "3.12.14",
+            &d,
+            None,
+            Err("no sudo on PATH"),
+            None,
+            None,
+            false,
+        );
         assert_eq!(
             lines[0],
             "pyenv: 3.12.14 can't build these modules: dbm, tkinter"
@@ -699,7 +899,7 @@ mod tests {
         );
         assert_eq!(lines[2], "  dbm       can't link -lgdbm -lgdbm_compat");
         assert_eq!(lines[3], "  tkinter   Tk 9.0.2 found, needs 8.5 or 8.6");
-        let only = prompt_lines("3.12.14", &d[2..], None, Err("x"), None, false);
+        let only = prompt_lines("3.12.14", &d[2..], None, Err("x"), None, None, false);
         assert_eq!(
             only[0],
             "pyenv: 3.12.14 needs: pkg-config, ssl certificates"
@@ -717,6 +917,7 @@ mod tests {
             &d,
             Some(Manager::Dnf),
             Err("x"),
+            None,
             Some(crb),
             false,
         );
@@ -726,11 +927,20 @@ mod tests {
 
     #[test]
     fn choices() {
-        assert!(matches!(choice("", true, false), Some(Route::System)));
-        assert!(matches!(choice("p", true, false), Some(Route::System)));
-        assert!(matches!(choice("I", true, false), Some(Route::Install)));
-        assert!(choice("i", false, false).is_none());
-        assert!(choice("x", true, false).is_none());
+        assert!(matches!(
+            choice("", true, false, false),
+            Some(Route::System)
+        ));
+        assert!(matches!(
+            choice("p", true, false, false),
+            Some(Route::System)
+        ));
+        assert!(matches!(
+            choice("I", true, false, false),
+            Some(Route::Install)
+        ));
+        assert!(choice("i", false, false, false).is_none());
+        assert!(choice("x", true, false, false).is_none());
         assert!(matches!(Route::parse("install"), Some(Route::Install)));
         assert!(matches!(Route::parse("prebuilt"), Some(Route::Prebuilt)));
         assert!(Route::parse("yes").is_none());
@@ -779,18 +989,40 @@ mod tests {
     #[test]
     fn continue_is_offered_only_for_optional_libraries() {
         let d = [dep("tkinter", "tk"), dep("uuid", "libuuid")];
-        let lines = prompt_lines("3.12.14", &d, None, Err("no sudo on PATH"), None, true);
+        let lines = prompt_lines(
+            "3.12.14",
+            &d,
+            None,
+            Err("no sudo on PATH"),
+            None,
+            None,
+            true,
+        );
         assert_eq!(
             lines.last().unwrap(),
             "  [c] continue without them (the build warns about them at the end)"
         );
-        let without = prompt_lines("3.12.14", &d, None, Err("no sudo on PATH"), None, false);
+        let without = prompt_lines(
+            "3.12.14",
+            &d,
+            None,
+            Err("no sudo on PATH"),
+            None,
+            None,
+            false,
+        );
         assert!(!without.iter().any(|l| l.contains("[c]")), "{without:?}");
-        assert!(matches!(choice("c", false, true), Some(Route::Continue)));
-        assert!(matches!(choice(" C ", false, true), Some(Route::Continue)));
-        assert!(choice("c", true, false).is_none());
+        assert!(matches!(
+            choice("c", false, false, true),
+            Some(Route::Continue)
+        ));
+        assert!(matches!(
+            choice(" C ", false, false, true),
+            Some(Route::Continue)
+        ));
+        assert!(choice("c", true, false, false).is_none());
         assert!(Route::parse("continue").is_none(), "not a --deps value");
-        for hard in ["compiler", "make", "patch", "openssl", "zlib"] {
+        for hard in ["compiler", "make", "patch", "awk", "openssl", "zlib"] {
             assert!(is_hard(hard), "{hard}");
         }
         for soft in ["tk", "libuuid", "gdbm", "pkg-config", CA_KEY_FOR_TEST] {
@@ -799,4 +1031,267 @@ mod tests {
     }
 
     const CA_KEY_FOR_TEST: &str = stdlib::CA_KEY;
+
+    const ALL_TOOLS: Tools = Tools {
+        perl: true,
+        x11: true,
+    };
+
+    #[test]
+    fn the_build_plan_turns_missing_libraries_into_catalog_keys() {
+        let missing = [
+            dep("ssl", "openssl"),
+            dep("tkinter", "tk"),
+            dep("uuid", "libuuid"),
+        ];
+        let p = build_plan(&missing, 12, &ALL_TOOLS, Ok(()), Some(Manager::Apt));
+        assert_eq!(p.blocked, None);
+        assert!(p.not.is_empty(), "{:?}", p.not);
+        assert_eq!(p.keys, ["tcl", "tk", "libuuid", "openssl"]);
+        assert_eq!(p.libs, ["openssl", "tk", "libuuid"]);
+    }
+
+    /// Plan rulings P3 and P4: Tk without X11 headers, OpenSSL without Perl's modules.
+    #[test]
+    fn libraries_the_tools_cant_build_are_named_with_their_package() {
+        let missing = [
+            dep("ssl", "openssl"),
+            dep("tkinter", "tk"),
+            dep("uuid", "libuuid"),
+        ];
+        let none = Tools {
+            perl: false,
+            x11: false,
+        };
+        let p = build_plan(&missing, 12, &none, Ok(()), Some(Manager::Dnf));
+        assert_eq!(p.keys, ["libuuid"]);
+        assert_eq!(
+            p.not,
+            [
+                (
+                    "ssl",
+                    "needs Perl 5 with its core modules (perl-core)".to_string()
+                ),
+                (
+                    "tkinter",
+                    "needs the X11 headers (libX11-devel)".to_string()
+                ),
+            ]
+        );
+        let apt = build_plan(&missing, 12, &none, Ok(()), Some(Manager::Apt));
+        assert!(
+            apt.not
+                .contains(&("tkinter", "needs the X11 headers (libx11-dev)".to_string())),
+            "{:?}",
+            apt.not
+        );
+        assert!(
+            apt.not.contains(&(
+                "ssl",
+                "needs Perl 5 with its core modules (perl)".to_string()
+            )),
+            "{:?}",
+            apt.not
+        );
+        let unknown = build_plan(&missing, 12, &none, Ok(()), None);
+        assert!(
+            unknown
+                .not
+                .contains(&("tkinter", "needs the X11 headers".to_string())),
+            "{:?}",
+            unknown.not
+        );
+        let only_tk = build_plan(
+            &[dep("tkinter", "tk")],
+            12,
+            &none,
+            Ok(()),
+            Some(Manager::Apt),
+        );
+        assert_eq!(
+            only_tk.blocked.as_deref(),
+            Some("nothing missing can be built here")
+        );
+    }
+
+    #[test]
+    fn the_build_route_is_blocked_without_a_compiler_for_old_pythons_and_odd_roots() {
+        let compiler = Dep {
+            name: "C compiler",
+            required: true,
+            missing: Missing::Program("cc".into()),
+            lib: "compiler",
+        };
+        let p = build_plan(
+            &[compiler, dep("uuid", "libuuid")],
+            12,
+            &ALL_TOOLS,
+            Ok(()),
+            None,
+        );
+        assert_eq!(
+            p.blocked.as_deref(),
+            Some("it needs the C compiler, make, patch and awk from the system first")
+        );
+        let old = build_plan(&[dep("uuid", "libuuid")], 6, &ALL_TOOLS, Ok(()), None);
+        assert_eq!(
+            old.blocked.as_deref(),
+            Some("the build route needs CPython 3.7 or later")
+        );
+        let root = build_plan(
+            &[dep("uuid", "libuuid")],
+            12,
+            &ALL_TOOLS,
+            Err("PYENV_ROOT has a space or a shell character in its path (/a b)".into()),
+            None,
+        );
+        assert_eq!(
+            root.blocked.as_deref(),
+            Some("PYENV_ROOT has a space or a shell character in its path (/a b)")
+        );
+    }
+
+    #[test]
+    fn the_build_route_is_blocked_without_awk() {
+        let awk = Dep {
+            name: "awk",
+            required: true,
+            missing: Missing::Program("awk".into()),
+            lib: "awk",
+        };
+        let p = build_plan(&[awk, dep("uuid", "libuuid")], 12, &ALL_TOOLS, Ok(()), None);
+        assert_eq!(
+            p.blocked.as_deref(),
+            Some("it needs the C compiler, make, patch and awk from the system first")
+        );
+    }
+
+    #[test]
+    fn a_missing_awk_reads_like_a_missing_program_in_the_prompt() {
+        let awk = Dep {
+            name: "awk",
+            required: true,
+            missing: Missing::Program("awk".into()),
+            lib: "awk",
+        };
+        let lines = prompt_lines(
+            "3.12.14",
+            &[awk],
+            Some(Manager::Zypper),
+            Ok(vec!["zypper".into(), "install".into(), "gawk".into()]),
+            None,
+            None,
+            false,
+        );
+        let text = lines.join(
+            "
+",
+        );
+        assert!(text.contains("needs: awk"), "{text}");
+        assert!(text.contains("no awk program"), "{text}");
+    }
+
+    #[test]
+    fn pkg_config_and_ca_certificates_are_buildable() {
+        let pc = Dep {
+            name: "pkg-config",
+            required: true,
+            missing: Missing::Program("pkg-config".into()),
+            lib: "pkg-config",
+        };
+        let ca = Dep {
+            name: "ssl certificates",
+            required: true,
+            missing: Missing::Certificates,
+            lib: stdlib::CA_KEY,
+        };
+        let p = build_plan(&[pc, ca], 13, &ALL_TOOLS, Ok(()), None);
+        assert_eq!(p.keys, ["pkgconf", "openssl"]);
+        assert_eq!(p.libs, ["pkg-config", stdlib::CA_KEY]);
+    }
+
+    #[test]
+    fn the_prompt_offers_b_and_says_what_it_leaves_out() {
+        let missing = [dep("ssl", "openssl"), dep("tkinter", "tk")];
+        let partial = build_plan(
+            &missing,
+            12,
+            &Tools {
+                perl: true,
+                x11: false,
+            },
+            Ok(()),
+            Some(Manager::Apt),
+        );
+        let lines = prompt_lines(
+            "3.12.15",
+            &missing,
+            Some(Manager::Apt),
+            Err("sudo was not found"),
+            Some(&partial),
+            None,
+            false,
+        );
+        assert!(lines.contains(&"  [b] build them from source for rpyenv, no root (not tkinter: needs the X11 headers, libx11-dev)".to_string()), "{lines:#?}");
+        let full = build_plan(&missing, 12, &ALL_TOOLS, Ok(()), Some(Manager::Apt));
+        let lines = prompt_lines(
+            "3.12.15",
+            &missing,
+            Some(Manager::Apt),
+            Err("sudo was not found"),
+            Some(&full),
+            None,
+            false,
+        );
+        let at = lines
+            .iter()
+            .position(|l| l == "  [b] build them from source for rpyenv, no root")
+            .expect("no [b]");
+        let i_at = lines.iter().position(|l| l.starts_with("  [i]")).unwrap();
+        assert!(i_at < at, "[b] comes after [i]");
+        let blocked = build_plan(
+            &[dep("tkinter", "tk")],
+            12,
+            &Tools {
+                perl: true,
+                x11: false,
+            },
+            Ok(()),
+            Some(Manager::Apt),
+        );
+        let lines = prompt_lines(
+            "3.12.15",
+            &missing,
+            Some(Manager::Apt),
+            Err("x"),
+            Some(&blocked),
+            None,
+            false,
+        );
+        assert!(
+            lines.contains(&"  [b] not offered: nothing missing can be built here".to_string()),
+            "{lines:#?}"
+        );
+        let none = prompt_lines(
+            "3.12.15",
+            &missing,
+            Some(Manager::Apt),
+            Err("x"),
+            None,
+            None,
+            false,
+        );
+        assert!(!none.iter().any(|l| l.starts_with("  [b]")), "{none:#?}");
+    }
+
+    #[test]
+    fn b_is_a_choice_only_when_offered_and_the_hint_lists_the_letters() {
+        assert_eq!(choice("b", false, true, false), Some(Route::Build));
+        assert_eq!(choice("B", true, true, true), Some(Route::Build));
+        assert_eq!(choice("b", true, false, true), None);
+        assert_eq!(answer_hint(true, true, true), "pyenv: answer p, i, b or c");
+        assert_eq!(answer_hint(false, true, false), "pyenv: answer p or b");
+        assert_eq!(answer_hint(true, false, true), "pyenv: answer p, i or c");
+        assert_eq!(answer_hint(false, false, false), "pyenv: answer p");
+    }
 }

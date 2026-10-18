@@ -20,7 +20,7 @@ case "$1" in
   -c) case "$2" in
         *get_default_verify_paths*) [ -n "$FAKE_PY_NO_CA" ] || exit 0
           echo /fake/ssl/cert.pem; echo /fake/ssl/certs; exit 1;;
-        *tkinter.Tcl*) [ -n "$FAKE_PY_NO_TCL" ] && exit 1; exit 0;;
+        *tkinter.Tcl*) [ -n "$FAKE_PY_NO_TCL" ] && exit 1; [ -n "$FAKE_PY_TCL_LIBRARY" ] && echo "$FAKE_PY_TCL_LIBRARY"; exit 0;;
       esac
       mod="${2#import }"
       for m in $FAKE_PY_MISSING; do

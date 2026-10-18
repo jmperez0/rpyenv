@@ -313,17 +313,19 @@ pub fn report_deps(
     root: bool,
     refuse: bool,
 ) -> Vec<String> {
-    report_deps_with(missing, os_release, root, refuse, false)
+    report_deps_with(missing, os_release, root, refuse, false, false)
 }
 
 /// As `report_deps`; `apt_update`: the apt package lists are empty, so the command starts
-/// with `apt-get update &&` (M8 design §5.3).
+/// with `apt-get update &&` (M8 design §5.3). `build_route`: `--deps=build` could run for this
+/// version and root (CPython 3.7 or later, a plain `PYENV_ROOT`: plan rulings P2, P5).
 pub fn report_deps_with(
     missing: &[Dep],
     os_release: Option<&str>,
     root: bool,
     refuse: bool,
     apt_update: bool,
+    build_route: bool,
 ) -> Vec<String> {
     use super::deps;
     let mut lines = Vec::new();
@@ -348,6 +350,18 @@ pub fn report_deps_with(
         lines.extend(os_release.and_then(|o| deps::crb_line(o, root)));
         lines.push("Install them with:".to_string());
         lines.push(format!("  {cmd}"));
+    }
+    // M8b: the way out without root, where the build route can run (not when the compiler or
+    // make itself is missing).
+    if refuse
+        && build_route
+        && !missing
+            .iter()
+            .any(|d| matches!(d.lib, "compiler" | "make" | "patch" | "awk"))
+    {
+        lines.push(
+            "Without root, pyenv install --deps=build compiles them from source.".to_string(),
+        );
     }
     if refuse {
         lines.push("To build anyway, set RPYENV_SKIP_PREFLIGHT=1.".to_string());
@@ -687,6 +701,67 @@ pub(crate) fn ca_present(
     file || dir
 }
 
+/// What the build route needs besides a compiler and `make` (plan rulings P3, P4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Tools {
+    /// Perl with the core modules OpenSSL's `Configure` and libxcrypt's scripts load.
+    pub perl: bool,
+    /// The X11 headers and libX11, which Tk needs until M8c.
+    pub x11: bool,
+}
+
+/// The Perl modules OpenSSL's and libxcrypt's build scripts load that Fedora 44's
+/// `perl-interpreter` alone lacks (measured 2026-10-17; `perl-core` has them).
+pub const PERL_MODULES: [&str; 6] = [
+    "FindBin",
+    "lib",
+    "IPC::Cmd",
+    "File::Compare",
+    "File::Copy",
+    "Digest::SHA",
+];
+
+/// Probes for `Tools`. Debug builds: `RPYENV_TEST_BUILD_TOOLS` (a comma list of `perl`, `x11`)
+/// names the tools present instead.
+pub fn build_tools(env: &dyn Fn(&str) -> Option<String>) -> Tools {
+    if cfg!(debug_assertions) {
+        if let Some(list) = env("RPYENV_TEST_BUILD_TOOLS") {
+            let has = |t: &str| list.split(',').map(str::trim).any(|w| w == t);
+            return Tools {
+                perl: has("perl"),
+                x11: has("x11"),
+            };
+        }
+    }
+    let path = env("PATH");
+    let run = |program: &str, args: &[&str], input: &str, capture: bool| {
+        run_with_input(path.as_deref(), program, args, input, capture)
+    };
+    let mut perl_args: Vec<String> = PERL_MODULES.iter().map(|m| format!("-M{m}")).collect();
+    perl_args.push("-e1".into());
+    let perl_args: Vec<&str> = perl_args.iter().map(String::as_str).collect();
+    let perl = run("perl", &perl_args, "", false).is_some_and(|(ok, _)| ok);
+    let cc = probe_compiler(env, &run);
+    let tmp = probe_path();
+    let x11 = link_probe(
+        env,
+        &cc,
+        &|p, a| {
+            run(
+                p,
+                a,
+                "#include <X11/Xlib.h>\nint main(void) { return XOpenDisplay(0) != 0; }\n",
+                false,
+            )
+            .is_some_and(|(ok, _)| ok)
+        },
+        &["-lX11"],
+        &tmp.display().to_string(),
+    );
+    let _ = std::fs::remove_file(&tmp);
+    Tools { perl, x11 }
+}
+
 /// Runs `program` (its words split, as `$CC` may be `ccache gcc`) with `input` on stdin;
 /// `(success, stdout)` when it could be started. Stderr is dropped.
 fn run_with_input(
@@ -715,6 +790,9 @@ fn run_with_input(
         let _ = s.write_all(input.as_bytes());
     }
     let o = child.wait_with_output().ok()?;
+    // A probe killed by Ctrl+C: the caller's `interrupted()` check must see it (no race with
+    // the handler thread).
+    super::note_child_status(&o.status);
     Some((
         o.status.success(),
         String::from_utf8_lossy(&o.stdout).into_owned(),
@@ -749,6 +827,7 @@ fn library_deps(
     cc: &str,
     run: Runner,
     minor: u32,
+    exists: &dyn Fn(&str) -> bool,
 ) -> Vec<Dep> {
     let mut out: Vec<Dep> = Vec::new();
     let ok = |r: Option<(bool, String)>| r.is_some_and(|(ok, _)| ok);
@@ -818,6 +897,27 @@ fn library_deps(
             continue;
         };
         let extra = include(alt);
+        // `curses.panel` needs `<panel.h>` too, with the flags the build will use: where the
+        // system keeps it only under `ncursesw/` (openSUSE), the builder adds the include.
+        if l.key == "ncurses" {
+            let mut extra_flags = extra.clone();
+            extra_flags.extend(super::builder::panel_include(exists).map(str::to_string));
+            let flags = cpp_flags(env, &extra_flags);
+            let compiles = {
+                let mut args: Vec<&str> = flags.iter().map(String::as_str).collect();
+                args.extend(["-fsyntax-only", "-x", "c", "-"]);
+                ok(run(cc, &args, &header_probe_source("panel.h"), false))
+            };
+            if !compiles {
+                out.push(Dep {
+                    name: m.name,
+                    required: true,
+                    missing: Missing::Header("panel.h".to_string()),
+                    lib: l.key,
+                });
+                continue;
+            }
+        }
         if let Some(need) = stdlib::min_version(l.key, minor) {
             out.extend(version_verdict(
                 env, cc, &extra, run, m.name, l.key, &need, false,
@@ -849,6 +949,7 @@ pub fn check3(env: &dyn Fn(&str) -> Option<String>, needs_patch: bool, minor: u3
                     "compiler" => Some(("C compiler", "compiler", "cc")),
                     "make" => Some(("make", "make", "make")),
                     "patch" => Some(("patch", "patch", "patch")),
+                    "awk" => Some(("awk", "awk", "awk")),
                     "pkg-config" => Some(("pkg-config", "pkg-config", "pkg-config")),
                     _ => None,
                 };
@@ -862,7 +963,7 @@ pub fn check3(env: &dyn Fn(&str) -> Option<String>, needs_patch: bool, minor: u3
                     continue;
                 }
                 let Some(l) = stdlib::lib(k) else {
-                    panic!("RPYENV_TEST_PREFLIGHT: unknown key {k:?} (a stdlib library key, compiler, make, patch or pkg-config)");
+                    panic!("RPYENV_TEST_PREFLIGHT: unknown key {k:?} (a stdlib library key, compiler, make, patch, awk or pkg-config)");
                 };
                 let name = stdlib::modules(minor)
                     .iter()
@@ -887,14 +988,24 @@ pub fn check3(env: &dyn Fn(&str) -> Option<String>, needs_patch: bool, minor: u3
             ..d
         })
         .collect();
-    if out.iter().any(|d| d.lib == "compiler") {
-        return out;
-    }
     let path = env("PATH");
     let runs_with_input =
         |program: &str, args: &[&str], input: &str, capture: bool| -> Option<(bool, String)> {
             run_with_input(path.as_deref(), program, args, input, capture)
         };
+    // CPython's configure (and the libraries' of the build route) run `awk`; some minimal
+    // images (Tumbleweed) have none. `--version` is not portable across gawk, mawk and busybox.
+    if runs_with_input("awk", &["BEGIN { exit 0 }"], "", false).is_none_or(|(ok, _)| !ok) {
+        out.push(Dep {
+            name: "awk",
+            required: true,
+            missing: Missing::Program("awk".into()),
+            lib: "awk",
+        });
+    }
+    if out.iter().any(|d| d.lib == "compiler") {
+        return out;
+    }
     if runs_with_input("pkg-config", &["--version"], "", false).is_none_or(|(ok, _)| !ok) {
         out.push(Dep {
             name: "pkg-config",
@@ -905,7 +1016,9 @@ pub fn check3(env: &dyn Fn(&str) -> Option<String>, needs_patch: bool, minor: u3
     }
     // The compiler `check` found: on a host with `gcc` and no `cc`, that is gcc (M2).
     let cc = probe_compiler(env, &runs_with_input);
-    out.extend(library_deps(env, &cc, &runs_with_input, minor));
+    out.extend(library_deps(env, &cc, &runs_with_input, minor, &|p| {
+        std::path::Path::new(p).exists()
+    }));
     let dir = runs_with_input("openssl", &["version", "-d"], "", true)
         .and_then(|(ok, s)| ok.then_some(s))
         .and_then(|s| s.split('"').nth(1).map(str::to_string));
@@ -932,6 +1045,27 @@ pub fn check3(env: &dyn Fn(&str) -> Option<String>, needs_patch: bool, minor: u3
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_build_tools_hook_names_the_tools_present() {
+        let env = |k: &str| (k == "RPYENV_TEST_BUILD_TOOLS").then(|| "x11".to_string());
+        assert_eq!(
+            build_tools(&env),
+            Tools {
+                perl: false,
+                x11: true
+            }
+        );
+        let none = |k: &str| (k == "RPYENV_TEST_BUILD_TOOLS").then(String::new);
+        assert_eq!(
+            build_tools(&none),
+            Tools {
+                perl: false,
+                x11: false
+            }
+        );
+        assert!(PERL_MODULES.contains(&"IPC::Cmd") && PERL_MODULES.contains(&"FindBin"));
+    }
 
     fn missing_only(names: &'static [&'static str]) -> impl Fn(&Probe) -> bool {
         move |p: &Probe| match p {
@@ -1322,7 +1456,7 @@ mod tests {
         let env = |_: &str| None;
         let cc = probe_compiler(&env, &run);
         assert_eq!(cc, "gcc");
-        let deps = library_deps(&env, &cc, &run, 12);
+        let deps = library_deps(&env, &cc, &run, 12, &|_| false);
         let got: Vec<(&str, &Missing)> = deps.iter().map(|d| (d.name, &d.missing)).collect();
         assert_eq!(
             got,
@@ -1341,6 +1475,39 @@ mod tests {
         );
     }
 
+    /// ncurses links, and `curses.panel` needs `<panel.h>` with the flags the build uses: at
+    /// the top, under `ncursesw/` (the builder's `-I` is then part of the probe), or missing.
+    #[test]
+    fn curses_needs_a_usable_panel_header() {
+        // `top`: /usr/include/panel.h; `under`: only /usr/include/ncursesw/panel.h.
+        let probe = |top: bool, under: bool| {
+            let run = move |p: &str, args: &[&str], src: &str, _: bool| -> Option<(bool, String)> {
+                if p == "pkg-config" {
+                    return Some((false, String::new()));
+                }
+                if src.contains("<panel.h>") {
+                    let flagged = args.contains(&"-I/usr/include/ncursesw");
+                    return Some((top || (under && flagged), String::new()));
+                }
+                Some((true, String::new()))
+            };
+            let exists = move |p: &str| {
+                (p == "/usr/include/panel.h" && top)
+                    || (p == "/usr/include/ncursesw/panel.h" && under)
+            };
+            let deps = library_deps(&|_: &str| None, "cc", &run, 12, &exists);
+            deps.into_iter()
+                .map(|d| (d.name, d.lib, d.missing))
+                .collect::<Vec<_>>()
+        };
+        assert!(probe(true, false).is_empty());
+        assert!(probe(false, true).is_empty(), "ncursesw/panel.h is enough");
+        assert_eq!(
+            probe(false, false),
+            [("curses", "ncurses", Missing::Header("panel.h".into()))]
+        );
+    }
+
     /// Final review M2, on real processes: a PATH with `gcc` and no `cc` (and `make`,
     /// `pkg-config`) finds every library, where the probes once ran `cc` and failed to start.
     #[test]
@@ -1356,6 +1523,7 @@ mod tests {
         // gcc: succeeds at everything; `-E` prints nothing, so no version text is read.
         stub("gcc", "exit 0");
         stub("make", "exit 0");
+        stub("awk", "exit 0");
         stub("pkg-config", "[ \"$1\" = --version ] && exit 0\nexit 1");
         let certs = d.join("certs.pem");
         std::fs::write(&certs, "x").unwrap();
@@ -1423,6 +1591,49 @@ mod tests {
         assert!(deps
             .iter()
             .all(|d| matches!(d.missing, Missing::Program(_))));
+    }
+
+    #[test]
+    fn the_test_hook_knows_awk() {
+        let env = |k: &str| (k == "RPYENV_TEST_PREFLIGHT").then(|| "awk".to_string());
+        let deps = check3(&env, false, 12);
+        assert_eq!(
+            deps,
+            vec![Dep {
+                name: "awk",
+                required: true,
+                missing: Missing::Program("awk".into()),
+                lib: "awk"
+            }]
+        );
+    }
+
+    #[test]
+    fn a_host_without_awk_reports_it_and_no_awk_is_not_cpython_2() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = std::env::temp_dir().join(format!("rpyenv-no-awk-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        for name in ["gcc", "make", "pkg-config"] {
+            let p = d.join(name);
+            std::fs::write(
+                &p,
+                "#!/bin/sh
+exit 0
+",
+            )
+            .unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let path = d.display().to_string();
+        let env = |k: &str| (k == "PATH").then(|| path.clone());
+        let three = check3(&env, false, 12);
+        let two = check(&env, false);
+        let _ = std::fs::remove_dir_all(&d);
+        assert!(
+            three.iter().any(|x| x.lib == "awk" && x.required),
+            "{three:#?}"
+        );
+        assert!(two.iter().all(|x| x.lib != "awk"), "{two:#?}");
     }
 
     #[cfg(debug_assertions)]
@@ -1495,6 +1706,43 @@ mod tests {
                 "To build anyway, set RPYENV_SKIP_PREFLIGHT=1.",
             ]
         );
+        // M8b: where the build route can run, the refusal names it.
+        let hint = report_deps_with(&d, Some(os), false, true, false, true);
+        assert_eq!(
+            hint[4..],
+            [
+                "Without root, pyenv install --deps=build compiles them from source.",
+                "To build anyway, set RPYENV_SKIP_PREFLIGHT=1.",
+            ]
+        );
+        // M8b: no build-route hint when the compiler itself is missing (the route needs it).
+        let cc = [Dep {
+            name: "C compiler",
+            required: true,
+            missing: Missing::Program("cc".into()),
+            lib: "compiler",
+        }];
+        let no_cc = report_deps_with(&cc, Some(os), false, true, false, true);
+        assert!(
+            !no_cc.iter().any(|l| l.contains("--deps=build")),
+            "{no_cc:?}"
+        );
+        assert_eq!(
+            no_cc.last().map(String::as_str),
+            Some("To build anyway, set RPYENV_SKIP_PREFLIGHT=1.")
+        );
+        // ... nor when awk is (the route needs it from the system as well).
+        let awk = [Dep {
+            name: "awk",
+            required: true,
+            missing: Missing::Program("awk".into()),
+            lib: "awk",
+        }];
+        let no_awk = report_deps_with(&awk, Some(os), false, true, false, true);
+        assert!(
+            !no_awk.iter().any(|l| l.contains("--deps=build")),
+            "{no_awk:?}"
+        );
         let warn = report_deps(&d, Some(os), true, false);
         assert_eq!(
             warn,
@@ -1505,7 +1753,7 @@ mod tests {
                 "  apt-get install uuid-dev",
             ]
         );
-        let upd = report_deps_with(&d, Some(os), false, false, true);
+        let upd = report_deps_with(&d, Some(os), false, false, true, false);
         assert_eq!(
             upd[3],
             "  sudo apt-get update && sudo apt-get install uuid-dev"

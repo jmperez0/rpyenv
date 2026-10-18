@@ -10,6 +10,11 @@ use std::path::Path;
 use std::time::Duration;
 
 pub fn rehash(ctx: &Ctx, _args: &[&str]) -> Output {
+    // The shared Tcl/Tk script folders venvs read (M8 design §6.3), when one was deleted.
+    #[cfg(unix)]
+    if ctx.flavor == Flavor::Pyenv {
+        crate::install::record::heal_scripts(&ctx.root);
+    }
     if ctx.flavor == Flavor::PyenvWin
         && installed::top_level(&ctx.versions_dir(), Flavor::PyenvWin).is_empty()
     {
