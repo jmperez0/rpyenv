@@ -49,7 +49,7 @@ provide them. Then you choose:
 | `p` (default) | Prints the install command and stops |
 | `i` | Runs the command through `sudo` (no `sudo` when you are root; no `-y`), then checks again |
 | `b` | Builds the missing libraries from source, without root, and links them into Python. Offered for CPython 3.7 and later when the compiler, `make`, `patch` and `awk` are there; it says what it can't build here and why |
-| `c` | Builds without the missing libraries and lists them at the end. Offered only when the compiler, `make`, `patch`, `awk`, OpenSSL and zlib are all there |
+| `c` | Builds without the missing libraries and lists them at the end. Offered only when the compiler, `make`, `patch` (when the definition needs it), `awk`, OpenSSL and zlib are all there |
 
 `i` is left out, with the reason, when `sudo` can't be used or rpyenv doesn't know your
 distribution. rpyenv knows apt, dnf, zypper and pacman. Alpine comes later.
@@ -114,7 +114,9 @@ and links it into Python statically. Nothing is installed on the system.
   rpyenv pins (curl's copy of Mozilla's list); `pyenv install` keeps the links and the bundle
   current, and replaces the bundle when an rpyenv upgrade pins a newer one. rpyenv itself
   downloads without system certificates too: it then trusts Mozilla's list compiled into it,
-  and still checks every download's SHA-256.
+  and still checks every download's SHA-256. The folder is rpyenv's: it replaces `cert.pem`
+  when it needs to, so don't edit it. To trust your own certificates, set `SSL_CERT_FILE` (or
+  `SSL_CERT_DIR`) for the Python you run.
 - **Updates:** each version built this way lists its libraries in `versions/<v>/.rpyenv-deps`.
   When an rpyenv upgrade pins a newer version of one of them, `pyenv install` prints one line
   per affected Python version, with the command that rebuilds it.

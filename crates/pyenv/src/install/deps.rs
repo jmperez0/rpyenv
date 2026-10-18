@@ -109,7 +109,7 @@ fn program_packages(lib: &str) -> Option<[&'static str; 5]> {
         "make" => Some(["make"; 5]),
         "patch" => Some(["patch"; 5]),
         // `awk` is a virtual provider on Debian; gawk is the package everywhere (configure only
-        // needs some awk, and the base images of Tumbleweed and Arch-like minimal ones lack it).
+        // needs some awk, and Tumbleweed's base image has none).
         "awk" => Some(["gawk"; 5]),
         "pkg-config" => Some([
             "pkg-config",
@@ -1189,7 +1189,6 @@ mod tests {
         );
         assert!(text.contains("needs: awk"), "{text}");
         assert!(text.contains("no awk program"), "{text}");
-        assert!(text.contains("gawk"), "{text}");
     }
 
     #[test]

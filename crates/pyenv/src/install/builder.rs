@@ -171,7 +171,8 @@ struct Plan {
 }
 
 impl Plan {
-    fn new(job: &Job, prefix: PathBuf) -> Result<Plan, String> {
+    /// `exists`: whether a path exists (injected for `panel_include`).
+    fn new(job: &Job, prefix: PathBuf, exists: &dyn Fn(&str) -> bool) -> Result<Plan, String> {
         let env = job.env;
         let var = |k: &str| -> String {
             job.definition
@@ -239,9 +240,16 @@ impl Plan {
         let store = job.store;
         let store_ld = store.map(|s| s.ldflags.join(" ")).unwrap_or_default();
         let mut store_cpp = store.map(|s| s.cppflags.join(" ")).unwrap_or_default();
-        // Linux, CPython 3: configure looks for `panel.h` with the flags it is given only.
-        if cfg!(target_os = "linux") && name.starts_with("3.") {
-            if let Some(flag) = panel_include(&|p| Path::new(p).exists()) {
+        // Linux, CPython 3 (the definition has a `verify_py3*` step, as the check uses): configure
+        // looks for `panel.h` with the flags it is given only.
+        let cpython3 = job
+            .definition
+            .packages
+            .iter()
+            .flat_map(|p| p.steps.iter())
+            .any(|s| super::stdlib::minor_of_step(s).is_some());
+        if cfg!(target_os = "linux") && cpython3 {
+            if let Some(flag) = panel_include(exists) {
                 store_cpp = join(&[&store_cpp, flag]);
             }
         }
@@ -957,7 +965,7 @@ pub fn run(job: &Job, txn: &mut Txn, say: &mut dyn FnMut(&str)) -> R<()> {
         .filter(|v| !v.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| tmp.join(format!("python-build.{seed}")));
-    let plan = Plan::new(job, prefix).map_err(|m| {
+    let plan = Plan::new(job, prefix, &|p| Path::new(p).exists()).map_err(|m| {
         say(&m);
         InstallError::Failed
     })?;
@@ -1487,18 +1495,26 @@ mod tests {
         assert_eq!(panel_include(&only(&[])), None);
     }
 
-    /// Plan ruling P8: every flag of the user's, `PYTHON_CPPFLAGS` and `PYTHON_LDFLAGS`
-    /// included, comes before the store's (the compiler and linker take the first match); the
-    /// store's configure arguments come before the user's options; the store's pkg-config
-    /// folders and pkgconf's `bin/` come first.
-    #[test]
-    fn the_users_flags_come_before_the_stores() {
+    /// A plan for 3.12.99 with the user's flags and a store; `verify`: the definition has a
+    /// `verify_py312` step (a CPython 3 source build); `exists`: which files the system has.
+    fn store_plan(verify: bool, exists: &dyn Fn(&str) -> bool) -> Plan {
         let found = Found {
             name: "3.12.99".into(),
             text: String::new(),
             origin: Origin::Builtin,
         };
-        let definition = Definition::default();
+        let mut definition = Definition::default();
+        if verify {
+            definition.packages.push(Package {
+                name: "Python-3.12.99".into(),
+                fetch: Fetch::Tarball {
+                    url: "http://x/y.tgz".into(),
+                    fragment: None,
+                },
+                steps: vec!["standard".into(), "verify_py312".into()],
+                condition: None,
+            });
+        }
         let env: Vec<(OsString, OsString)> = [
             ("CPPFLAGS", "-I/user/cpp"),
             ("PYTHON_CPPFLAGS", "-I/user/pycpp"),
@@ -1537,7 +1553,16 @@ mod tests {
             fetcher: &fetcher,
             store: Some(&store),
         };
-        let plan = Plan::new(&job, job.prefix.clone()).unwrap();
+        Plan::new(&job, job.prefix.clone(), exists).unwrap()
+    }
+
+    /// Plan ruling P8: every flag of the user's, `PYTHON_CPPFLAGS` and `PYTHON_LDFLAGS`
+    /// included, comes before the store's (the compiler and linker take the first match); the
+    /// store's configure arguments come before the user's options; the store's pkg-config
+    /// folders and pkgconf's `bin/` come first.
+    #[test]
+    fn the_users_flags_come_before_the_stores() {
+        let plan = store_plan(false, &|_| false);
         let conf = |k: &str| {
             plan.configure_env
                 .iter()
@@ -1580,6 +1605,34 @@ mod tests {
             "/store/pc:/user/pc"
         );
         assert_eq!(get(&plan.env, "PATH").unwrap(), "/store/bin:/usr/bin");
+    }
+
+    // allowlist D-129
+    #[test]
+    fn panel_h_only_under_ncursesw_puts_the_include_flag_after_the_stores() {
+        let only_under = |p: &str| p == "/usr/include/ncursesw/panel.h";
+        let plan = store_plan(true, &only_under);
+        let conf = plan
+            .configure_env
+            .iter()
+            .rev()
+            .find(|(n, _)| n == "CPPFLAGS")
+            .map(|(_, v)| v.clone())
+            .unwrap();
+        let p = "/r/versions/3.12.99";
+        assert_eq!(
+            conf,
+            format!("-I{p}/include -I/user/cpp -I/user/pycpp -I/store/inc -I/usr/include/ncursesw")
+        );
+        assert_eq!(
+            get(&plan.env, "CPPFLAGS").unwrap(),
+            format!("-I{p}/include -I/user/cpp -I/store/inc -I/usr/include/ncursesw")
+        );
+        // Not a CPython 3 build, or a system with the top-level header: no flag.
+        let other = store_plan(false, &only_under);
+        assert!(!get(&other.env, "CPPFLAGS").unwrap().contains("ncursesw"));
+        let top = store_plan(true, &|_: &str| true);
+        assert!(!get(&top.env, "CPPFLAGS").unwrap().contains("ncursesw"));
     }
 
     /// M8 design §4.4's last clause (final review I1): when the build route supplied Tcl/Tk,
