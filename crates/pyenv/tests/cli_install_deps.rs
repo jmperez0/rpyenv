@@ -1783,12 +1783,13 @@ fn pyenv_install_replaces_an_outdated_ca_bundle() {
         &cat,
         &format!("cacert\t2099-01-01\tfile://{}\t{sha}\n", pem.display()),
     );
-    let bundle = f.root.join(".rpyenv/ca/cert.pem");
+    let bundle = f.root.join(".rpyenv/ssl/cert.pem");
     f.file(&bundle, "old\n");
     let cat_s = cat.display().to_string();
     let p = [
         ("RPYENV_TEST_PREFLIGHT", ""),
         ("RPYENV_TEST_CATALOG", cat_s.as_str()),
+        ("RPYENV_TEST_SYSTEM_CERTS", ""),
     ];
     let r = run(&f, &["install", "3.12.99"], &p);
     assert_eq!(r.code, 0, "{}", r.stderr);
@@ -1807,6 +1808,24 @@ fn pyenv_install_replaces_an_outdated_ca_bundle() {
     // Up to date: nothing is fetched or said.
     let again = run(&f, &["install", "-f", "3.12.99"], &p);
     assert!(!again.stderr.contains("CA bundle"), "{}", again.stderr);
+    // The system gains certificates: the next run links to them.
+    let sys = f.base.join("system.crt");
+    f.file(
+        &sys, "system
+",
+    );
+    let sys_s = format!("{}:", sys.display());
+    let p2 = [
+        ("RPYENV_TEST_PREFLIGHT", ""),
+        ("RPYENV_TEST_CATALOG", cat_s.as_str()),
+        ("RPYENV_TEST_SYSTEM_CERTS", sys_s.as_str()),
+    ];
+    let r = run(&f, &["install", "-f", "3.12.99"], &p2);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert_eq!(
+        std::fs::read_link(&bundle).unwrap(),
+        std::fs::canonicalize(&sys).unwrap()
+    );
 }
 
 /// Final review S2: a library a definition pinned, whose definition can't be found any more,
