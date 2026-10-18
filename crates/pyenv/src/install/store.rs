@@ -113,28 +113,30 @@ pub struct SystemCerts {
     pub dir: Option<PathBuf>,
 }
 
-/// Finds the system's certificates: the first existing bundle of `<openssldir>/cert.pem` (the
-/// folder `openssl version -d` names) and the distributions' bundle files; the first non-empty
-/// of `/etc/ssl/certs` and `/etc/pki/tls/certs`.
+/// Finds the system's certificates: the first existing bundle of the distributions' files,
+/// else `<openssldir>/cert.pem` (the folder `openssl version -d` names; last, because an
+/// `openssl` first on `PATH` can be conda's or Linuxbrew's, not the system's); the first
+/// non-empty of `/etc/ssl/certs`, `/etc/pki/tls/certs`, else `<openssldir>/certs`.
 pub fn system_certs(
     openssldir: Option<&str>,
     is_file: &dyn Fn(&str) -> bool,
     has_files: &dyn Fn(&str) -> bool,
 ) -> SystemCerts {
-    let first = openssldir.map(|d| format!("{d}/cert.pem"));
-    let bundle = first
-        .iter()
-        .map(String::as_str)
-        .chain([
-            "/etc/ssl/certs/ca-certificates.crt",
-            "/etc/pki/tls/certs/ca-bundle.crt",
-            "/etc/ssl/ca-bundle.pem",
-            "/etc/ssl/cert.pem",
-        ])
-        .find(|p| is_file(p))
-        .map(PathBuf::from);
+    let last_file = openssldir.map(|d| format!("{d}/cert.pem"));
+    let bundle = [
+        "/etc/ssl/certs/ca-certificates.crt",
+        "/etc/pki/tls/certs/ca-bundle.crt",
+        "/etc/ssl/ca-bundle.pem",
+        "/etc/ssl/cert.pem",
+    ]
+    .into_iter()
+    .chain(last_file.as_deref())
+    .find(|p| is_file(p))
+    .map(PathBuf::from);
+    let last_dir = openssldir.map(|d| format!("{d}/certs"));
     let dir = ["/etc/ssl/certs", "/etc/pki/tls/certs"]
         .into_iter()
+        .chain(last_dir.as_deref())
         .find(|d| has_files(d))
         .map(PathBuf::from);
     SystemCerts { bundle, dir }
@@ -602,16 +604,17 @@ pub fn sync_ssl_dir(
     Ok(wrote)
 }
 
-/// `link` as a symlink to `target` (resolved), replaced atomically unless it is that already.
+/// `link` as a symlink to `target` as found (not resolved: a deep path such as
+/// `/var/lib/ca-certificates/...` can move in an upgrade, the public one stays), replaced
+/// atomically unless it is that already.
 fn relink(link: &Path, target: &Path) -> R<()> {
-    let target = std::fs::canonicalize(target).unwrap_or_else(|_| target.to_path_buf());
     if std::fs::read_link(link).is_ok_and(|t| t == target) {
         return Ok(());
     }
     let name = link.file_name().unwrap_or_default().to_string_lossy();
     let tmp = link.with_file_name(format!(".{name}.tmp{}", std::process::id()));
     let _ = std::fs::remove_file(&tmp);
-    std::os::unix::fs::symlink(&target, &tmp)
+    std::os::unix::fs::symlink(target, &tmp)
         .and_then(|()| std::fs::rename(&tmp, link))
         .map_err(|e| {
             let _ = std::fs::remove_file(&tmp);
@@ -636,15 +639,24 @@ fn place_pinned(
     if regular && sha256_file(target).is_ok_and(|h| h == row.sha256) {
         return Ok(false);
     }
+    // Fetched in a folder of its own (two runs may place the bundle at once), then renamed
+    // over `cert.pem`.
+    let work = dir.join(format!(".fetch-{}", std::process::id()));
+    std::fs::create_dir_all(&work)
+        .map_err(|e| message(format!("pyenv: cannot create {}: {e}", work.display())))?;
     let req = FetchRequest {
         file_name: format!("cacert-{}.pem", row.version),
         url: row.url.clone(),
         check: Check::Sha256(row.sha256.clone()),
-        dest_dir: dir.to_path_buf(),
+        dest_dir: work.clone(),
     };
-    let got = fetcher.fetch(&req, &mut std::io::sink(), say)?;
-    std::fs::rename(&got, target)
-        .map_err(|e| message(format!("pyenv: cannot write {}: {e}", target.display())))?;
+    let got = fetcher.fetch(&req, &mut std::io::sink(), say);
+    let placed = got.and_then(|got| {
+        std::fs::rename(&got, target)
+            .map_err(|e| message(format!("pyenv: cannot write {}: {e}", target.display())))
+    });
+    let _ = std::fs::remove_dir_all(&work);
+    placed?;
     Ok(true)
 }
 
@@ -1248,22 +1260,28 @@ cp tcl_library.txt "$p/lib/tcl_library.txt"
     }
 
     #[test]
-    fn system_certs_prefer_the_openssl_dir_then_the_distribution_files() {
+    fn system_certs_prefer_the_distribution_files_over_the_openssl_dir() {
+        // A distribution file and an `openssl version -d` answer (conda's, say): the file wins.
         let files = [
-            "/etc/pki/tls/cert.pem",
             "/etc/ssl/certs/ca-certificates.crt",
+            "/opt/conda/ssl/cert.pem",
         ];
         let is_file = |p: &str| files.contains(&p);
-        let c = system_certs(Some("/etc/pki/tls"), &is_file, &|_| false);
-        assert_eq!(c.bundle, Some(PathBuf::from("/etc/pki/tls/cert.pem")));
-        assert_eq!(c.dir, None);
-        let c = system_certs(None, &is_file, &|d| d == "/etc/pki/tls/certs");
+        let dirs = |d: &str| d == "/etc/pki/tls/certs" || d == "/opt/conda/ssl/certs";
+        let c = system_certs(Some("/opt/conda/ssl"), &is_file, &dirs);
         assert_eq!(
             c.bundle,
             Some(PathBuf::from("/etc/ssl/certs/ca-certificates.crt"))
         );
         assert_eq!(c.dir, Some(PathBuf::from("/etc/pki/tls/certs")));
-        // Several exist: Debian's file comes before Fedora's.
+        // Only the openssl dir has any: the last fallback.
+        let only = |p: &str| p == "/opt/conda/ssl/cert.pem";
+        let c = system_certs(Some("/opt/conda/ssl"), &only, &|d| {
+            d == "/opt/conda/ssl/certs"
+        });
+        assert_eq!(c.bundle, Some(PathBuf::from("/opt/conda/ssl/cert.pem")));
+        assert_eq!(c.dir, Some(PathBuf::from("/opt/conda/ssl/certs")));
+        // Several distribution files: Debian's comes before Fedora's.
         let both = |p: &str| {
             p == "/etc/pki/tls/certs/ca-bundle.crt" || p == "/etc/ssl/certs/ca-certificates.crt"
         };
@@ -1325,14 +1343,8 @@ cp tcl_library.txt "$p/lib/tcl_library.txt"
         assert!(!sync(&root, &rows, &none));
         // The system gains certificates: both become links, and the pinned file is gone.
         assert!(!sync(&root, &rows, &some));
-        assert_eq!(
-            std::fs::read_link(&cert).unwrap(),
-            std::fs::canonicalize(&bundle).unwrap()
-        );
-        assert_eq!(
-            std::fs::read_link(&cdir).unwrap(),
-            std::fs::canonicalize(&certs).unwrap()
-        );
+        assert_eq!(std::fs::read_link(&cert).unwrap(), bundle.clone());
+        assert_eq!(std::fs::read_link(&cdir).unwrap(), certs.clone());
         assert_eq!(std::fs::read_to_string(&cert).unwrap(), "system\n");
         assert!(!dir.join("openssl.cnf").exists());
         // Idempotent, and no temporary link is left behind.
@@ -1355,10 +1367,7 @@ cp tcl_library.txt "$p/lib/tcl_library.txt"
             dir: Some(certs.clone()),
         };
         assert!(!sync(&root, &rows, &moved));
-        assert_eq!(
-            std::fs::read_link(&cert).unwrap(),
-            std::fs::canonicalize(&other).unwrap()
-        );
+        assert_eq!(std::fs::read_link(&cert).unwrap(), other.clone());
         // The system loses them (the old link even points at the pinned content): the pinned bundle again (a file, not a link into the system).
         assert!(sync(&root, &rows, &none));
         assert!(std::fs::symlink_metadata(&cert)
@@ -1434,7 +1443,7 @@ cp tcl_library.txt "$p/lib/tcl_library.txt"
         ensure(&b, &["openssl"], &mut |_: &str| {}).unwrap();
         assert_eq!(
             std::fs::read_link(ssl_dir(&f.root).join("cert.pem")).unwrap(),
-            std::fs::canonicalize(&sys).unwrap()
+            sys.clone()
         );
     }
 
