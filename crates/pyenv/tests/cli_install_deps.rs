@@ -1822,10 +1822,7 @@ fn pyenv_install_replaces_an_outdated_ca_bundle() {
     ];
     let r = run(&f, &["install", "-f", "3.12.99"], &p2);
     assert_eq!(r.code, 0, "{}", r.stderr);
-    assert_eq!(
-        std::fs::read_link(&bundle).unwrap(),
-        std::fs::canonicalize(&sys).unwrap()
-    );
+    assert_eq!(std::fs::read_link(&bundle).unwrap(), sys.clone());
 }
 
 /// Final review S2: a library a definition pinned, whose definition can't be found any more,
