@@ -149,7 +149,7 @@ static RECIPES: &[Recipe] = &[
         x11: false,
         // `term.h` (`setupterm`, for `_curses`) is only there (measured).
         includes: &["include/ncursesw"],
-        steps: autotools!("./configure --prefix={prefix} --without-shared --with-normal --enable-widec --without-debug --without-ada --without-cxx-binding --without-manpages --without-progs --without-tests --enable-pc-files --with-pkg-config-libdir={prefix}/lib/pkgconfig --with-default-terminfo-dir=/usr/share/terminfo --with-terminfo-dirs=/etc/terminfo:/lib/terminfo:/usr/share/terminfo"),
+        steps: autotools!("./configure --prefix={prefix} --without-shared --with-normal --enable-widec --without-debug --without-ada --without-cxx-binding --without-manpages --without-tests --enable-pc-files --with-pkg-config-libdir={prefix}/lib/pkgconfig --with-default-terminfo-dir=/usr/share/terminfo --with-terminfo-dirs=/etc/terminfo:/lib/terminfo:/usr/share/terminfo"),
     },
     Recipe {
         key: "readline",
