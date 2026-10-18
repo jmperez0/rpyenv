@@ -135,11 +135,14 @@ if [ -n "${BUILD:-}" ]; then
   if [ "$distro" != arch ]; then
     grep -q '^openssl ' "$rec" || { echo "::error::$distro: OpenSSL is not in the record"; exit 1; }
   fi
-  # The store's OpenSSL reads a private folder: no openssl.cnf, a cert.pem (§6.5).
+  # A store-built OpenSSL reads a private folder: no openssl.cnf, a cert.pem (§6.5). The
+  # folder exists only when the store built or reused OpenSSL (not on Arch).
   ssl="$root/.rpyenv/ssl"
-  [ -e "$ssl/cert.pem" ] && [ ! -e "$ssl/openssl.cnf" ] ||
-    { echo "::error::$distro: $ssl has no cert.pem, or has an openssl.cnf"; exit 1; }
-  ls -l "$ssl"
+  if grep -q '^openssl ' "$rec"; then
+    [ -e "$ssl/cert.pem" ] && [ ! -e "$ssl/openssl.cnf" ] ||
+      { echo "::error::$distro: $ssl has no cert.pem, or has an openssl.cnf"; exit 1; }
+    ls -l "$ssl"
+  fi
   # NO_CA (§6.5, D-128): the downloads worked without system certificates; the store's OpenSSL
   # reads rpyenv's pinned bundle, and a real TLS handshake goes through it.
   if [ -n "${NO_CA:-}" ]; then
@@ -209,7 +212,7 @@ if [ -n "${BUILD:-}" ]; then
 fi
 
 # Stage 1: no terminal, no flags (lenient mode, D13): the hard set (compiler, make, patch,
-# OpenSSL, zlib) is missing, so it fails. Arch's base image already holds OpenSSL and zlib, so
+# awk, OpenSSL, zlib) is missing, so it fails. Arch's base image already holds OpenSSL and zlib, so
 # there a flagless run would build; `--deps=system` (strict, installs nothing) stands in.
 flag=""
 [ "$distro" != arch ] || flag="--deps=system"
@@ -258,7 +261,7 @@ fi
 # Rocky: the -devel packages in CRB need it enabled first, which rpyenv prints and never does.
 if [ -n "$crb" ]; then
   echo "== running: $(with_yes "$crb")"
-  eval "$(with_yes "$crb")"
+  eval "$(with_yes "$crb")" || { echo "::error::$distro: enabling CRB failed"; exit 1; }
 fi
 "$bin" install --deps=install "$v" </dev/null
 detect_empty || { echo "::error::$distro: still missing after --deps=install"; exit 1; }
