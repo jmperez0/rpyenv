@@ -755,6 +755,16 @@ cp configure-env.txt "$p/lib/env.txt"
 printf 'Libs: -lz\nLibs.private: -lm\n' > "$p/lib/pkgconfig/zlib.pc"
 "#;
 
+    /// A fake OpenSSL `config`: a Makefile with the two targets the recipe runs.
+    const OPENSSL_CONFIG: &str = r#"#!/bin/sh
+for a in "$@"; do case "$a" in --prefix=*) echo "${a#--prefix=}" > prefix.txt;; esac; done
+printf 'build_libs:
+	true
+install_dev:
+	mkdir -p "$(DESTDIR)$$(cat prefix.txt)/include"
+' > Makefile
+"#;
+
     /// A `zlib`-named fake source tarball. `fail`: its `configure` exits 1.
     fn fake_tarball(dir: &Path, counter: &Path, fail: bool) -> (PathBuf, String) {
         let configure = CONFIGURE
@@ -1253,6 +1263,14 @@ cp tcl_library.txt "$p/lib/tcl_library.txt"
             Some(PathBuf::from("/etc/ssl/certs/ca-certificates.crt"))
         );
         assert_eq!(c.dir, Some(PathBuf::from("/etc/pki/tls/certs")));
+        // Several exist: Debian's file comes before Fedora's.
+        let both = |p: &str| {
+            p == "/etc/pki/tls/certs/ca-bundle.crt" || p == "/etc/ssl/certs/ca-certificates.crt"
+        };
+        assert_eq!(
+            system_certs(None, &both, &|_| false).bundle,
+            Some(PathBuf::from("/etc/ssl/certs/ca-certificates.crt"))
+        );
         assert_eq!(
             system_certs(None, &|_| false, &|_| false),
             SystemCerts::default()
@@ -1325,7 +1343,23 @@ cp tcl_library.txt "$p/lib/tcl_library.txt"
             .collect();
         names.sort();
         assert_eq!(names, ["cert.pem", "certs"]);
-        // The system loses them: the pinned bundle again (a file, not a link into the system).
+        // The system's bundle moves: the link follows.
+        let other = tmp.path().join("other-bundle.crt");
+        std::fs::write(
+            &other, "pinned
+",
+        )
+        .unwrap();
+        let moved = SystemCerts {
+            bundle: Some(other.clone()),
+            dir: Some(certs.clone()),
+        };
+        assert!(!sync(&root, &rows, &moved));
+        assert_eq!(
+            std::fs::read_link(&cert).unwrap(),
+            std::fs::canonicalize(&other).unwrap()
+        );
+        // The system loses them (the old link even points at the pinned content): the pinned bundle again (a file, not a link into the system).
         assert!(sync(&root, &rows, &none));
         assert!(std::fs::symlink_metadata(&cert)
             .unwrap()
@@ -1347,13 +1381,61 @@ cp tcl_library.txt "$p/lib/tcl_library.txt"
         assert_eq!(crate::install::checksum::sha256_file(&cert).unwrap(), sha);
     }
 
-    /// `ensure` makes the folder when it uses OpenSSL, before building it.
+    /// `ensure` makes the folder when it uses OpenSSL (here a fake one), and not for others.
     #[test]
     fn ensure_makes_the_ssl_dir_only_for_openssl() {
         let f = fixture(false);
         let mut said = Vec::new();
         run(&f, &mut said).unwrap();
         assert!(!ssl_dir(&f.root).exists(), "zlib alone does not need it");
+
+        let tmp = f.root.parent().unwrap();
+        let mut tar = tar::Builder::new(flate2::write::GzEncoder::new(
+            Vec::new(),
+            flate2::Compression::fast(),
+        ));
+        let mut h = tar::Header::new_gnu();
+        h.set_size(OPENSSL_CONFIG.len() as u64);
+        h.set_mode(0o755);
+        tar.append_data(&mut h, "openssl-0.1/config", OPENSSL_CONFIG.as_bytes())
+            .unwrap();
+        let mut gz = tar.into_inner().unwrap().finish().unwrap();
+        gz.flush().unwrap();
+        let path = tmp.join("openssl-0.1.tar.gz");
+        std::fs::write(&path, &gz).unwrap();
+        let sha = crate::install::checksum::sha256_file(&path).unwrap();
+        let sys = tmp.join("sys.crt");
+        std::fs::write(
+            &sys, "system
+",
+        )
+        .unwrap();
+        let rows = vec![Row {
+            key: "openssl".into(),
+            version: "0.1".into(),
+            url: format!("file://{}", path.display()),
+            sha256: sha,
+        }];
+        let def = Definition::default();
+        let fetcher = Fetcher::direct();
+        let b = Build {
+            root: &f.root,
+            rows: &rows,
+            definition: &def,
+            env: &f.env,
+            fetcher: &fetcher,
+            openssldir: ssl_dir(&f.root),
+            certs: SystemCerts {
+                bundle: Some(sys.clone()),
+                dir: None,
+            },
+            verbose: false,
+        };
+        ensure(&b, &["openssl"], &mut |_: &str| {}).unwrap();
+        assert_eq!(
+            std::fs::read_link(ssl_dir(&f.root).join("cert.pem")).unwrap(),
+            std::fs::canonicalize(&sys).unwrap()
+        );
     }
 
     /// Ruling P9: deleting the cache must not break HTTPS for versions that read the folder.

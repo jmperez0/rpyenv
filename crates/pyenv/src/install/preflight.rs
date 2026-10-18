@@ -1723,6 +1723,18 @@ exit 0
             no_cc.last().map(String::as_str),
             Some("To build anyway, set RPYENV_SKIP_PREFLIGHT=1.")
         );
+        // ... nor when awk is (the route needs it from the system as well).
+        let awk = [Dep {
+            name: "awk",
+            required: true,
+            missing: Missing::Program("awk".into()),
+            lib: "awk",
+        }];
+        let no_awk = report_deps_with(&awk, Some(os), false, true, false, true);
+        assert!(
+            !no_awk.iter().any(|l| l.contains("--deps=build")),
+            "{no_awk:?}"
+        );
         let warn = report_deps(&d, Some(os), true, false);
         assert_eq!(
             warn,
