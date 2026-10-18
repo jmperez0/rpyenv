@@ -211,14 +211,23 @@ distribution's Tk is.
 
 ### 6.5 CA certificates for a self-built OpenSSL
 
-OpenSSL is configured to look where the system keeps certificates (`/etc/ssl` or
-`/etc/pki/tls`), so the distribution's certificate updates apply. When the system has no
-certificates and the user has no root: a pinned Mozilla bundle (curl.se's `cacert.pem`,
-SHA-256 checked) in `<root>/.rpyenv/ca/`, outside the
-cache, so deleting `cache/deps` never breaks HTTPS (user decision 2026-10-17). The pin ships with rpyenv; when an rpyenv
-upgrade brings a newer one, the next `pyenv install` replaces the file, and every
-version built against it uses the new bundle at once (the path, not the content, is
-compiled into OpenSSL). The build route needs CPython 3.7 or later, a `PYENV_ROOT`
+OpenSSL is configured with a private `OPENSSLDIR`, `<root>/.rpyenv/ssl`, outside the cache,
+so deleting `cache/deps` never breaks HTTPS (user decision 2026-10-17). The folder holds
+no `openssl.cnf`: a distribution's config is written for its own OpenSSL and a vanilla one
+can fail on it (measured on Tumbleweed 2026-10-18: its vendor `openssl.cnf` made `ssl` raise
+`MODULE_INITIALIZATION_ERROR`). Its `cert.pem` and `certs` link to the system's
+certificates, so the distribution's updates still apply: `cert.pem` to the first existing of
+`<openssl version -d>/cert.pem`, `/etc/ssl/certs/ca-certificates.crt`,
+`/etc/pki/tls/certs/ca-bundle.crt`, `/etc/ssl/ca-bundle.pem`, `/etc/ssl/cert.pem`; `certs` to
+`/etc/ssl/certs` or `/etc/pki/tls/certs`, whichever is not empty. When the system has no
+certificates and the user has no root, `cert.pem` is a regular file with a pinned Mozilla
+bundle (curl.se's `cacert.pem`, SHA-256 checked). The links are made again (under a
+temporary name, then renamed) whenever the store uses OpenSSL and at the start of every
+`pyenv install` that finds the folder, so a system that gains certificates turns `cert.pem`
+into a link and one that loses them turns it back into the pinned file. The pin ships with
+rpyenv; when an rpyenv upgrade brings a newer one, the next `pyenv install` replaces the
+file (only a regular file with another hash), and every version built against it uses the
+new bundle at once (the path, not the content, is compiled into OpenSSL). The build route needs CPython 3.7 or later, a `PYENV_ROOT`
 without spaces, Perl's core modules for OpenSSL and libxcrypt, and (until M8c) the system's
 X11 headers for Tk.
 

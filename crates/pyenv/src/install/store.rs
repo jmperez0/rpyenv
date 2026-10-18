@@ -30,11 +30,12 @@ pub fn deps_dir(root: &Path) -> PathBuf {
     root.join("cache").join("deps")
 }
 
-/// Where the pinned CA bundle lives when the system has no certificates (M8 design §6.5).
-/// Outside `cache/deps` (ruling P9): a self-built OpenSSL has this path compiled in, so the
-/// file must survive the cache being deleted.
-pub fn ca_dir(root: &Path) -> PathBuf {
-    root.join(".rpyenv").join("ca")
+/// The `OPENSSLDIR` of every OpenSSL the store builds (M8 design §6.5): a private folder
+/// without an `openssl.cnf`, whose `cert.pem` and `certs` link to the system's certificates
+/// (or, with none, hold rpyenv's pinned bundle). Outside `cache/deps` (ruling P9): a
+/// self-built OpenSSL has this path compiled in, so it must survive the cache being deleted.
+pub fn ssl_dir(root: &Path) -> PathBuf {
+    root.join(".rpyenv").join("ssl")
 }
 
 /// Where Tcl's and Tk's script folders live for the virtual environments of the versions built
@@ -103,16 +104,68 @@ pub fn plain_path(p: &Path) -> bool {
             .any(|c| c.is_whitespace() || c.is_control() || "\"'`$\\;&|<>*?()[]{}!#~:".contains(c))
 }
 
-/// Where the system keeps CA certificates, for a self-built OpenSSL's `OPENSSLDIR` (§6.5):
-/// `/etc/pki/tls` (Fedora, RHEL) or `/etc/ssl` (Debian, Arch, SUSE), whichever has a
-/// `cert.pem` or a non-empty `certs/`. `None`: rpyenv's pinned bundle instead.
-pub fn system_openssldir(
-    exists: &dyn Fn(&str) -> bool,
+/// The system's CA certificates, which `ssl_dir` links to (§6.5).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SystemCerts {
+    /// A bundle file.
+    pub bundle: Option<PathBuf>,
+    /// A non-empty folder of certificates.
+    pub dir: Option<PathBuf>,
+}
+
+/// Finds the system's certificates: the first existing bundle of `<openssldir>/cert.pem` (the
+/// folder `openssl version -d` names) and the distributions' bundle files; the first non-empty
+/// of `/etc/ssl/certs` and `/etc/pki/tls/certs`.
+pub fn system_certs(
+    openssldir: Option<&str>,
+    is_file: &dyn Fn(&str) -> bool,
     has_files: &dyn Fn(&str) -> bool,
-) -> Option<&'static str> {
-    ["/etc/pki/tls", "/etc/ssl"]
+) -> SystemCerts {
+    let first = openssldir.map(|d| format!("{d}/cert.pem"));
+    let bundle = first
+        .iter()
+        .map(String::as_str)
+        .chain([
+            "/etc/ssl/certs/ca-certificates.crt",
+            "/etc/pki/tls/certs/ca-bundle.crt",
+            "/etc/ssl/ca-bundle.pem",
+            "/etc/ssl/cert.pem",
+        ])
+        .find(|p| is_file(p))
+        .map(PathBuf::from);
+    let dir = ["/etc/ssl/certs", "/etc/pki/tls/certs"]
         .into_iter()
-        .find(|d| exists(&format!("{d}/cert.pem")) || has_files(&format!("{d}/certs")))
+        .find(|d| has_files(d))
+        .map(PathBuf::from);
+    SystemCerts { bundle, dir }
+}
+
+/// `system_certs` for this machine. Debug builds: `RPYENV_TEST_SYSTEM_CERTS` replaces it
+/// (`<bundle>:<dir>`, either part may be empty).
+pub fn detect_system_certs() -> SystemCerts {
+    #[cfg(debug_assertions)]
+    if let Ok(v) = std::env::var("RPYENV_TEST_SYSTEM_CERTS") {
+        let (b, d) = v.split_once(':').unwrap_or((v.as_str(), ""));
+        return SystemCerts {
+            bundle: (!b.is_empty()).then(|| PathBuf::from(b)),
+            dir: (!d.is_empty()).then(|| PathBuf::from(d)),
+        };
+    }
+    let dir = std::process::Command::new("openssl")
+        .args(["version", "-d"])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .split('"')
+                .nth(1)
+                .map(str::to_string)
+        });
+    let has_files = |d: &str| std::fs::read_dir(d).is_ok_and(|mut r| r.next().is_some());
+    system_certs(dir.as_deref(), &|p| Path::new(p).is_file(), &has_files)
 }
 
 /// `<key>-<version>-<the first 12 hex digits of the fingerprint's SHA-256>`.
@@ -200,8 +253,10 @@ pub struct Build<'a> {
     /// The job's environment: `PATH`, `CC`, `TMPDIR`, `HOME` and the rest.
     pub env: &'a [(OsString, OsString)],
     pub fetcher: &'a Fetcher,
-    /// A system folder, or `ca_dir(root)` for the pinned bundle (§6.5).
+    /// `ssl_dir(root)` (§6.5).
     pub openssldir: PathBuf,
+    /// What `ssl_dir` links to.
+    pub certs: SystemCerts,
     pub verbose: bool,
 }
 
@@ -273,6 +328,10 @@ pub fn ensure(b: &Build, keys: &[&'static str], say: &mut dyn FnMut(&str)) -> R<
         .unwrap_or(2)
         .to_string();
     let openssldir = b.openssldir.display().to_string();
+    // The private OPENSSLDIR a built OpenSSL reads, made before it is built or reused.
+    if keys.contains(&"openssl") {
+        sync_ssl_dir(b.root, &b.certs, b.rows, b.fetcher, say)?;
+    }
     let mut done: Vec<Entry> = Vec::new();
     for &key in keys {
         if interrupted() {
@@ -388,9 +447,6 @@ pub fn ensure(b: &Build, keys: &[&'static str], say: &mut dyn FnMut(&str)) -> R<
             origin,
             dir: prefix,
         });
-    }
-    if b.openssldir == ca_dir(b.root) && done.iter().any(|e| e.key == "openssl") {
-        place_ca(b.root, b.rows, b.fetcher, say)?;
     }
     Ok(done)
 }
@@ -512,10 +568,62 @@ fn build_one(
     }
 }
 
-/// Puts the catalog's CA bundle at `<root>/.rpyenv/ca/cert.pem` (M8 design §6.5), unless
-/// the file there already has the catalog's SHA-256. `Ok(true)` when it wrote the file.
-pub fn place_ca(
+/// Makes `<root>/.rpyenv/ssl` match the system (M8 design §6.5), every time the store uses
+/// OpenSSL and at the start of an install that finds the folder: `cert.pem` links to the
+/// system's bundle, else it is the catalog's pinned bundle; `certs` links to the system's
+/// folder, or goes away. Links are made under a temporary name and renamed. A pinned bundle
+/// that is a regular file with the catalog's SHA-256 is kept. `Ok(true)` when it wrote the
+/// pinned bundle.
+pub fn sync_ssl_dir(
     root: &Path,
+    sys: &SystemCerts,
+    rows: &[Row],
+    fetcher: &Fetcher,
+    say: &mut dyn FnMut(&str),
+) -> R<bool> {
+    let dir = ssl_dir(root);
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| message(format!("pyenv: cannot create {}: {e}", dir.display())))?;
+    let cert = dir.join("cert.pem");
+    let mut wrote = false;
+    match &sys.bundle {
+        Some(b) => relink(&cert, b)?,
+        None => wrote = place_pinned(&dir, &cert, rows, fetcher, say)?,
+    }
+    let certs = dir.join("certs");
+    match &sys.dir {
+        Some(d) => relink(&certs, d)?,
+        None => {
+            if std::fs::symlink_metadata(&certs).is_ok_and(|m| m.file_type().is_symlink()) {
+                let _ = std::fs::remove_file(&certs);
+            }
+        }
+    }
+    Ok(wrote)
+}
+
+/// `link` as a symlink to `target` (resolved), replaced atomically unless it is that already.
+fn relink(link: &Path, target: &Path) -> R<()> {
+    let target = std::fs::canonicalize(target).unwrap_or_else(|_| target.to_path_buf());
+    if std::fs::read_link(link).is_ok_and(|t| t == target) {
+        return Ok(());
+    }
+    let name = link.file_name().unwrap_or_default().to_string_lossy();
+    let tmp = link.with_file_name(format!(".{name}.tmp{}", std::process::id()));
+    let _ = std::fs::remove_file(&tmp);
+    std::os::unix::fs::symlink(&target, &tmp)
+        .and_then(|()| std::fs::rename(&tmp, link))
+        .map_err(|e| {
+            let _ = std::fs::remove_file(&tmp);
+            message(format!("pyenv: cannot link {}: {e}", link.display()))
+        })
+}
+
+/// The catalog's CA bundle at `target`, unless a regular file there already has the
+/// catalog's SHA-256 (a link there is replaced).
+fn place_pinned(
+    dir: &Path,
+    target: &Path,
     rows: &[Row],
     fetcher: &Fetcher,
     say: &mut dyn FnMut(&str),
@@ -524,21 +632,18 @@ pub fn place_ca(
         .iter()
         .find(|r| r.key == "cacert")
         .ok_or_else(|| message("pyenv: the build catalog has no cacert row".into()))?;
-    let dir = ca_dir(root);
-    let target = dir.join("cert.pem");
-    if sha256_file(&target).is_ok_and(|h| h == row.sha256) {
+    let regular = std::fs::symlink_metadata(target).is_ok_and(|m| m.file_type().is_file());
+    if regular && sha256_file(target).is_ok_and(|h| h == row.sha256) {
         return Ok(false);
     }
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| message(format!("pyenv: cannot create {}: {e}", dir.display())))?;
     let req = FetchRequest {
         file_name: format!("cacert-{}.pem", row.version),
         url: row.url.clone(),
         check: Check::Sha256(row.sha256.clone()),
-        dest_dir: dir.clone(),
+        dest_dir: dir.to_path_buf(),
     };
     let got = fetcher.fetch(&req, &mut std::io::sink(), say)?;
-    std::fs::rename(&got, &target)
+    std::fs::rename(&got, target)
         .map_err(|e| message(format!("pyenv: cannot write {}: {e}", target.display())))?;
     Ok(true)
 }
@@ -726,7 +831,8 @@ printf 'Libs: -lz\nLibs.private: -lm\n' > "$p/lib/pkgconfig/zlib.pc"
             definition: &def,
             env: &f.env,
             fetcher: &fetcher,
-            openssldir: PathBuf::from("/etc/ssl"),
+            openssldir: ssl_dir(&f.root),
+            certs: SystemCerts::default(),
             verbose: false,
         };
         ensure(&b, keys, say)
@@ -1132,20 +1238,130 @@ cp tcl_library.txt "$p/lib/tcl_library.txt"
     }
 
     #[test]
-    fn openssldir_prefers_pki_then_ssl_then_the_bundle() {
-        let fedora = |p: &str| p == "/etc/pki/tls/cert.pem";
-        assert_eq!(system_openssldir(&fedora, &|_| false), Some("/etc/pki/tls"));
-        let debian = |d: &str| d == "/etc/ssl/certs";
-        assert_eq!(system_openssldir(&|_| false, &debian), Some("/etc/ssl"));
-        assert_eq!(system_openssldir(&|_| false, &|_| false), None);
+    fn system_certs_prefer_the_openssl_dir_then_the_distribution_files() {
+        let files = [
+            "/etc/pki/tls/cert.pem",
+            "/etc/ssl/certs/ca-certificates.crt",
+        ];
+        let is_file = |p: &str| files.contains(&p);
+        let c = system_certs(Some("/etc/pki/tls"), &is_file, &|_| false);
+        assert_eq!(c.bundle, Some(PathBuf::from("/etc/pki/tls/cert.pem")));
+        assert_eq!(c.dir, None);
+        let c = system_certs(None, &is_file, &|d| d == "/etc/pki/tls/certs");
+        assert_eq!(
+            c.bundle,
+            Some(PathBuf::from("/etc/ssl/certs/ca-certificates.crt"))
+        );
+        assert_eq!(c.dir, Some(PathBuf::from("/etc/pki/tls/certs")));
+        assert_eq!(
+            system_certs(None, &|_| false, &|_| false),
+            SystemCerts::default()
+        );
     }
 
-    /// Ruling P9: deleting the cache must not break HTTPS for versions that read the bundle.
+    /// A catalog with only the pinned CA bundle, and the folder it lives in.
+    fn ca_fixture() -> (tempfile::TempDir, PathBuf, Vec<Row>, String) {
+        let tmp = tempfile::tempdir().unwrap();
+        let pem = tmp.path().join("cacert-1.pem");
+        std::fs::write(&pem, "pinned\n").unwrap();
+        let sha = crate::install::checksum::sha256_file(&pem).unwrap();
+        let rows = vec![Row {
+            key: "cacert".into(),
+            version: "1".into(),
+            url: format!("file://{}", pem.display()),
+            sha256: sha.clone(),
+        }];
+        let root = tmp.path().join("root");
+        (tmp, root, rows, sha)
+    }
+
+    fn sync(root: &Path, rows: &[Row], sys: &SystemCerts) -> bool {
+        sync_ssl_dir(root, sys, rows, &Fetcher::direct(), &mut |_: &str| {}).unwrap()
+    }
+
+    /// The folder follows the system both ways, and a private folder never holds a config.
     #[test]
-    fn the_ca_bundle_lives_outside_the_cache() {
+    fn the_ssl_dir_links_the_system_certificates_and_follows_changes() {
+        let (tmp, root, rows, _) = ca_fixture();
+        let bundle = tmp.path().join("sys-bundle.crt");
+        let certs = tmp.path().join("sys-certs");
+        std::fs::write(&bundle, "system\n").unwrap();
+        std::fs::create_dir_all(&certs).unwrap();
+        std::fs::write(certs.join("a.pem"), "x").unwrap();
+        let dir = ssl_dir(&root);
+        let (cert, cdir) = (dir.join("cert.pem"), dir.join("certs"));
+        let none = SystemCerts::default();
+        let some = SystemCerts {
+            bundle: Some(bundle.clone()),
+            dir: Some(certs.clone()),
+        };
+        // No system certificates: a regular file with the pinned bundle, no `certs`.
+        assert!(sync(&root, &rows, &none));
+        assert!(std::fs::symlink_metadata(&cert)
+            .unwrap()
+            .file_type()
+            .is_file());
+        assert_eq!(std::fs::read_to_string(&cert).unwrap(), "pinned\n");
+        assert!(std::fs::symlink_metadata(&cdir).is_err());
+        // Unchanged: nothing is fetched again.
+        assert!(!sync(&root, &rows, &none));
+        // The system gains certificates: both become links, and the pinned file is gone.
+        assert!(!sync(&root, &rows, &some));
+        assert_eq!(
+            std::fs::read_link(&cert).unwrap(),
+            std::fs::canonicalize(&bundle).unwrap()
+        );
+        assert_eq!(
+            std::fs::read_link(&cdir).unwrap(),
+            std::fs::canonicalize(&certs).unwrap()
+        );
+        assert_eq!(std::fs::read_to_string(&cert).unwrap(), "system\n");
+        assert!(!dir.join("openssl.cnf").exists());
+        // Idempotent, and no temporary link is left behind.
+        assert!(!sync(&root, &rows, &some));
+        let mut names: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["cert.pem", "certs"]);
+        // The system loses them: the pinned bundle again (a file, not a link into the system).
+        assert!(sync(&root, &rows, &none));
+        assert!(std::fs::symlink_metadata(&cert)
+            .unwrap()
+            .file_type()
+            .is_file());
+        assert_eq!(std::fs::read_to_string(&cert).unwrap(), "pinned\n");
+        assert!(std::fs::symlink_metadata(&cdir).is_err());
+        assert_eq!(std::fs::read_to_string(&bundle).unwrap(), "system\n");
+    }
+
+    /// D-127: an outdated pinned file is replaced.
+    #[test]
+    fn an_outdated_pinned_bundle_is_replaced() {
+        let (_tmp, root, rows, sha) = ca_fixture();
+        let cert = ssl_dir(&root).join("cert.pem");
+        std::fs::create_dir_all(cert.parent().unwrap()).unwrap();
+        std::fs::write(&cert, "old\n").unwrap();
+        assert!(sync(&root, &rows, &SystemCerts::default()));
+        assert_eq!(crate::install::checksum::sha256_file(&cert).unwrap(), sha);
+    }
+
+    /// `ensure` makes the folder when it uses OpenSSL, before building it.
+    #[test]
+    fn ensure_makes_the_ssl_dir_only_for_openssl() {
+        let f = fixture(false);
+        let mut said = Vec::new();
+        run(&f, &mut said).unwrap();
+        assert!(!ssl_dir(&f.root).exists(), "zlib alone does not need it");
+    }
+
+    /// Ruling P9: deleting the cache must not break HTTPS for versions that read the folder.
+    #[test]
+    fn the_ssl_dir_lives_outside_the_cache() {
         let root = Path::new("/r");
-        assert_eq!(ca_dir(root), Path::new("/r/.rpyenv/ca"));
-        assert!(!ca_dir(root).starts_with(deps_dir(root)));
+        assert_eq!(ssl_dir(root), Path::new("/r/.rpyenv/ssl"));
+        assert!(!ssl_dir(root).starts_with(deps_dir(root)));
     }
 
     fn entry(key: &'static str, dir: &str) -> Entry {

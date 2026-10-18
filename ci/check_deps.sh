@@ -135,11 +135,16 @@ if [ -n "${BUILD:-}" ]; then
   if [ "$distro" != arch ]; then
     grep -q '^openssl ' "$rec" || { echo "::error::$distro: OpenSSL is not in the record"; exit 1; }
   fi
+  # The store's OpenSSL reads a private folder: no openssl.cnf, a cert.pem (§6.5).
+  ssl="$root/.rpyenv/ssl"
+  [ -e "$ssl/cert.pem" ] && [ ! -e "$ssl/openssl.cnf" ] ||
+    { echo "::error::$distro: $ssl has no cert.pem, or has an openssl.cnf"; exit 1; }
+  ls -l "$ssl"
   # NO_CA (§6.5, D-128): the downloads worked without system certificates; the store's OpenSSL
   # reads rpyenv's pinned bundle, and a real TLS handshake goes through it.
   if [ -n "${NO_CA:-}" ]; then
-    bundle="$root/.rpyenv/ca/cert.pem"
-    [ -f "$bundle" ] || { echo "::error::$distro: no CA bundle at $bundle"; exit 1; }
+    bundle="$root/.rpyenv/ssl/cert.pem"
+    [ -f "$bundle" ] && [ ! -L "$bundle" ] || { echo "::error::$distro: no pinned CA bundle file at $bundle"; exit 1; }
     echo "== the CA bundle is $bundle"
     "$root/versions/$v/bin/python3" -c "import ssl; print(ssl.get_default_verify_paths())"
     "$root/versions/$v/bin/python3" -c "import urllib.request; urllib.request.urlopen('https://pypi.org/simple/', timeout=30)" ||

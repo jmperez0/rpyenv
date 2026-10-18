@@ -95,7 +95,7 @@ and links it into Python statically. Nothing is installed on the system.
   needs the same library, version and options reuses it.
 - **Only what is missing** is built. Libraries the system has keep getting its updates.
 - **It is a cache.** Deleting `cache/deps` breaks no installed Python; the next build compiles
-  again. (The CA bundle below lives elsewhere, in `$PYENV_ROOT/.rpyenv/ca/`; keep that one.)
+  again. (The OpenSSL folder below lives elsewhere, in `$PYENV_ROOT/.rpyenv/ssl/`; keep that one.)
 - **Tcl/Tk scripts:** a Python whose Tcl/Tk was built this way, and every virtual environment
   made from it, reads Tcl's and Tk's scripts from `$PYENV_ROOT/.rpyenv/tcltk/`. Keep that
   folder: if it is deleted, `pyenv install` and `pyenv rehash` re-create it from the installed
@@ -107,11 +107,14 @@ and links it into Python statically. Nothing is installed on the system.
   need Perl with its core modules (`perl-core` on Fedora); Tk needs the X11 headers
   (`libx11-dev`, `libX11-devel`) until a later release builds those too.
 - **`PYENV_ROOT`** must have no spaces, shell characters or `:` in its path.
-- **CA certificates:** a self-built OpenSSL reads the system's (`/etc/pki/tls` or `/etc/ssl`).
-  When the system has none, it reads `$PYENV_ROOT/.rpyenv/ca/cert.pem`, a bundle rpyenv pins (curl's
-  copy of Mozilla's list). `pyenv install` replaces that file when an rpyenv upgrade pins a
-  newer one. rpyenv itself downloads without system certificates too: it then trusts Mozilla's
-  list compiled into it, and still checks every download's SHA-256.
+- **CA certificates:** a self-built OpenSSL gets a private folder, `$PYENV_ROOT/.rpyenv/ssl/`,
+  with no `openssl.cnf` (a distribution's config is written for its own OpenSSL; Tumbleweed's
+  broke `ssl` in a vanilla one). Its `cert.pem` and `certs` link to the system's certificates,
+  so the distribution's updates still apply. When the system has none, `cert.pem` is a bundle
+  rpyenv pins (curl's copy of Mozilla's list); `pyenv install` keeps the links and the bundle
+  current, and replaces the bundle when an rpyenv upgrade pins a newer one. rpyenv itself
+  downloads without system certificates too: it then trusts Mozilla's list compiled into it,
+  and still checks every download's SHA-256.
 - **Updates:** each version built this way lists its libraries in `versions/<v>/.rpyenv-deps`.
   When an rpyenv upgrade pins a newer version of one of them, `pyenv install` prints one line
   per affected Python version, with the command that rebuilds it.

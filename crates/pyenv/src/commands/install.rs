@@ -731,14 +731,21 @@ pub fn install(ctx: &Ctx, args: &[&str]) -> Output {
         for l in crate::install::record::stale_lines(&ctx.versions_dir(), &now) {
             say(&l);
         }
-        let bundle = store::ca_dir(&ctx.root).join("cert.pem");
-        if bundle.is_file() {
+        // The private OPENSSLDIR follows the system's certificates (D-127).
+        let bundle = store::ssl_dir(&ctx.root).join("cert.pem");
+        if store::ssl_dir(&ctx.root).is_dir() {
             let version = rows
                 .iter()
                 .find(|r| r.key == "cacert")
                 .map(|r| r.version.clone())
                 .unwrap_or_default();
-            match store::place_ca(&ctx.root, &rows, &probe, &mut |s: &str| say(s)) {
+            match store::sync_ssl_dir(
+                &ctx.root,
+                &store::detect_system_certs(),
+                &rows,
+                &probe,
+                &mut |s: &str| say(s),
+            ) {
                 Ok(true) => say(&format!(
                     "pyenv: updated the CA bundle in {} ({version})",
                     bundle.display()
@@ -908,12 +915,7 @@ pub fn install(ctx: &Ctx, args: &[&str]) -> Output {
              -> Result<Vec<store::Entry>, InstallError> {
                 let rows = catalog::table(&|k: &str| builder::get(&snapshot, k))
                     .map_err(InstallError::Message)?;
-                let has_files =
-                    |d: &str| std::fs::read_dir(d).is_ok_and(|mut r| r.next().is_some());
-                let openssldir =
-                    store::system_openssldir(&|p: &str| Path::new(p).is_file(), &has_files)
-                        .map(PathBuf::from)
-                        .unwrap_or_else(|| store::ca_dir(&abs_root));
+                let openssldir = store::ssl_dir(&abs_root);
                 store::ensure(
                     &store::Build {
                         root: &abs_root,
@@ -922,6 +924,7 @@ pub fn install(ctx: &Ctx, args: &[&str]) -> Output {
                         env: &snapshot,
                         fetcher: &fetcher,
                         openssldir,
+                        certs: store::detect_system_certs(),
                         verbose: f.verbose,
                     },
                     keys,
