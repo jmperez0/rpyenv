@@ -105,6 +105,8 @@ pub fn place_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
     let pid = std::process::id();
     let tmp = parent.join(format!(".tmp-{name}-{pid}"));
     let del = parent.join(format!(".del-{name}-{pid}"));
+    remove_stale(parent, &format!(".tmp-{name}-"));
+    remove_stale(parent, &format!(".del-{name}-"));
     let _ = std::fs::remove_dir_all(&tmp);
     let _ = std::fs::remove_dir_all(&del);
     let copied = super::builder::copy_tree(src, &tmp).and_then(|()| {
@@ -130,31 +132,48 @@ pub fn place_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
 }
 
 /// Whether process `pid` may still be running. Without `/proc` (not Linux) it says yes: a
-/// folder named for a process is then never taken for a dead one's.
+/// folder named for a process is then never taken for a dead one's. A `PYENV_ROOT` shared
+/// across pid namespaces (containers) can show another namespace's live folder as dead.
 fn pid_may_run(pid: u32) -> bool {
     let proc = Path::new("/proc");
     !proc.join("self").exists() || proc.join(pid.to_string()).exists()
 }
 
-/// Removes the folders of `dir` named `<prefix><pid>` whose process is gone (a killed run left
-/// them); never the current process's.
-fn remove_stale(dir: &Path, prefix: &str) {
+/// Removes the folders of `dir` whose name gives a pid (`pid_of`) of a process that is gone (a
+/// killed run left them); never the current process's.
+fn sweep(dir: &Path, pid_of: &dyn Fn(&str) -> Option<u32>) {
     let Ok(rd) = std::fs::read_dir(dir) else {
         return;
     };
     for e in rd.filter_map(Result::ok) {
         let n = e.file_name().to_string_lossy().into_owned();
-        let Some(pid) = n
-            .strip_prefix(prefix)
-            .filter(|r| !r.is_empty() && r.bytes().all(|b| b.is_ascii_digit()))
-            .and_then(|r| r.parse::<u32>().ok())
-        else {
+        let Some(pid) = pid_of(&n) else {
             continue;
         };
         if pid != std::process::id() && !pid_may_run(pid) {
             let _ = std::fs::remove_dir_all(e.path());
         }
     }
+}
+
+fn digits(r: &str) -> Option<u32> {
+    (!r.is_empty() && r.bytes().all(|b| b.is_ascii_digit()))
+        .then(|| r.parse().ok())
+        .flatten()
+}
+
+/// Removes the folders of `dir` named `<prefix><pid>` whose process is gone.
+pub(crate) fn remove_stale(dir: &Path, prefix: &str) {
+    sweep(dir, &|n| n.strip_prefix(prefix).and_then(digits));
+}
+
+/// Removes the `.del-<name>-<pid>` folders of `dir` whose process is gone.
+pub(crate) fn remove_stale_del(dir: &Path) {
+    sweep(dir, &|n| {
+        n.strip_prefix(".del-")
+            .and_then(|r| r.rsplit_once('-'))
+            .and_then(|(_, p)| digits(p))
+    });
 }
 
 /// Adds the entries of `new` that `into` doesn't hold yet (same folder): a second `[b]` round
@@ -1019,6 +1038,7 @@ cp tcl_library.txt "$p/lib/tcl_library.txt"
 
     /// H1: a Tcl script folder that lost its marker (partly removed) is replaced by a whole
     /// one when the entry is reused.
+    // allowlist D-123
     #[test]
     fn a_partly_removed_script_folder_is_refilled_by_ensure() {
         let f = tcl_fixture();
@@ -1529,6 +1549,36 @@ cp tcl_library.txt "$p/lib/tcl_library.txt"
         assert!(dir.join(".fetch-1/partial").is_file(), "a live pid is kept");
         assert!(dir.join(".fetch-notapid").exists());
         assert!(dir.join("cert.pem").is_file());
+    }
+
+    /// A crashed swap's `.tmp-`/`.del-` folders of dead runs are removed by the next
+    /// `place_tree`; a live run's (pid 1) stay.
+    #[test]
+    fn place_tree_removes_the_leftovers_of_dead_runs_only() {
+        let t = tempfile::tempdir().unwrap();
+        let src = t.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("init.tcl"), "x").unwrap();
+        let home = t.path().join("home");
+        for n in [
+            ".tmp-tcl8.6-4294967294",
+            ".del-tcl8.6-4294967294",
+            ".tmp-tcl8.6-1",
+            ".del-tcl8.6-1",
+            ".tmp-tk8.6-4294967294",
+        ] {
+            std::fs::create_dir_all(home.join(n)).unwrap();
+        }
+        place_tree(&src, &home.join("tcl8.6")).unwrap();
+        assert!(home.join("tcl8.6/init.tcl").is_file());
+        assert!(!home.join(".tmp-tcl8.6-4294967294").exists());
+        assert!(!home.join(".del-tcl8.6-4294967294").exists());
+        assert!(home.join(".tmp-tcl8.6-1").is_dir());
+        assert!(home.join(".del-tcl8.6-1").is_dir());
+        assert!(
+            home.join(".tmp-tk8.6-4294967294").is_dir(),
+            "another folder's"
+        );
     }
 
     /// H8/H10: the current process's own folder is never taken for a dead one's.

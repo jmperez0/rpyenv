@@ -138,6 +138,7 @@ pub fn prune_scripts(root: &Path) {
         .map(|(lib, v, _)| format!("{lib}-{v}"))
         .collect();
     let dir = store::tcltk_dir(root);
+    store::remove_stale_del(&dir);
     let Ok(rd) = std::fs::read_dir(&dir) else {
         return;
     };
@@ -313,6 +314,7 @@ sqlite 3.54.0 catalog
     }
 
     /// H1: a script folder that was partly removed (its marker is gone) is refilled by heal.
+    // allowlist D-123
     #[test]
     fn heal_refills_a_script_folder_that_lost_its_marker() {
         let tmp = tempfile::tempdir().unwrap();
@@ -400,8 +402,21 @@ tcl 8.6.18+x_1-2 catalog
         std::fs::write(locked.join("f"), "x").unwrap();
         std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o500)).unwrap();
         std::fs::create_dir_all(root.join("versions")).unwrap();
+        // As root the 0500 folder is removable anyway, so the assertion would pass without
+        // the rename: it runs only for a user that cannot remove it.
+        let root_user = unsafe { libc::geteuid() } == 0;
         prune_scripts(root);
-        assert!(!home.join("tcl-8.6.9").exists());
+        if !root_user {
+            assert!(!home.join("tcl-8.6.9").exists());
+            assert!(
+                std::fs::read_dir(&home).unwrap().any(|e| e
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".del-tcl-8.6.9-")),
+                "the failed removal left only the renamed folder"
+            );
+        }
         std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).ok();
         if let Ok(rd) = std::fs::read_dir(&home) {
             for e in rd.flatten() {
