@@ -29,14 +29,16 @@ pub fn text(definition: &str, entries: &[Entry]) -> String {
     s
 }
 
-/// The record in `text`, or `None` when it has no `definition` line.
+/// The record in `text`, or `None` when it has no `definition` line (or one that is not a
+/// plain name).
 pub fn parse(text: &str) -> Option<Record> {
     let mut definition = None;
     let mut libs = Vec::new();
     for l in text.lines() {
         let w: Vec<&str> = l.split_whitespace().collect();
         match w.as_slice() {
-            ["definition", d] => definition = Some(d.to_string()),
+            // The name is looked up as a path later, so it must be one plain name.
+            ["definition", d] if super::is_plain_name(d) => definition = Some(d.to_string()),
             [k, v, o] if !k.starts_with('#') => {
                 if let Some(o) = Origin::from_word(o) {
                     libs.push((k.to_string(), v.to_string(), o));
@@ -114,9 +116,12 @@ pub fn heal_scripts(root: &Path) {
             let Some(d) = store::script_dir(lib) else {
                 continue;
             };
+            if !store::plain_version(v) {
+                continue;
+            }
             let to = store::scripts_home(root, lib, v).join(d);
             let from = versions.join(&name).join("lib").join(d);
-            if !to.is_dir() && from.is_dir() {
+            if !store::is_filled(&to) && store::is_filled(&from) {
                 let _ = store::place_tree(&from, &to);
             }
         }
@@ -140,7 +145,12 @@ pub fn prune_scripts(root: &Path) {
         let n = e.file_name().to_string_lossy().into_owned();
         let ours = n.starts_with("tcl-") || n.starts_with("tk-");
         if ours && !named.contains(&n) {
-            let _ = std::fs::remove_dir_all(e.path());
+            // Renamed first: a removal that fails or races never leaves a half folder under
+            // the real name.
+            let gone = dir.join(format!(".del-{n}-{}", std::process::id()));
+            if std::fs::rename(e.path(), &gone).is_ok() {
+                let _ = std::fs::remove_dir_all(&gone);
+            }
         }
     }
 }
@@ -242,7 +252,8 @@ sqlite 3.54.0 catalog
         let v = root.join("versions").join(name);
         for d in ["tcl8.6", "tk8.6"] {
             std::fs::create_dir_all(v.join("lib").join(d)).unwrap();
-            std::fs::write(v.join("lib").join(d).join("init.tcl"), name).unwrap();
+            let marker = if d == "tcl8.6" { "init.tcl" } else { "tk.tcl" };
+            std::fs::write(v.join("lib").join(d).join(marker), name).unwrap();
         }
         std::fs::write(
             v.join(FILE),
@@ -270,7 +281,7 @@ sqlite 3.54.0 catalog
             std::fs::read_to_string(home.join("tcl-8.6.18/tcl8.6/init.tcl")).unwrap(),
             "3.12.15"
         );
-        assert!(home.join("tk-8.6.18/tk8.6/init.tcl").is_file());
+        assert!(home.join("tk-8.6.18/tk8.6/tk.tcl").is_file());
         assert!(!home.join("tcl-8.6.17").exists());
         // An existing folder is left as it is.
         std::fs::write(home.join("tcl-8.6.18/tcl8.6/init.tcl"), "kept").unwrap();
@@ -299,5 +310,104 @@ sqlite 3.54.0 catalog
             .collect();
         left.sort();
         assert_eq!(left, ["other", "tcl-8.6.18", "tk-8.6.18"]);
+    }
+
+    /// H1: a script folder that was partly removed (its marker is gone) is refilled by heal.
+    #[test]
+    fn heal_refills_a_script_folder_that_lost_its_marker() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        tcltk_version(root, "3.12.15", "8.6.18");
+        heal_scripts(root);
+        let home = store::tcltk_dir(root);
+        let tcl = home.join("tcl-8.6.18/tcl8.6");
+        let tk = home.join("tk-8.6.18/tk8.6");
+        std::fs::remove_file(tcl.join("init.tcl")).unwrap();
+        std::fs::write(tcl.join("stray"), "x").unwrap();
+        std::fs::remove_dir_all(&tk).unwrap();
+        std::fs::create_dir(&tk).unwrap();
+        heal_scripts(root);
+        assert!(tcl.join("init.tcl").is_file());
+        assert!(
+            !tcl.join("stray").exists(),
+            "the broken folder was replaced"
+        );
+        assert!(tk.join("tk.tcl").is_file());
+        let leftovers: Vec<String> = std::fs::read_dir(home.join("tcl-8.6.18"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(leftovers, ["tcl8.6"], "no .tmp- or .del- folder is left");
+    }
+
+    /// H2: a record's version is joined into a path only when it is plain.
+    #[test]
+    fn heal_skips_record_versions_that_are_not_plain() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        tcltk_version(root, "a", "8.6.18");
+        for bad in ["../x", "a/b", "..", ".", "a b", r"x\y", ""] {
+            std::fs::write(
+                root.join("versions/a").join(FILE),
+                format!(
+                    "definition a
+tcl {bad} catalog
+"
+                ),
+            )
+            .unwrap();
+            heal_scripts(root);
+        }
+        assert!(!root.join(".rpyenv/x").exists());
+        assert!(!root.join(".rpyenv/tcltk").exists(), "nothing was placed");
+        std::fs::write(
+            root.join("versions/a").join(FILE),
+            "definition a
+tcl 8.6.18+x_1-2 catalog
+",
+        )
+        .unwrap();
+        heal_scripts(root);
+        assert!(root
+            .join(".rpyenv/tcltk/tcl-8.6.18+x_1-2/tcl8.6/init.tcl")
+            .is_file());
+        assert!(store::plain_version("8.6.18"));
+        assert!(!store::plain_version("../x"));
+        // The definition name is joined into a lookup path too.
+        assert!(parse(
+            "definition ../x
+"
+        )
+        .is_none());
+        assert!(parse(
+            "definition a
+"
+        )
+        .is_some());
+    }
+
+    /// H1: uninstall's prune renames a folder before removing it, so a removal that fails
+    /// leaves no half folder under the real name.
+    #[cfg(unix)]
+    #[test]
+    fn prune_leaves_no_half_folder_under_the_real_name_when_removal_fails() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let home = store::tcltk_dir(root);
+        let locked = home.join("tcl-8.6.9/tcl8.6/sub");
+        std::fs::create_dir_all(&locked).unwrap();
+        std::fs::write(locked.join("f"), "x").unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o500)).unwrap();
+        std::fs::create_dir_all(root.join("versions")).unwrap();
+        prune_scripts(root);
+        assert!(!home.join("tcl-8.6.9").exists());
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).ok();
+        if let Ok(rd) = std::fs::read_dir(&home) {
+            for e in rd.flatten() {
+                let l = e.path().join("tcl8.6/sub");
+                std::fs::set_permissions(&l, std::fs::Permissions::from_mode(0o700)).ok();
+            }
+        }
     }
 }
