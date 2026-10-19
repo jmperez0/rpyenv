@@ -147,8 +147,17 @@ fn os_information(env: &[(OsString, OsString)]) -> String {
 
 /// The `-I` flag that lets CPython's configure find `panel.h` where the system keeps it only
 /// under `ncursesw/` (openSUSE Tumbleweed; Debian, Fedora and Arch also have it at the top):
-/// without it `curses.panel` is silently not built. `exists` tells whether a path exists.
-pub(crate) fn panel_include(exists: &dyn Fn(&str) -> bool) -> Option<&'static str> {
+/// without it `curses.panel` is silently not built. `minor`: the CPython 3 minor of the
+/// definition's `verify_py3*` step (`stdlib::minor_of_step`), `None` for anything else; the flag
+/// is only for CPython 3 on Linux. The build and the check before it both ask here, so they
+/// cannot decide differently. `exists` tells whether a path exists.
+pub(crate) fn panel_include(
+    minor: Option<u32>,
+    exists: &dyn Fn(&str) -> bool,
+) -> Option<&'static str> {
+    if !(cfg!(target_os = "linux") && minor.is_some()) {
+        return None;
+    }
     (!exists("/usr/include/panel.h") && exists("/usr/include/ncursesw/panel.h"))
         .then_some("-I/usr/include/ncursesw")
 }
@@ -242,16 +251,14 @@ impl Plan {
         let mut store_cpp = store.map(|s| s.cppflags.join(" ")).unwrap_or_default();
         // Linux, CPython 3 (the definition has a `verify_py3*` step, as the check uses): configure
         // looks for `panel.h` with the flags it is given only.
-        let cpython3 = job
+        let minor = job
             .definition
             .packages
             .iter()
             .flat_map(|p| p.steps.iter())
-            .any(|s| super::stdlib::minor_of_step(s).is_some());
-        if cfg!(target_os = "linux") && cpython3 {
-            if let Some(flag) = panel_include(exists) {
-                store_cpp = join(&[&store_cpp, flag]);
-            }
+            .find_map(|s| super::stdlib::minor_of_step(s));
+        if let Some(flag) = panel_include(minor, exists) {
+            store_cpp = join(&[&store_cpp, flag]);
         }
         let py_cflags = if job.opts.debug {
             format!("-O0 {}", var("PYTHON_CFLAGS"))
@@ -603,8 +610,9 @@ pub(crate) struct StoreTcl<'a> {
     pub cache: &'a Path,
     /// Whether a path exists (the filesystem, or a fake in tests).
     pub exists: &'a dyn Fn(&Path) -> bool,
-    /// Makes a throwaway virtual environment from the built interpreter and starts Tcl in it.
-    pub in_venv: &'a dyn Fn() -> bool,
+    /// Makes a throwaway virtual environment from the built interpreter and starts Tcl in it:
+    /// `Ok(false)` when Tcl doesn't start, `Err(why)` when the check itself couldn't run.
+    pub in_venv: &'a dyn Fn() -> Result<bool, String>,
 }
 
 /// M8 design §4.4: every module of the table imports, CA certificates exist, Tcl runs.
@@ -657,11 +665,40 @@ pub(crate) fn stdlib_failures(
                 "tkinter (Tcl's library {lib} doesn't exist; needs tk)"
             ));
         }
-        if !(s.in_venv)() {
-            out.push("tkinter (Tcl doesn't start in a virtual environment; needs tk)".into());
+        match (s.in_venv)() {
+            Ok(true) => {}
+            Ok(false) => {
+                out.push("tkinter (Tcl doesn't start in a virtual environment; needs tk)".into())
+            }
+            Err(why) => out.push(format!(
+                "tkinter (could not check Tcl in a virtual environment: {why})"
+            )),
         }
     }
     out
+}
+
+/// Makes a new folder under `base` (mode 0700) named by the first of `names` that doesn't exist
+/// yet. `create_dir` fails on an existing path, so a folder someone else made, or a link, is
+/// never used.
+pub(crate) fn private_dir(
+    base: &Path,
+    names: &mut dyn Iterator<Item = String>,
+) -> Result<PathBuf, String> {
+    use std::os::unix::fs::DirBuilderExt;
+    let mut tried = 0;
+    for n in names {
+        let path = base.join(n);
+        match std::fs::DirBuilder::new().mode(0o700).create(&path) {
+            Ok(()) => return Ok(path),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => tried += 1,
+            Err(e) => return Err(format!("cannot create {}: {e}", path.display())),
+        }
+    }
+    Err(format!(
+        "{tried} folder names under {} were taken already",
+        base.display()
+    ))
 }
 
 /// Runs the §4.4 check on the built interpreter and decides what a failure means: an error
@@ -695,15 +732,25 @@ fn stdlib_check(
         }
     };
     // A throwaway venv from the built interpreter, where Tcl must start as well (§4.4).
-    let in_venv = || -> bool {
+    let in_venv = || -> Result<bool, String> {
         if interrupted() {
-            return true;
+            return Ok(true);
         }
         let tmp = get(job.env, "TMPDIR")
             .filter(|v| !v.is_empty())
             .unwrap_or_else(|| "/tmp".into());
-        let venv = Path::new(&tmp).join(format!("rpyenv-tcl-venv.{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&venv);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0);
+        let mut names = (0..5u32).map(|i| {
+            format!(
+                "rpyenv-tcl-venv.{}.{:x}",
+                std::process::id(),
+                nanos.wrapping_add(i)
+            )
+        });
+        let venv = private_dir(Path::new(&tmp), &mut names)?;
         let quiet = |c: &mut Command| -> bool {
             let st = c
                 .stdin(Stdio::null())
@@ -724,7 +771,7 @@ fn stdlib_check(
                 .args(["-c", "import tkinter; tkinter.Tcl()"]),
         );
         let _ = std::fs::remove_dir_all(&venv);
-        ok
+        Ok(ok)
     };
     // These checks apply only when the store supplied Tcl/Tk (its script folders).
     let exists = |p: &Path| p.exists();
@@ -1480,19 +1527,24 @@ mod tests {
         let only = |paths: &'static [&'static str]| move |p: &str| paths.contains(&p);
         // Tumbleweed: only the ncursesw folder has it.
         assert_eq!(
-            panel_include(&only(&["/usr/include/ncursesw/panel.h"])),
+            panel_include(Some(12), &only(&["/usr/include/ncursesw/panel.h"])),
             Some("-I/usr/include/ncursesw")
         );
         // Debian, Fedora, Arch: the top-level header is there, and no flag is needed.
         assert_eq!(
-            panel_include(&only(&[
-                "/usr/include/panel.h",
-                "/usr/include/ncursesw/panel.h"
-            ])),
+            panel_include(
+                Some(12),
+                &only(&["/usr/include/panel.h", "/usr/include/ncursesw/panel.h"])
+            ),
             None
         );
         // No ncurses development files at all.
-        assert_eq!(panel_include(&only(&[])), None);
+        assert_eq!(panel_include(Some(12), &only(&[])), None);
+        // Not CPython 3 (no `verify_py3*` step): never, wherever the header is.
+        assert_eq!(
+            panel_include(None, &only(&["/usr/include/ncursesw/panel.h"])),
+            None
+        );
     }
 
     /// A plan for 3.12.99 with the user's flags and a store; `verify`: the definition has a
@@ -1654,8 +1706,8 @@ mod tests {
             "/r/versions/3.12.15/lib/tcl8.6",
         ];
         let exists = |p: &Path| real.iter().any(|r| p == Path::new(r));
-        let venv_ok = || true;
-        let venv_fails = || false;
+        let venv_ok = || Ok(true);
+        let venv_fails = || Ok(false);
         let good = StoreTcl {
             cache,
             exists: &exists,
@@ -1682,8 +1734,50 @@ mod tests {
             stdlib_failures(&says(real[0]), 12, Some(&no_venv)),
             ["tkinter (Tcl doesn't start in a virtual environment; needs tk)"]
         );
+        let venv_cannot = || Err("no private folder".to_string());
+        let cannot = StoreTcl {
+            cache,
+            exists: &exists,
+            in_venv: &venv_cannot,
+        };
+        assert_eq!(
+            stdlib_failures(&says(real[0]), 12, Some(&cannot)),
+            ["tkinter (could not check Tcl in a virtual environment: no private folder)"]
+        );
         // Without the store, neither where Tcl's library is nor venvs are checked.
         assert!(stdlib_failures(&says("/usr/share/tcltk/tcl8.6"), 12, None).is_empty());
+    }
+
+    /// H3: the throwaway venv folder is always a new one (mode 0700); a folder or a link that
+    /// exists at a candidate name is skipped, never used.
+    #[test]
+    fn the_throwaway_folder_is_never_one_that_already_exists() {
+        use std::os::unix::fs::PermissionsExt;
+        let t = tempfile::tempdir().unwrap();
+        let first = t.path().join("a");
+        std::fs::create_dir(&first).unwrap();
+        std::fs::write(first.join("planted"), "x").unwrap();
+        std::os::unix::fs::symlink(&first, t.path().join("b")).unwrap();
+        let mut names = ["a", "b", "c"].into_iter().map(String::from);
+        let got = private_dir(t.path(), &mut names).unwrap();
+        assert_eq!(got, t.path().join("c"));
+        assert_eq!(
+            std::fs::metadata(&got).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert!(
+            first.join("planted").is_file(),
+            "the pre-made folder is untouched"
+        );
+        let mut taken = ["a", "b"].into_iter().map(String::from);
+        let e = private_dir(t.path(), &mut taken).unwrap_err();
+        assert!(
+            e.contains("2 folder names") && e.contains("taken already"),
+            "{e}"
+        );
+        let mut missing = ["x"].into_iter().map(String::from);
+        let e = private_dir(&t.path().join("nope"), &mut missing).unwrap_err();
+        assert!(e.starts_with("cannot create "), "{e}");
     }
 
     #[test]
