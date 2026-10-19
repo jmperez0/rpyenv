@@ -146,6 +146,9 @@ if [ -n "${BUILD:-}" ]; then
   # NO_CA (§6.5, D-128): the downloads worked without system certificates; the store's OpenSSL
   # reads rpyenv's pinned bundle, and a real TLS handshake goes through it.
   if [ -n "${NO_CA:-}" ]; then
+    # The pinned bundle exists only where the store built OpenSSL (the record names it).
+    grep -q '^openssl ' "$rec" ||
+      { echo "::error::$distro: NO_CA=1, but the record has no openssl line, so no pinned CA bundle was placed"; exit 1; }
     bundle="$root/.rpyenv/ssl/cert.pem"
     [ -f "$bundle" ] && [ ! -L "$bundle" ] || { echo "::error::$distro: no pinned CA bundle file at $bundle"; exit 1; }
     echo "== the CA bundle is $bundle"
@@ -191,9 +194,9 @@ if [ -n "${BUILD:-}" ]; then
     rm -rf "$root"/cache/deps/libuuid-*/*
     rc=0
     out=$("$bin" install -f --deps=build "$v" 2>&1 </dev/null) || rc=$?
-    tail -5 <<<"$out"
+    tail -30 <<<"$out"
     { [ "$rc" -ne 0 ] && grep -q 'uuid (import _uuid failed' <<<"$out"; } ||
-      { echo "::error::$distro: a store without libuuid.a did not fail the check naming uuid"; exit 1; }
+      { echo "::error::$distro: an emptied libuuid store entry did not fail the check naming uuid"; exit 1; }
     imports "$v"
     echo "== the check after the build failed naming uuid, as it must"
     # The next build compiles libuuid again.

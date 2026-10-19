@@ -33,6 +33,14 @@ class Versions(unittest.TestCase):
         page = "PRODUCT,3.54.1,2026/sqlite-autoconf-3540100.tar.gz,3332984,b6ced585\n"
         self.assertEqual(dc.sqlite_latest(page), ("3.54.1", "https://sqlite.org/2026/sqlite-autoconf-3540100.tar.gz"))
 
+    def test_sqlite_page_without_a_product_line_is_no_release_not_a_type_error(self):
+        # A changed page layout gives (None, None), so the run says "no release found".
+        self.assertEqual(dc.sqlite_latest("<html>a new layout</html>"), (None, None))
+        with mock.patch.object(dc, "get", return_value="<html>a new layout</html>"):
+            version, url = dc.latest("sqlite")
+        self.assertIsNone(version)
+        self.assertIsNone(url)
+
     def test_cacert_names_sort_by_date(self):
         page = "cacert-2026-07-16.pem cacert-2026-09-25.pem cacert-2026-08-13.pem"
         self.assertEqual(dc.cacert_latest(page), "2026-09-25")

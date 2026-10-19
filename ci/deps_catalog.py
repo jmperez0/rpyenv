@@ -16,7 +16,6 @@ import os
 import re
 import sys
 import socket
-import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -81,7 +80,7 @@ def tag_versions(tags):
 
 def sqlite_latest(page):
     m = re.search(r"PRODUCT,(\d+\.\d+\.\d+),(\d{4}/sqlite-autoconf-\d+\.tar\.gz)", page)
-    return (m.group(1), "https://sqlite.org/" + m.group(2)) if m else None
+    return (m.group(1), "https://sqlite.org/" + m.group(2)) if m else (None, None)
 
 
 def cacert_latest(page):
@@ -160,8 +159,7 @@ def replace_row(text, lib, version, url, sha):
 
 
 def sha256_of(url):
-    data = get(url, binary=True)
-    return hashlib.sha256(data).hexdigest(), data
+    return hashlib.sha256(get(url, binary=True)).hexdigest()
 
 
 def main(argv):
@@ -189,7 +187,7 @@ def main(argv):
         return 1
     lines = []
     for lib, old, new, url in changes:
-        sha, data = sha256_of(url)
+        sha = sha256_of(url)
         if lib == "cacert":
             published = get(url + ".sha256").split()[0]
             if published != sha:
