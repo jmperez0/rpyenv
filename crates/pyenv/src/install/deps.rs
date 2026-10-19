@@ -1142,12 +1142,12 @@ mod tests {
             &[dep("uuid", "libuuid")],
             12,
             &ALL_TOOLS,
-            Err("PYENV_ROOT has a space or a shell character in its path (/a b)".into()),
+            Err("PYENV_ROOT has a space, a colon or a shell character in its path (/a b)".into()),
             None,
         );
         assert_eq!(
             root.blocked.as_deref(),
-            Some("PYENV_ROOT has a space or a shell character in its path (/a b)")
+            Some("PYENV_ROOT has a space, a colon or a shell character in its path (/a b)")
         );
     }
 
