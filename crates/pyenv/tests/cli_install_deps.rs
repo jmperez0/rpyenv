@@ -1606,7 +1606,7 @@ fn a_root_with_a_space_refuses_the_build_route_before_downloading() {
     assert_eq!(r.code, 1, "{}", r.stderr);
     assert!(
         r.stderr.contains(&format!(
-            "pyenv: --deps=build can't run: PYENV_ROOT has a space or a shell character in its path ({spaced_s})\n"
+            "pyenv: --deps=build can't run: PYENV_ROOT has a space, a colon or a shell character in its path ({spaced_s})\n"
         )),
         "{}",
         r.stderr
@@ -1865,9 +1865,9 @@ fn a_version_whose_definition_is_gone_gets_no_stale_warning() {
 
 /// A version the build route built with Tcl/Tk `release`, with its own script copies.
 fn tcltk_version(f: &Fixture, name: &str, release: &str) {
-    for d in ["tcl8.6", "tk8.6"] {
+    for (d, marker) in [("tcl8.6", "init.tcl"), ("tk8.6", "tk.tcl")] {
         f.file(
-            &f.root.join(format!("versions/{name}/lib/{d}/init.tcl")),
+            &f.root.join(format!("versions/{name}/lib/{d}/{marker}")),
             name,
         );
     }
@@ -1888,13 +1888,13 @@ fn rehash_recreates_the_shared_tcltk_folders_and_uninstall_removes_unused_ones()
     let home = f.root.join(".rpyenv/tcltk");
     let r = f.pyenv(&["rehash"]);
     assert_eq!(r.code, 0, "{}", r.stderr);
-    for d in [
-        "tcl-8.6.18/tcl8.6",
-        "tk-8.6.18/tk8.6",
-        "tcl-8.6.17/tcl8.6",
-        "tk-8.6.17/tk8.6",
+    for (d, marker) in [
+        ("tcl-8.6.18/tcl8.6", "init.tcl"),
+        ("tk-8.6.18/tk8.6", "tk.tcl"),
+        ("tcl-8.6.17/tcl8.6", "init.tcl"),
+        ("tk-8.6.17/tk8.6", "tk.tcl"),
     ] {
-        assert!(home.join(d).join("init.tcl").is_file(), "{d}");
+        assert!(home.join(d).join(marker).is_file(), "{d}");
     }
     let r = f.pyenv(&["uninstall", "-f", "3.13.98"]);
     assert_eq!(r.code, 0, "{}", r.stderr);
