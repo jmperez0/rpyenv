@@ -59,11 +59,42 @@ pub fn script_dir(key: &str) -> Option<&'static str> {
     }
 }
 
-/// Copies the tree `src` to `dst` unless `dst` is already a directory: into a temporary sibling
-/// first, then renamed into place, so `dst` is never half-copied. Another process that put
-/// `dst` in place first wins.
+/// The file whose presence says a Tcl or Tk script folder is whole: `init.tcl` in `tcl8.6`,
+/// `tk.tcl` in `tk8.6`; `None` for any other folder name.
+fn script_marker(folder: &str) -> Option<&'static str> {
+    match folder {
+        "tcl8.6" => Some("init.tcl"),
+        "tk8.6" => Some("tk.tcl"),
+        _ => None,
+    }
+}
+
+/// Whether `dir` counts as filled: a script folder only with its marker file (a folder that
+/// was partly removed is not), any other folder when it is a directory.
+pub fn is_filled(dir: &Path) -> bool {
+    let name = dir.file_name().unwrap_or_default().to_string_lossy();
+    match script_marker(&name) {
+        Some(m) => dir.join(m).is_file(),
+        None => dir.is_dir(),
+    }
+}
+
+/// A version text that is safe inside a path the record names: not empty, not `.` or `..`, and
+/// only ASCII letters and digits and `.`, `-`, `_`, `+` (a record is a file a user can edit).
+pub fn plain_version(v: &str) -> bool {
+    !v.is_empty()
+        && v != "."
+        && v != ".."
+        && v.chars()
+            .all(|c| c.is_ascii_alphanumeric() || ".-_+".contains(c))
+}
+
+/// Copies the tree `src` to `dst` unless `dst` is already filled (see `is_filled`): into a
+/// temporary sibling first, then swapped into place (a broken `dst` is renamed to `.del-<name>-
+/// <pid>` first and removed after), so `dst` is never half-copied. Another process that filled
+/// `dst` first wins.
 pub fn place_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
-    if dst.is_dir() {
+    if is_filled(dst) {
         return Ok(());
     }
     let parent = dst
@@ -71,16 +102,59 @@ pub fn place_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
         .ok_or_else(|| std::io::Error::other("no parent folder"))?;
     std::fs::create_dir_all(parent)?;
     let name = dst.file_name().unwrap_or_default().to_string_lossy();
-    let tmp = parent.join(format!(".tmp-{name}-{}", std::process::id()));
+    let pid = std::process::id();
+    let tmp = parent.join(format!(".tmp-{name}-{pid}"));
+    let del = parent.join(format!(".del-{name}-{pid}"));
     let _ = std::fs::remove_dir_all(&tmp);
-    let copied = super::builder::copy_tree(src, &tmp).and_then(|()| std::fs::rename(&tmp, dst));
+    let _ = std::fs::remove_dir_all(&del);
+    let copied = super::builder::copy_tree(src, &tmp).and_then(|()| {
+        if std::fs::symlink_metadata(dst).is_ok() {
+            std::fs::rename(dst, &del)?;
+            if let Err(e) = std::fs::rename(&tmp, dst) {
+                let _ = std::fs::rename(&del, dst);
+                return Err(e);
+            }
+            let _ = std::fs::remove_dir_all(&del);
+            Ok(())
+        } else {
+            std::fs::rename(&tmp, dst)
+        }
+    });
     if let Err(e) = copied {
         let _ = std::fs::remove_dir_all(&tmp);
-        if !dst.is_dir() {
+        if !is_filled(dst) {
             return Err(e);
         }
     }
     Ok(())
+}
+
+/// Whether process `pid` may still be running. Without `/proc` (not Linux) it says yes: a
+/// folder named for a process is then never taken for a dead one's.
+fn pid_may_run(pid: u32) -> bool {
+    let proc = Path::new("/proc");
+    !proc.join("self").exists() || proc.join(pid.to_string()).exists()
+}
+
+/// Removes the folders of `dir` named `<prefix><pid>` whose process is gone (a killed run left
+/// them); never the current process's.
+fn remove_stale(dir: &Path, prefix: &str) {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in rd.filter_map(Result::ok) {
+        let n = e.file_name().to_string_lossy().into_owned();
+        let Some(pid) = n
+            .strip_prefix(prefix)
+            .filter(|r| !r.is_empty() && r.bytes().all(|b| b.is_ascii_digit()))
+            .and_then(|r| r.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        if pid != std::process::id() && !pid_may_run(pid) {
+            let _ = std::fs::remove_dir_all(e.path());
+        }
+    }
 }
 
 /// Adds the entries of `new` that `into` doesn't hold yet (same folder): a second `[b]` round
@@ -403,6 +477,8 @@ pub fn ensure(b: &Build, keys: &[&'static str], say: &mut dyn FnMut(&str)) -> R<
         if interrupted() {
             return Err(InstallError::Interrupted);
         }
+        // Staging folders of this entry that a killed run left behind (the lock is ours).
+        remove_stale(&dir, &format!(".tmp-{name}-"));
         if prefix.is_dir() {
             say(&format!(
                 "Using {key} {} from {}",
@@ -554,7 +630,11 @@ fn build_one(
             let _ = std::fs::remove_file(&log_path);
             Ok(())
         }
-        Err(InstallError::Interrupted) => Err(InstallError::Interrupted),
+        Err(InstallError::Interrupted) => {
+            drop(log);
+            let _ = std::fs::remove_file(&log_path);
+            Err(InstallError::Interrupted)
+        }
         Err(e) => {
             if let InstallError::Message(m) = &e {
                 say(m);
@@ -631,6 +711,8 @@ fn place_pinned(
     fetcher: &Fetcher,
     say: &mut dyn FnMut(&str),
 ) -> R<bool> {
+    // A killed run left its fetch folder: removed unless its process runs.
+    remove_stale(dir, ".fetch-");
     let row = rows
         .iter()
         .find(|r| r.key == "cacert")
@@ -933,6 +1015,48 @@ cp tcl_library.txt "$p/lib/tcl_library.txt"
             home.join("tcl8.6/init.tcl").is_file(),
             "the reused entry refilled it"
         );
+    }
+
+    /// H1: a Tcl script folder that lost its marker (partly removed) is replaced by a whole
+    /// one when the entry is reused.
+    #[test]
+    fn a_partly_removed_script_folder_is_refilled_by_ensure() {
+        let f = tcl_fixture();
+        run_keys(&f, &["tcl"], &mut |_| {}).unwrap();
+        let home = f.root.join(".rpyenv/tcltk/tcl-0.1");
+        let folder = home.join("tcl8.6");
+        std::fs::remove_dir_all(&folder).unwrap();
+        std::fs::create_dir(&folder).unwrap();
+        std::fs::write(folder.join("junk"), "x").unwrap();
+        run_keys(&f, &["tcl"], &mut |_| {}).unwrap();
+        assert!(folder.join("init.tcl").is_file());
+        assert!(folder.join("encoding/ascii.enc").is_file());
+        assert!(!folder.join("junk").exists());
+        let names: Vec<String> = std::fs::read_dir(&home)
+            .unwrap()
+            .map(|x| x.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["tcl8.6"], "no .tmp- or .del- folder is left");
+    }
+
+    /// H10: while it holds an entry's lock, `ensure` removes that entry's staging folders left
+    /// by a run that died; a running process's, and other entries', stay.
+    #[test]
+    fn ensure_removes_the_staging_folders_of_dead_runs_of_its_entry() {
+        let f = fixture(false);
+        let e = run(&f, &mut Vec::new()).unwrap();
+        let deps = deps_dir(&f.root);
+        let name = e[0].dir.file_name().unwrap().to_string_lossy().into_owned();
+        let stale = deps.join(format!(".tmp-{name}-4294967294"));
+        let live = deps.join(format!(".tmp-{name}-1"));
+        let other = deps.join(".tmp-other-0.1-abc-4294967294");
+        for d in [&stale, &live, &other] {
+            std::fs::create_dir_all(d.join("x")).unwrap();
+        }
+        run(&f, &mut Vec::new()).unwrap();
+        assert!(!stale.exists());
+        assert!(live.is_dir());
+        assert!(other.is_dir());
     }
 
     /// Final review I3: a builder waiting for another one's lock says so, and goes on when the
@@ -1388,6 +1512,36 @@ cp tcl_library.txt "$p/lib/tcl_library.txt"
         std::fs::write(&cert, "old\n").unwrap();
         assert!(sync(&root, &rows, &SystemCerts::default()));
         assert_eq!(crate::install::checksum::sha256_file(&cert).unwrap(), sha);
+    }
+
+    /// H8: a `.fetch-<pid>` folder of a process that is gone is removed before the bundle is
+    /// placed; one of a running process (pid 1 here) is kept.
+    #[test]
+    fn a_dead_runs_fetch_folder_is_removed_and_a_live_ones_kept() {
+        let (_tmp, root, rows, _) = ca_fixture();
+        let dir = ssl_dir(&root);
+        for n in [".fetch-4294967294", ".fetch-1", ".fetch-notapid"] {
+            std::fs::create_dir_all(dir.join(n)).unwrap();
+            std::fs::write(dir.join(n).join("partial"), "x").unwrap();
+        }
+        assert!(sync(&root, &rows, &SystemCerts::default()));
+        assert!(!dir.join(".fetch-4294967294").exists());
+        assert!(dir.join(".fetch-1/partial").is_file(), "a live pid is kept");
+        assert!(dir.join(".fetch-notapid").exists());
+        assert!(dir.join("cert.pem").is_file());
+    }
+
+    /// H8/H10: the current process's own folder is never taken for a dead one's.
+    #[test]
+    fn stale_removal_never_touches_the_current_pid() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mine = tmp.path().join(format!("p-{}", std::process::id()));
+        let dead = tmp.path().join("p-4294967294");
+        std::fs::create_dir_all(&mine).unwrap();
+        std::fs::create_dir_all(&dead).unwrap();
+        remove_stale(tmp.path(), "p-");
+        assert!(mine.is_dir());
+        assert!(!dead.exists());
     }
 
     /// `ensure` makes the folder when it uses OpenSSL (here a fake one), and not for others.
