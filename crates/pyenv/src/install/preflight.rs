@@ -901,7 +901,8 @@ fn library_deps(
         // system keeps it only under `ncursesw/` (openSUSE), the builder adds the include.
         if l.key == "ncurses" {
             let mut extra_flags = extra.clone();
-            extra_flags.extend(super::builder::panel_include(exists).map(str::to_string));
+            extra_flags
+                .extend(super::builder::panel_include(Some(minor), exists).map(str::to_string));
             let flags = cpp_flags(env, &extra_flags);
             let compiles = {
                 let mut args: Vec<&str> = flags.iter().map(String::as_str).collect();
