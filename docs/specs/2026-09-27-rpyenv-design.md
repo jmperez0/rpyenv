@@ -807,8 +807,9 @@ without `--source-ref`, a dry run's attestation from any branch would pass too).
   into `?` (allowlist D-48); a console set to code page 65001 gets UTF-8
   always. Text written to a console is Unicode. `RPYENV_DEBUG_LOG` is always
   UTF-8. Linux writes UTF-8.
-- **Debugging:** `PYENV_DEBUG=1` (upstream's variable) prints where the
-  version came from and which executable was chosen.
+- **Debugging:** upstream's `PYENV_DEBUG` turns on a bash `set -x` trace. rpyenv has
+  none (allowlist D-19); a non-empty `PYENV_DEBUG` only makes `pyenv install` verbose,
+  as `-v` does. `RPYENV_DEBUG_LOG` is rpyenv's own diagnostics file.
 - **Downloads:** retry with backoff, then report the URL and suggest
   `PYTHON_BUILD_MIRROR_URL`. A hash mismatch is fatal and deletes the file.
 
@@ -880,7 +881,7 @@ without `--source-ref`, a dry run's attestation from any branch would pass too).
 | `PYENV_ROOT` (`PYENV`, `PYENV_HOME` on Windows) | upstream | Root directory |
 | `PYENV_VERSION` | upstream | Version override for the current shell |
 | `PYENV_SHELL` | upstream | Set by `pyenv init` |
-| `PYENV_DEBUG` | upstream | Trace output |
+| `PYENV_DEBUG` | upstream | Linux: makes `pyenv install` verbose, as `-v` does (no bash trace, D-19) |
 | `PYTHON_BUILD_MIRROR_URL`, `PYTHON_CONFIGURE_OPTS`, `PYTHON_CFLAGS`, `MAKE_OPTS`, `PYTHON_MAKE_OPTS` | upstream | Installer options |
 | `RPYENV_LIVE_REHASH` | rpyenv | `1` enables the live watcher |
 | `RPYENV_CONSOLE` | rpyenv | Windows: `lazy` (default) or `eager`, for a shim started without a console |
