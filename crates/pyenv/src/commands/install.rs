@@ -359,7 +359,7 @@ fn resolve_deps(
         Ok(())
     } else {
         Err(format!(
-            "PYENV_ROOT has a space or a shell character in its path ({})",
+            "PYENV_ROOT has a space, a colon or a shell character in its path ({})",
             root.display()
         ))
     };
