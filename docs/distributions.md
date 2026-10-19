@@ -106,7 +106,7 @@ and links it into Python statically. Nothing is installed on the system.
 - **What the system still needs:** a C compiler, `make`, `patch` and `awk` (`gawk`; Tumbleweed's base image has none). OpenSSL and libxcrypt also
   need Perl with its core modules (`perl-core` on Fedora); Tk needs the X11 headers
   (`libx11-dev`, `libX11-devel`) until a later release builds those too.
-- **`PYENV_ROOT`** must have no spaces, shell characters or `:` in its path.
+- **`PYENV_ROOT`** must have no space, colon or shell character in its path.
 - **CA certificates:** a self-built OpenSSL gets a private folder, `$PYENV_ROOT/.rpyenv/ssl/`,
   with no `openssl.cnf` (a distribution's config is written for its own OpenSSL; Tumbleweed's
   broke `ssl` in a vanilla one). Its `cert.pem` and `certs` link to the system's certificates,
