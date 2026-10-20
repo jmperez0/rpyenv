@@ -1501,29 +1501,67 @@ fn at_a_terminal_b_builds_the_library_then_python() {
     assert!(installed(&f));
 }
 
+/// A definition that fetches CPython with git has no tarball for the bootstrap Python, so
+/// the store can't build X11 (ruling C7).
 #[test]
-fn without_x11_headers_deps_build_refuses_tkinter_before_building_anything() {
+fn a_git_definition_without_x11_headers_refuses_tkinter() {
     let f = Fixture::plain();
-    plugin_def(&f);
     stubs(&f, 0);
+    f.file(
+        &f.root.join("plugins/fake/share/python-build/3.12.99-dev"),
+        "install_git \"Python-3.12-dev\" \"https://example.invalid/cpython\" \"3.12\" standard verify_py312 ensurepip
+",
+    );
     let cat = fake_catalog(&f).display().to_string();
     let p = [
         ("RPYENV_TEST_PREFLIGHT", "libuuid,tk"),
         ("RPYENV_TEST_BUILD_TOOLS", "perl"),
         ("RPYENV_TEST_CATALOG", cat.as_str()),
     ];
-    let r = run(&f, &["install", "--deps=build", "3.12.99"], &p);
+    let r = run(&f, &["install", "--deps=build", "3.12.99-dev"], &p);
     assert_eq!(r.code, 1, "{}", r.stderr);
     assert!(
         r.stderr.contains(
-            "pyenv: --deps=build can't build tkinter here: needs the X11 headers (libx11-dev)\n"
+            "pyenv: --deps=build can't build tkinter here: needs the X11 headers (libx11-dev)
+"
         ),
         "{}",
         r.stderr
     );
     assert_eq!(uuid_runs(&f), 0, "nothing was built");
     assert!(store_entries(&f).is_empty());
-    assert!(!installed(&f));
+}
+
+/// M8c: without X11 headers, `[b]` covers tkinter too (the store builds X11).
+#[test]
+fn at_a_terminal_b_offers_tkinter_without_x11_headers() {
+    let f = Fixture::plain();
+    plugin_def(&f);
+    stubs(&f, 0);
+    let cat = fake_catalog(&f).display().to_string();
+    let p = [
+        ("RPYENV_TEST_PREFLIGHT", "tk"),
+        ("RPYENV_TEST_BUILD_TOOLS", "perl"),
+        ("RPYENV_TEST_CATALOG", cat.as_str()),
+        ("RPYENV_TEST_TTY", "1"),
+    ];
+    let r = run_input(
+        &f,
+        &["install", "3.12.99"],
+        &p,
+        "p
+",
+    );
+    assert!(
+        r.stderr.contains(
+            "  [b] build them from source for rpyenv, no root
+"
+        ),
+        "{}",
+        r.stderr
+    );
+    assert!(!r.stderr.contains("not tkinter"), "{}", r.stderr);
+    assert!(store_entries(&f).is_empty(), "p builds nothing");
 }
 
 #[test]
@@ -1533,17 +1571,17 @@ fn at_a_terminal_b_builds_what_it_can_and_the_rest_comes_back_to_the_prompt() {
     stubs(&f, 0);
     let cat = fake_catalog(&f).display().to_string();
     let p = [
-        ("RPYENV_TEST_PREFLIGHT", "libuuid,tk"),
-        ("RPYENV_TEST_BUILD_TOOLS", "perl"),
+        ("RPYENV_TEST_PREFLIGHT", "libuuid,libcrypt"),
+        ("RPYENV_TEST_BUILD_TOOLS", "x11"),
         ("RPYENV_TEST_CATALOG", cat.as_str()),
         ("RPYENV_TEST_TTY", "1"),
     ];
-    // `b` builds libuuid; tkinter is left, `[b]` is no longer offered, `c` builds Python.
+    // `b` builds libuuid; crypt is left, `[b]` is no longer offered, `c` builds Python.
     let r = run_input(&f, &["install", "3.12.99"], &p, "b\nc\n");
     assert_eq!(r.code, 0, "{}", r.stderr);
     assert!(
         r.stderr
-            .contains("(not tkinter: needs the X11 headers, libx11-dev)"),
+            .contains("(not crypt: needs Perl 5 with its core modules, perl)"),
         "{}",
         r.stderr
     );

@@ -290,8 +290,19 @@ struct Resolution {
 type StoreBuild<'a> = dyn FnMut(&[&'static str], &mut dyn FnMut(&str)) -> Result<Vec<store::Entry>, InstallError>
     + 'a;
 
+/// The download cache (reference "Cache"): `PYTHON_BUILD_CACHE_PATH`, else `$PYENV_ROOT/cache`,
+/// when it is a directory.
+fn download_cache(env: &[(OsString, OsString)], root: &Path) -> Option<PathBuf> {
+    match get_os(env, "PYTHON_BUILD_CACHE_PATH") {
+        Some(p) => Some(PathBuf::from(p)),
+        None => Some(root.join("cache")),
+    }
+    .filter(|c| c.is_dir())
+}
+
 /// M8 design §5: detect, then print (system), install (install) or build into the store
 /// (build) until nothing is missing. `Ok` when the build may start; `Err(exit code)` otherwise.
+#[allow(clippy::too_many_arguments)]
 fn resolve_deps(
     get: &dyn Fn(&str) -> Option<String>,
     version: &str,
@@ -299,6 +310,7 @@ fn resolve_deps(
     patch: bool,
     flag: Option<&str>,
     root: &Path,
+    x11_source: bool,
     build: &mut StoreBuild,
 ) -> Result<Resolution, i32> {
     use crate::install::deps::{self, Route, SudoUse};
@@ -408,7 +420,7 @@ fn resolve_deps(
         }
         let plan = tools
             .filter(|_| wants_plan)
-            .map(|t| deps::build_plan(&missing, minor, &t, root_ok.clone(), manager));
+            .map(|t| deps::build_plan(&missing, minor, &t, x11_source, root_ok.clone(), manager));
         let build_offered = plan.as_ref().is_some_and(|p| p.blocked.is_none());
         if (tty || chosen == Some(Route::Install)) && sudo_probe.is_none() {
             let has_sudo = run_probe(get, "sudo", &["--version"]).is_some();
@@ -886,15 +898,6 @@ pub fn install(ctx: &Ctx, args: &[&str]) -> Output {
             job_env.push(("RPYENV_DEPS_MODE".into(), "lenient".into()));
         }
         let job_get = |k: &str| builder::get(&job_env, k);
-        // python-build reads a cache only when it is a directory; `pyenv install` supplies
-        // `$PYENV_ROOT/cache` when PYTHON_BUILD_CACHE_PATH is empty (reference "Cache"). The
-        // store downloads with the same mirror and cache settings.
-        let cache = match get_os(&job_env, "PYTHON_BUILD_CACHE_PATH") {
-            Some(p) => Some(PathBuf::from(p)),
-            None => Some(ctx.root.join("cache")),
-        }
-        .filter(|c| c.is_dir());
-        let fetcher = Fetcher::from_env(&job_get, cache);
         // A binary install (PyPy) compiles nothing, so it needs no build dependencies.
         let compiles = parsed
             .packages
@@ -905,11 +908,39 @@ pub fn install(ctx: &Ctx, args: &[&str]) -> Output {
             .iter()
             .flat_map(|p| p.steps.iter())
             .find_map(|s| crate::install::stdlib::minor_of_step(s));
+        // The CPython tarball a bootstrap Python for xcb's generator is built from (M8c); none
+        // when the definition fetches CPython with git (ruling C7).
+        let boot_src: Option<crate::install::bootstrap::Source> = parsed
+            .packages
+            .iter()
+            .find(|p| p.steps.iter().any(|s| s == "standard" || s == "python"))
+            .and_then(|p| match &p.fetch {
+                crate::install::defs::Fetch::Tarball { url, fragment } => {
+                    crate::install::checksum::sha256_of_fragment(url, fragment.as_deref())
+                        .ok()
+                        .map(|sha256| crate::install::bootstrap::Source {
+                            name: p.name.clone(),
+                            url: url.clone(),
+                            sha256,
+                            patches: builder::patch_files(&found, &p.name),
+                        })
+                }
+                _ => None,
+            });
         let mut store_entries: Vec<store::Entry> = Vec::new();
         if compiles && job_get("RPYENV_SKIP_PREFLIGHT").as_deref() != Some("1") {
             let patch = f.patch || needs_patch(&found, &parsed);
             let abs_root = std::path::absolute(&ctx.root).unwrap_or_else(|_| ctx.root.clone());
             let snapshot = job_env.clone();
+            // `cache/deps` turns on `$PYENV_ROOT/cache`: made first, so the store's downloads
+            // (the bootstrap's CPython tarball among them) are cached and the main build finds
+            // that tarball there (ruling C6). python-build reads a cache only when it is a
+            // directory; the store downloads with the same mirror and cache settings.
+            let _ = std::fs::create_dir_all(store::deps_dir(&abs_root));
+            let store_fetcher = Fetcher::from_env(
+                &|k: &str| builder::get(&snapshot, k),
+                download_cache(&snapshot, &abs_root),
+            );
             let mut build = |keys: &[&'static str],
                              say: &mut dyn FnMut(&str)|
              -> Result<Vec<store::Entry>, InstallError> {
@@ -922,11 +953,11 @@ pub fn install(ctx: &Ctx, args: &[&str]) -> Output {
                         rows: &rows,
                         definition: &parsed,
                         env: &snapshot,
-                        fetcher: &fetcher,
+                        fetcher: &store_fetcher,
                         openssldir,
                         certs: store::detect_system_certs(),
                         verbose: f.verbose,
-                        bootstrap: None,
+                        bootstrap: boot_src.as_ref(),
                     },
                     keys,
                     say,
@@ -940,6 +971,7 @@ pub fn install(ctx: &Ctx, args: &[&str]) -> Output {
                     patch,
                     f.deps.as_deref(),
                     &abs_root,
+                    boot_src.is_some(),
                     &mut build,
                 ),
                 // CPython 2.x keeps today's check (plan ruling P2 of M8a).
@@ -966,6 +998,11 @@ pub fn install(ctx: &Ctx, args: &[&str]) -> Output {
                 }
             }
         }
+        // The builder's fetcher is made after the store ran, from the final environment.
+        let fetcher = Fetcher::from_env(
+            &|k: &str| builder::get(&job_env, k),
+            download_cache(&job_env, &ctx.root),
+        );
         let linked = (!store_entries.is_empty()).then(|| {
             store::link(store_entries, minor.unwrap_or(u32::MAX), &|p: &Path| {
                 std::fs::read_to_string(p).ok()

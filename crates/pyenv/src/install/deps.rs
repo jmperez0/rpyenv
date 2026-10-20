@@ -407,7 +407,7 @@ pub fn choice(
 /// What `[b]` and `--deps=build` would do with `missing` (M8 design §6, plan rulings P2–P5).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuildPlan {
-    /// The `Dep::lib` values the build supplies.
+    /// The `Dep::lib` values the build supplies, and `x11` when the store builds X11 for Tk.
     pub libs: Vec<&'static str>,
     /// The catalog keys to build, in `catalog::ORDER`.
     pub keys: Vec<&'static str>,
@@ -433,10 +433,14 @@ fn tool_package(m: Option<Manager>, perl: bool) -> Option<&'static str> {
     })
 }
 
+/// `x11_source`: the definition has a CPython source tarball, from which the store's bootstrap
+/// Python (for xcb's generator) is built, so X11 can be built when the system has no headers
+/// (M8c ruling C7).
 pub fn build_plan(
     missing: &[Dep],
     minor: u32,
     tools: &Tools,
+    x11_source: bool,
     root_ok: Result<(), String>,
     m: Option<Manager>,
 ) -> BuildPlan {
@@ -479,10 +483,14 @@ pub fn build_plan(
                 d.name,
                 with_package("needs Perl 5 with its core modules", true),
             ));
-        } else if needs_x11 && !tools.x11 {
+        } else if needs_x11 && !tools.x11 && !x11_source {
             not.push((d.name, with_package("needs the X11 headers", false)));
         } else {
             libs.push(d.lib);
+            // No X11 headers: the store builds the X11 libraries too (M8c, spec 6.4).
+            if needs_x11 && !tools.x11 && !libs.contains(&"x11") {
+                libs.push("x11");
+            }
         }
     }
     let keys = catalog::plan(&libs);
@@ -1044,11 +1052,74 @@ mod tests {
             dep("tkinter", "tk"),
             dep("uuid", "libuuid"),
         ];
-        let p = build_plan(&missing, 12, &ALL_TOOLS, Ok(()), Some(Manager::Apt));
+        let p = build_plan(&missing, 12, &ALL_TOOLS, true, Ok(()), Some(Manager::Apt));
         assert_eq!(p.blocked, None);
         assert!(p.not.is_empty(), "{:?}", p.not);
         assert_eq!(p.keys, ["tcl", "tk", "libuuid", "openssl"]);
         assert_eq!(p.libs, ["openssl", "tk", "libuuid"]);
+    }
+
+    #[test]
+    fn without_x11_headers_the_plan_builds_x11_for_tk() {
+        let perl_only = Tools {
+            perl: true,
+            x11: false,
+        };
+        let p = build_plan(
+            &[dep("tkinter", "tk")],
+            12,
+            &perl_only,
+            true,
+            Ok(()),
+            Some(Manager::Apt),
+        );
+        assert_eq!(
+            p.keys,
+            [
+                "xorgproto",
+                "libXau",
+                "xcb-proto",
+                "libxcb",
+                "xtrans",
+                "libX11",
+                "tcl",
+                "tk"
+            ]
+        );
+        assert!(p.not.is_empty() && p.blocked.is_none(), "{p:?}");
+        let both = Tools {
+            perl: true,
+            x11: true,
+        };
+        let p = build_plan(
+            &[dep("tkinter", "tk")],
+            12,
+            &both,
+            true,
+            Ok(()),
+            Some(Manager::Apt),
+        );
+        assert_eq!(p.keys, ["tcl", "tk"], "the system's X11 headers are used");
+    }
+
+    #[test]
+    fn without_a_cpython_tarball_tk_still_needs_the_x11_headers() {
+        let perl_only = Tools {
+            perl: true,
+            x11: false,
+        };
+        let p = build_plan(
+            &[dep("tkinter", "tk")],
+            12,
+            &perl_only,
+            false,
+            Ok(()),
+            Some(Manager::Apt),
+        );
+        assert_eq!(
+            p.not,
+            [("tkinter", "needs the X11 headers (libx11-dev)".to_string())]
+        );
     }
 
     /// Plan rulings P3 and P4: Tk without X11 headers, OpenSSL without Perl's modules.
@@ -1063,7 +1134,7 @@ mod tests {
             perl: false,
             x11: false,
         };
-        let p = build_plan(&missing, 12, &none, Ok(()), Some(Manager::Dnf));
+        let p = build_plan(&missing, 12, &none, false, Ok(()), Some(Manager::Dnf));
         assert_eq!(p.keys, ["libuuid"]);
         assert_eq!(
             p.not,
@@ -1078,7 +1149,7 @@ mod tests {
                 ),
             ]
         );
-        let apt = build_plan(&missing, 12, &none, Ok(()), Some(Manager::Apt));
+        let apt = build_plan(&missing, 12, &none, false, Ok(()), Some(Manager::Apt));
         assert!(
             apt.not
                 .contains(&("tkinter", "needs the X11 headers (libx11-dev)".to_string())),
@@ -1093,7 +1164,7 @@ mod tests {
             "{:?}",
             apt.not
         );
-        let unknown = build_plan(&missing, 12, &none, Ok(()), None);
+        let unknown = build_plan(&missing, 12, &none, false, Ok(()), None);
         assert!(
             unknown
                 .not
@@ -1105,6 +1176,7 @@ mod tests {
             &[dep("tkinter", "tk")],
             12,
             &none,
+            false,
             Ok(()),
             Some(Manager::Apt),
         );
@@ -1126,6 +1198,7 @@ mod tests {
             &[compiler, dep("uuid", "libuuid")],
             12,
             &ALL_TOOLS,
+            true,
             Ok(()),
             None,
         );
@@ -1133,7 +1206,7 @@ mod tests {
             p.blocked.as_deref(),
             Some("it needs the C compiler, make, patch and awk from the system first")
         );
-        let old = build_plan(&[dep("uuid", "libuuid")], 6, &ALL_TOOLS, Ok(()), None);
+        let old = build_plan(&[dep("uuid", "libuuid")], 6, &ALL_TOOLS, true, Ok(()), None);
         assert_eq!(
             old.blocked.as_deref(),
             Some("the build route needs CPython 3.7 or later")
@@ -1142,6 +1215,7 @@ mod tests {
             &[dep("uuid", "libuuid")],
             12,
             &ALL_TOOLS,
+            true,
             Err("PYENV_ROOT has a space, a colon or a shell character in its path (/a b)".into()),
             None,
         );
@@ -1159,7 +1233,14 @@ mod tests {
             missing: Missing::Program("awk".into()),
             lib: "awk",
         };
-        let p = build_plan(&[awk, dep("uuid", "libuuid")], 12, &ALL_TOOLS, Ok(()), None);
+        let p = build_plan(
+            &[awk, dep("uuid", "libuuid")],
+            12,
+            &ALL_TOOLS,
+            true,
+            Ok(()),
+            None,
+        );
         assert_eq!(
             p.blocked.as_deref(),
             Some("it needs the C compiler, make, patch and awk from the system first")
@@ -1205,7 +1286,7 @@ mod tests {
             missing: Missing::Certificates,
             lib: stdlib::CA_KEY,
         };
-        let p = build_plan(&[pc, ca], 13, &ALL_TOOLS, Ok(()), None);
+        let p = build_plan(&[pc, ca], 13, &ALL_TOOLS, true, Ok(()), None);
         assert_eq!(p.keys, ["pkgconf", "openssl"]);
         assert_eq!(p.libs, ["pkg-config", stdlib::CA_KEY]);
     }
@@ -1220,6 +1301,7 @@ mod tests {
                 perl: true,
                 x11: false,
             },
+            false,
             Ok(()),
             Some(Manager::Apt),
         );
@@ -1233,7 +1315,7 @@ mod tests {
             false,
         );
         assert!(lines.contains(&"  [b] build them from source for rpyenv, no root (not tkinter: needs the X11 headers, libx11-dev)".to_string()), "{lines:#?}");
-        let full = build_plan(&missing, 12, &ALL_TOOLS, Ok(()), Some(Manager::Apt));
+        let full = build_plan(&missing, 12, &ALL_TOOLS, false, Ok(()), Some(Manager::Apt));
         let lines = prompt_lines(
             "3.12.15",
             &missing,
@@ -1256,6 +1338,7 @@ mod tests {
                 perl: true,
                 x11: false,
             },
+            false,
             Ok(()),
             Some(Manager::Apt),
         );
