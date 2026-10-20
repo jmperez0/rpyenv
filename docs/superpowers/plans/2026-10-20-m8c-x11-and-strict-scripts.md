@@ -60,7 +60,8 @@ store, GitHub Actions with distribution containers, Python 3 for the weekly cata
   updates the spec.
 - **C3:** libX11 is configured with `--datadir=/usr/share`, so its locale data and `XErrorDB`
   are read from the system's path, not from the store: the store stays a cache. Measured: a Tk
-  window opens under Xvfb with the store moved aside.
+  window opens under Xvfb with the store moved aside, and ASCII typing works with and without
+  the system's locale data. Non-ASCII input without locale data is not measured (below).
 - **C4:** Tk's X11 arguments (`Recipe::x11_args`) are added to its first step only when the
   store built libX11 in the same run; `xorgproto` and `libX11` then join Tk's fingerprint. With
   the system's X11, Tk's steps and fingerprint are unchanged, so M8b store entries stay valid.
@@ -94,12 +95,18 @@ store, GitHub Actions with distribution containers, Python 3 for the weekly cata
 | Tk 8.6.18 with `--disable-xft --disable-xss --x-includes=<libX11>/include --x-libraries=<libX11>/lib CPPFLAGS=-I<xorgproto>/include` gives `TK_LIBS=-L<libX11>/lib -lX11 -lpthread -ldl -lpthread -lm`, with or without libXext | `x11b.sh`, `x11c.sh` (`out/noxext.txt`) |
 | CPython 3.12.15 against that Tk: `tkinter.Tcl()` works, `tkinter.Tk()` stops at "no display name"; `_tkinter` links only libc and libm (`ldd`) | `x11b.sh`, `x11c.sh` |
 | libX11 with `--datadir=/usr/share` has `/usr/share/X11/locale` and `/usr/share/X11/XErrorDB` compiled in (`strings`); with the store moved aside, under `xvfb-run`, a Tk window opens (`:99.0`) and an `Entry` works; with `/usr/share/X11/locale` also moved aside, `LANG=C.UTF-8`, the window and an `Entry` with text still work | `x11d.sh`, `x11e.sh` (`out/datadir.txt`, `out/nolocale.txt`) |
+| Typed input via XTEST (`xdotool`) with the store moved aside: ASCII keys reach a Tk `Entry` with and without `/usr/share/X11/locale` (absence checked with `ls`), in `en_US.UTF-8` and `C.UTF-8`. On a Spanish keymap (`setxkbmap es`), `ñ` and dead `´` + `e` give the same text (`'hi  e'`) from the store's Tk 8.6.18 and from Ubuntu's own Tk 8.6.14 (`python3-tk`, system libX11) in all three cases. Neither Tk produced `ñ` or `é`, not even with the locale data present, so these runs can't show what missing locale data does to non-ASCII input | `x11f.sh`, `x11g.sh` (`out/typed.txt`, `out/keymap.txt`) |
 | Each X11 source matches its SHA-256 below, computed from a download on 2026-10-19; every one has an upstream `.sig` | `latest2.sh`, `sha256sum` |
 
 **Not measured:** the bootstrap on 3.9-3.11 and 3.13 (between measured versions; the weekly
 legs build 3.14 and 3.8), libX11 built against a store pkgconf (the spike used the store
 pkgconf, CI's Ubuntu leg has no system `pkg-config`), and distributions other than Ubuntu
 (Debian's weekly leg gets the X11 build too, Task 6).
+Non-ASCII and dead-key input on a machine with no X11 locale data is also not measured: the
+harness control (system Tk, locale data present) never produced `ñ` or `é` under Xvfb.
+Inference, not measurement: the store's libX11 reads the same `/usr/share/X11/locale` that
+the system's libX11 reads (`strings`), so it should behave like other X clients on that machine.
+Task 6 Step 8 item 4 checks it by hand on a real X server.
 
 ## Review Focus
 
@@ -1377,6 +1384,13 @@ out=$("$bin" install "$v" 2>&1 </dev/null) || rc=$?
   3. `ubuntu:24.04`, no BUILD, `DETECT_ONLY=1`, to `== detection is empty on ubuntu` (stage 1's
      strict flagless run).
   Record the wall-clock and every `== ` line of each run in the report.
+  4. **By hand, on a real X server (WSLg):** keep run 1's container root (`-v` a WSL folder as
+     `PYENV_ROOT`). Start a fresh `ubuntu:24.04` container with only that folder,
+     `-v /tmp/.X11-unix:/tmp/.X11-unix -e DISPLAY=:0`, and no X11 packages, so
+     `/usr/share/X11/locale` is absent (check it with `ls`). Run a Tk `Entry` in that container's 3.12.14
+     with `LANG=C.UTF-8`. The user types `ñ`, `é` and a dead-key `´ e` on their keyboard. Record
+     what appears, then repeat once with `libx11-data` installed in the container as the control.
+     The result replaces the "Not measured" line about non-ASCII input in Measured.
 
 - [ ] **Step 9: Commit**
 
@@ -1421,7 +1435,8 @@ git commit -m "CI: Debian and Ubuntu build legs have no X11 headers, so the stor
     Python from the same tarball that runs xcb's code generator). A version whose definition
     fetches CPython with git (`3.14-dev`) can't build X11 that way and needs the headers."
   - Add: "A self-built X11 reads its locale data from `/usr/share/X11/locale` when the system has
-    it."
+    it. Without that folder (package `libx11-data` or `libX11-common`), Tk windows open and
+    plain typing works; dead keys and Compose sequences may not."
 - [ ] **Step 3: README.** The `RPYENV_BUILD_DEPS` row: "…With it set, rpyenv doesn't ask.
   Without it, `--deps` or a terminal, a missing library stops the build."
 - [ ] **Step 4: Spec.** In the M8 design:
