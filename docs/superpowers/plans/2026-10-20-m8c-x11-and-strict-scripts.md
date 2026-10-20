@@ -81,7 +81,7 @@ store, GitHub Actions with distribution containers, Python 3 for the weekly cata
   (libx11-dev)").
 - **C8 (spec D13):** a run with no terminal and neither `--deps` nor `RPYENV_BUILD_DEPS` is
   `--deps=system`: anything missing stops the build with the report. `RPYENV_DEPS_MODE=lenient`
-  and the "In a later rpyenv release" notice go away; `[c]` keeps its two-line summary.
+  and the "In a later rpyenv release" notice go away; `[c]` keeps a short summary.
 - **C9:** xcb-proto's entry installs its generator (`xcbgen`, pure Python) under the
   bootstrap's `lib/python3.X/site-packages`. A later libxcb build with another version's
   bootstrap reads it from there (xcb-proto.pc's `pythondir`). Task 6's weekly Ubuntu leg forces
@@ -1415,11 +1415,11 @@ git commit -m "CI: Debian and Ubuntu build legs have no X11 headers, so the stor
   - D-117: replace the "A script that sets neither … (lenient mode) keeps upstream's
     behavior: …" sentence with: "A script that sets neither `--deps=` nor `RPYENV_BUILD_DEPS` and
     has no terminal is treated as `--deps=system`: anything missing stops the build, with the
-    report." Change the reason: "…; since M8c a script without root can always answer with
+    report." Change the reason: "…; since M8c for CPython 3.7 and later a script without root can usually answer with
     `--deps=build` (M8 design D13, §4, §5.2)".
   - D-119: delete "In lenient mode … as other optional libraries".
   - D-122: "With `RPYENV_SKIP_PREFLIGHT=1` the failures are a one-line warning; after `[c]` they
-    are a two-line summary; in both the build stays."
+    are a short summary; in both the build stays."
   - D-123: replace "(no X11 headers for Tk, no Perl modules for OpenSSL)" with "(no Perl modules
     for OpenSSL; for Tk without X11 headers, a definition that fetches CPython with git)". Add:
     "Without X11 headers, it also builds the X11 client libraries Tk needs (Tk without Xft),
@@ -1431,7 +1431,7 @@ git commit -m "CI: Debian and Ubuntu build legs have no X11 headers, so the stor
     packages and, where it can run, `--deps=build`. (Before M8c rpyenv only warned, as upstream
     does.)"
   - "After the build": drop "In lenient mode this is the three-line summary, and the build
-    stays." and say "After `[c]` this is a two-line summary, and the build stays."
+    stays." and say "After `[c]` this is a short summary, and the build stays."
   - "What the system still needs": "…; Tk uses the system's X11 headers when it has them. Without
     them rpyenv builds the X11 client libraries too (about a minute, plus about 40 s for a minimal
     Python from the same tarball that runs xcb's code generator). A version whose definition

@@ -355,7 +355,7 @@ impl Plan {
 }
 
 /// The variables python-build unsets before building (reference step 7).
-const UNSET: [&str; 4] = [
+pub(crate) const UNSET: [&str; 4] = [
     "PIP_REQUIRE_VENV",
     "PIP_REQUIRE_VIRTUALENV",
     "PYTHONHOME",
@@ -1770,7 +1770,7 @@ mod tests {
     }
 
     #[test]
-    fn the_continue_summary_is_the_three_lines_of_the_spec() {
+    fn the_continue_summary_names_what_is_lacking_and_the_command() {
         let os = "ID=debian
 VERSION_ID=\"12\"
 ";

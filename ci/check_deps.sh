@@ -138,7 +138,8 @@ if [ -n "${BUILD:-}" ]; then
       grep -q '^libX11 ' "$rec" || { echo "::error::$distro: libX11 is not in the record"; exit 1; }
       grep -q '^Building a bootstrap Python from Python-' /tmp/build1.log ||
         { echo "::error::$distro: no bootstrap Python was built"; exit 1; }
-      if ldd "$tkso" | grep -q 'libX11'; then
+      ldd_out=$(ldd "$tkso")
+      if grep -q libX11 <<<"$ldd_out"; then
         ldd "$tkso"; echo "::error::$distro: _tkinter links a shared libX11"; exit 1
       fi ;;
     *)
