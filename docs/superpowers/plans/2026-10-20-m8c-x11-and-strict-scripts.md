@@ -61,7 +61,8 @@ store, GitHub Actions with distribution containers, Python 3 for the weekly cata
 - **C3:** libX11 is configured with `--datadir=/usr/share`, so its locale data and `XErrorDB`
   are read from the system's path, not from the store: the store stays a cache. Measured: a Tk
   window opens under Xvfb with the store moved aside, and ASCII typing works with and without
-  the system's locale data. Non-ASCII input without locale data is not measured (below).
+  the system's locale data. Non-ASCII input needs the system's locale data (measured by hand
+  on WSLg, below).
 - **C4:** Tk's X11 arguments (`Recipe::x11_args`) are added to its first step only when the
   store built libX11 in the same run; `xorgproto` and `libX11` then join Tk's fingerprint. With
   the system's X11, Tk's steps and fingerprint are unchanged, so M8b store entries stay valid.
@@ -98,17 +99,16 @@ store, GitHub Actions with distribution containers, Python 3 for the weekly cata
 | CPython 3.12.15 against that Tk: `tkinter.Tcl()` works, `tkinter.Tk()` stops at "no display name"; `_tkinter` links only libc and libm (`ldd`) | `x11b.sh`, `x11c.sh` |
 | libX11 with `--datadir=/usr/share` has `/usr/share/X11/locale` and `/usr/share/X11/XErrorDB` compiled in (`strings`); with the store moved aside, under `xvfb-run`, a Tk window opens (`:99.0`) and an `Entry` works; with `/usr/share/X11/locale` also moved aside, `LANG=C.UTF-8`, the window and an `Entry` with text still work | `x11d.sh`, `x11e.sh` (`out/datadir.txt`, `out/nolocale.txt`) |
 | Typed input via XTEST (`xdotool`) with the store moved aside: ASCII keys reach a Tk `Entry` with and without `/usr/share/X11/locale` (absence checked with `ls`), in `en_US.UTF-8` and `C.UTF-8`. On a Spanish keymap (`setxkbmap es`), `ñ` and dead `´` + `e` give the same text (`'hi  e'`) from the store's Tk 8.6.18 and from Ubuntu's own Tk 8.6.14 (`python3-tk`, system libX11) in all three cases. Neither Tk produced `ñ` or `é`, not even with the locale data present, so these runs can't show what missing locale data does to non-ASCII input | `x11f.sh`, `x11g.sh` (`out/typed.txt`, `out/keymap.txt`) |
+| By hand on a real X server (WSLg, 2026-10-20; Task 6 Step 8 item 4): the 3.12.14 built in Task 6's Ubuntu run, in a fresh `ubuntu:24.04` container, `LANG=C.UTF-8`, the user typing `ñ`, `é`, then dead `´` + `e` on a Spanish keyboard. Without `/usr/share/X11/locale` (absence checked): the Entry holds `ee'e` (U+0065 U+0065 U+0027 U+0065), so `ñ` and `é` are lost. Control, same container with `libx11-data` installed: `ñé'e` (U+00F1 U+00E9 U+0027 U+0065). The dead key gave `'e` in both, so dead-key composition can't be judged on WSLg | `C:\tmp\m8c_wslg_typing.sh`, `.py` (`C:\tmp\m8c_wslg_out.txt`) |
 | Each X11 source matches its SHA-256 below, computed from a download on 2026-10-19; every one has an upstream `.sig` | `latest2.sh`, `sha256sum` |
 
 **Not measured:** the bootstrap on 3.9-3.11 and 3.13 (between measured versions; the weekly
 legs build 3.14 and 3.8), libX11 built against a store pkgconf (the spike used the store
 pkgconf, CI's Ubuntu leg has no system `pkg-config`), and distributions other than Ubuntu
 (Debian's weekly leg gets the X11 build too, Task 6).
-Non-ASCII and dead-key input on a machine with no X11 locale data is also not measured: the
-harness control (system Tk, locale data present) never produced `ñ` or `é` under Xvfb.
-Inference, not measurement: the store's libX11 reads the same `/usr/share/X11/locale` that
-the system's libX11 reads (`strings`), so it should behave like other X clients on that machine.
-Task 6 Step 8 item 4 checks it by hand on a real X server.
+Dead-key composition is also not measured: on WSLg the dead key gave `'e` even with the locale
+data present (the hand-check row above). Non-ASCII input without locale data was measured by
+that hand check: `ñ` and `é` are lost, and they work once `libx11-data` is installed.
 
 ## Review Focus
 

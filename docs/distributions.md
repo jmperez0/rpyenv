@@ -110,7 +110,8 @@ and links it into Python statically. Nothing is installed on the system.
   can't build X11 that way and needs the headers.
 - **X11 locale data:** a self-built X11 reads its locale data from `/usr/share/X11/locale` when the system has
   it. Without that folder (package `libx11-data` or `libX11-common`), Tk windows open and
-  plain typing works; dead keys and Compose sequences may not.
+  ASCII typing works, but characters such as `ñ` and `é` don't reach Tk. Install that package
+  to type them.
 - **`PYENV_ROOT`** must have no space, colon or shell character in its path.
 - **CA certificates:** a self-built OpenSSL gets a private folder, `$PYENV_ROOT/.rpyenv/ssl/`,
   with no `openssl.cnf` (a distribution's config is written for its own OpenSSL; Tumbleweed's
