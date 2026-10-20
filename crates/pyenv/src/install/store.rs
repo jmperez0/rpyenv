@@ -871,7 +871,8 @@ pub fn link(entries: Vec<Entry>, minor: u32, read: &dyn Fn(&Path) -> Option<Stri
             "openssl" => l
                 .configure
                 .push(format!("--with-openssl={}", e.dir.display())),
-            // The X11 entries reach CPython only through Tk's `TK_LIBS` (ruling C5).
+            // The X11 entries reach CPython only through Tk's flags: their include folders in the
+            // Tcl/Tk cflags (tk.h includes <X11/Xlib.h>) and libX11 through `TK_LIBS` (ruling C5).
             k if catalog::X11.contains(&k) => {}
             k => {
                 l.cppflags.push(format!("-I{}/include", e.dir.display()));
@@ -887,7 +888,12 @@ pub fn link(entries: Vec<Entry>, minor: u32, read: &dyn Fn(&Path) -> Option<Stri
         let tk_libs = read(&tk.join("lib").join("tkConfig.sh"))
             .and_then(|t| config_value(&t, "TK_LIBS"))
             .unwrap_or_default();
-        let cflags = format!("-I{}/include -I{}/include", tcl.display(), tk.display());
+        let mut cflags = format!("-I{}/include -I{}/include", tcl.display(), tk.display());
+        for x in ["libX11", "xorgproto"] {
+            if let Some(d) = dir_of(x) {
+                cflags.push_str(&format!(" -I{}/include", d.display()));
+            }
+        }
         let libs = format!(
             "-L{}/lib -ltk8.6 -L{}/lib -ltcl8.6 {tk_libs}",
             tk.display(),
@@ -1462,6 +1468,44 @@ cp tcl_library.txt "$p/lib/tcl_library.txt"
             "{libs}"
         );
         assert_eq!(l.entries.len(), 4, "the record still names every entry");
+        // tk.h includes <X11/Xlib.h>: the Tcl/Tk cflags carry the two include folders.
+        let four = "-I/s/tcl-1-c/include -I/s/tk-1-d/include -I/s/libX11-1-b/include -I/s/xorgproto-1-a/include";
+        let cflags = &l
+            .configure_env
+            .iter()
+            .find(|(k, _)| k == "TCLTK_CFLAGS")
+            .unwrap()
+            .1;
+        assert_eq!(cflags, four);
+        let old = link(
+            vec![
+                e("xorgproto", "/s/xorgproto-1-a"),
+                e("libX11", "/s/libX11-1-b"),
+                e("tcl", "/s/tcl-1-c"),
+                e("tk", "/s/tk-1-d"),
+            ],
+            10,
+            &|_: &Path| None,
+        );
+        assert!(
+            old.configure
+                .contains(&format!("--with-tcltk-includes={four}")),
+            "{:?}",
+            old.configure
+        );
+        // Without the store's X11 the cflags are M8b's.
+        let plain = link(
+            vec![e("tcl", "/s/tcl-1-c"), e("tk", "/s/tk-1-d")],
+            12,
+            &|_: &Path| None,
+        );
+        let cflags = &plain
+            .configure_env
+            .iter()
+            .find(|(k, _)| k == "TCLTK_CFLAGS")
+            .unwrap()
+            .1;
+        assert_eq!(cflags, "-I/s/tcl-1-c/include -I/s/tk-1-d/include");
     }
 
     // Review Focus 2: with the system's X11, an rpyenv upgrade keeps M8b's entries.
