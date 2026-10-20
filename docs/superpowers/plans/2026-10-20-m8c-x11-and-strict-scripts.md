@@ -65,9 +65,11 @@ store, GitHub Actions with distribution containers, Python 3 for the weekly cata
 - **C4:** Tk's X11 arguments (`Recipe::x11_args`) are added to its first step only when the
   store built libX11 in the same run; `xorgproto` and `libX11` then join Tk's fingerprint. With
   the system's X11, Tk's steps and fingerprint are unchanged, so M8b store entries stay valid.
-- **C5:** the X11 entries reach CPython only through Tk's `TK_LIBS` (`-L<libX11>/lib -lX11`,
-  read from `tkConfig.sh` as in M8b). `store::link` gives them no `-I`, `-L` or `pkg-config`
-  folder.
+- **C5 (amended at Task 3 review):** the X11 entries reach CPython only through Tk's flags:
+  libX11 through `TK_LIBS` (`-L<libX11>/lib -lX11`, read from `tkConfig.sh` as in M8b), and
+  `-I<libX11>/include -I<xorgproto>/include` appended to the Tcl/Tk cflags (`TCLTK_CFLAGS`, or
+  `--with-tcltk-includes=` for 3.10 and older), because `tk.h` includes `<X11/Xlib.h>`.
+  `store::link` gives them no `CPPFLAGS`, `LDFLAGS` or `pkg-config` folder.
 - **C6:** the store's downloads go through the download cache: the store closure in `pyenv
   install` creates `cache/deps` (which turns on `$PYENV_ROOT/cache`, as M8b documents) before
   it builds its fetcher, and the builder's fetcher is made after the store ran. The bootstrap
