@@ -11,8 +11,9 @@
 # name uuid.
 # WEEKLY=1 (Ubuntu, full) also builds the newest 3.14, and builds once more without uuid-dev
 # under RPYENV_SKIP_PREFLIGHT=1, where the check after the build must warn naming uuid.
-# BUILD=1 (M8b, M8 design §9 row 3): the container gets a compiler, make, patch, Perl, the X11
-# headers and CA certificates, and no -dev package of any library and no pkg-config.
+# BUILD=1 (M8b, M8 design §9 row 3): the container gets a compiler, make, patch, Perl and CA
+# certificates (the X11 headers too, except on Debian and Ubuntu, where the store builds X11:
+# M8c), and no -dev package of any library and no pkg-config.
 # `pyenv install --deps=build` compiles every missing library into the store, builds a CPython
 # whose every module imports, and records them; a second build reuses the store; the version
 # keeps working without the store, and Tcl starts in a venv made from it, also after the
@@ -36,12 +37,12 @@ if [ -n "${BUILD:-}" ]; then
       apt-get update -q
       if [ -n "${NO_CA:-}" ]; then
         # Without recommends: several packages recommend ca-certificates.
-        apt-get install -yq --no-install-recommends gcc libc6-dev make patch perl libx11-dev
+        apt-get install -yq --no-install-recommends gcc libc6-dev make patch perl
         if dpkg -s ca-certificates >/dev/null 2>&1 || [ -e /etc/ssl/certs/ca-certificates.crt ]; then
           echo "::error::$distro: NO_CA=1, but CA certificates are installed"; exit 1
         fi
       else
-        apt-get install -yq gcc libc6-dev make patch perl libx11-dev ca-certificates
+        apt-get install -yq gcc libc6-dev make patch perl ca-certificates
       fi
       rm -rf /var/lib/apt/lists/* ;;
     fedora|rocky) dnf install -y gcc make patch perl-core libX11-devel ;;
@@ -129,6 +130,20 @@ if [ -n "${BUILD:-}" ]; then
   rec="$root/versions/$v/.rpyenv-deps"
   [ -f "$rec" ] || { echo "::error::$distro: no $rec"; exit 1; }
   cat "$rec"
+  # M8c: Debian and Ubuntu have no X11 headers, so the store built X11 and Tk uses it; the
+  # others use the system's X11 headers (D9).
+  tkso=$(ls "$root/versions/$v"/lib/python3*/lib-dynload/_tkinter*.so)
+  case "$distro" in
+    debian|ubuntu)
+      grep -q '^libX11 ' "$rec" || { echo "::error::$distro: libX11 is not in the record"; exit 1; }
+      grep -q '^Building a bootstrap Python from Python-' /tmp/build1.log ||
+        { echo "::error::$distro: no bootstrap Python was built"; exit 1; }
+      if ldd "$tkso" | grep -q 'libX11'; then
+        ldd "$tkso"; echo "::error::$distro: _tkinter links a shared libX11"; exit 1
+      fi ;;
+    *)
+      if grep -q '^libX11 ' "$rec"; then echo "::error::$distro: X11 was built despite the system's headers"; exit 1; fi ;;
+  esac
   # No libssl-dev was installed: OpenSSL must have come from the store.
   # Arch has no -dev packages: its base image ships OpenSSL with its headers, so the build
   # route correctly builds none there.
@@ -202,9 +217,28 @@ if [ -n "${BUILD:-}" ]; then
     # The next build compiles libuuid again.
     rm -rf "$root"/cache/deps/libuuid-*
   fi
+  # Stage B5 (M8c, Ubuntu): Tk built against the store's X11 opens a window under Xvfb with the
+  # store moved aside (ruling C3: libX11's data comes from the system's path), and again without
+  # any X11 locale data.
+  if [ "$distro" = ubuntu ] && [ -z "${NO_CA:-}" ]; then
+    apt-get update -q && apt-get install -yq --no-install-recommends xvfb xauth >/dev/null
+    rm -rf /var/lib/apt/lists/*
+    mv "$root/cache/deps" "$root/cache/deps.off"
+    win='import tkinter; r = tkinter.Tk(); e = tkinter.Entry(r); e.pack(); e.insert(0, "x"); r.update(); print("a window opened on", r.winfo_screen()); r.destroy()'
+    xvfb-run -a "$root/versions/$v/bin/python3" -c "$win" ||
+      { echo "::error::$distro: no Tk window"; exit 1; }
+    mv /usr/share/X11/locale /usr/share/X11/locale.off
+    LANG=C.UTF-8 xvfb-run -a "$root/versions/$v/bin/python3" -c "$win" ||
+      { echo "::error::$distro: no Tk window without X11 locale data"; exit 1; }
+    mv /usr/share/X11/locale.off /usr/share/X11/locale
+    mv "$root/cache/deps.off" "$root/cache/deps"
+  fi
   if [ -n "${WEEKLY:-}" ]; then
     for w in "$(newest 3.14)" "$(newest 3.8)"; do
       echo "== weekly: Python $w through the build route"
+      # Ubuntu (M8c, ruling C9): 3.8's bootstrap rebuilds libxcb with the xcb-proto entry that
+      # 3.12's bootstrap installed.
+      if [ "$distro" = ubuntu ] && [ "${w%.*}" = 3.8 ]; then rm -rf "$root"/cache/deps/libxcb-*; fi
       "$bin" install --deps=build "$w" </dev/null
       imports "$w"
       venv_tcl "$w"
@@ -214,13 +248,10 @@ if [ -n "${BUILD:-}" ]; then
   exit 0
 fi
 
-# Stage 1: no terminal, no flags (lenient mode, D13): the hard set (compiler, make, patch,
-# awk, OpenSSL, zlib) is missing, so it fails. Arch's base image already holds OpenSSL and zlib, so
-# there a flagless run would build; `--deps=system` (strict, installs nothing) stands in.
-flag=""
-[ "$distro" != arch ] || flag="--deps=system"
+# Stage 1: no terminal, no flags (D13, strict since M8c): what is missing stops the build before
+# anything is downloaded, with the report and its install command.
 rc=0
-out=$("$bin" install $flag "$v" 2>&1 </dev/null) || rc=$?
+out=$("$bin" install "$v" 2>&1 </dev/null) || rc=$?
 echo "$out"
 if [ "$rc" -eq 0 ]; then
   echo "::error::$distro: install succeeded with nothing installed"; exit 1
