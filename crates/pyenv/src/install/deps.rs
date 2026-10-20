@@ -12,15 +12,15 @@ pub enum Route {
     Build,
     Prebuilt,
     /// The prompt's `[c]`: build without the optional libraries, warning at the end. Not a
-    /// `--deps` value (scripts get the same through lenient mode, D13).
+    /// `--deps` value; a run without a terminal or flag is `--deps=system` (D13).
     Continue,
 }
 
 /// What stops any build: CPython can't be built or used without these (M8 design D13).
 const HARD: [&str; 6] = ["compiler", "make", "patch", "awk", "openssl", "zlib"];
 
-/// True when `lib` (a `Dep::lib`) is in the set that stops the build in lenient mode and
-/// keeps `[c]` out of the prompt.
+/// True when `lib` (a `Dep::lib`) is in the set that keeps `[c]` out of the prompt: with
+/// one of these missing, continuing is not offered.
 pub fn is_hard(lib: &str) -> bool {
     HARD.contains(&lib)
 }

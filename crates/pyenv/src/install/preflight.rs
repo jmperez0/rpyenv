@@ -305,15 +305,10 @@ pub fn report(missing: &[Dep], os_release: Option<&str>, root: bool) -> Report {
 }
 
 /// The text for stderr when detection (`check3`) found something missing (M8 design §5).
-/// `refuse`: the build stops here (header "cannot build", and how to build anyway); otherwise
-/// lenient mode (D13) found only optional modules and the build goes on. `root`: no `sudo`.
-pub fn report_deps(
-    missing: &[Dep],
-    os_release: Option<&str>,
-    root: bool,
-    refuse: bool,
-) -> Vec<String> {
-    report_deps_with(missing, os_release, root, refuse, false, false)
+/// The build stops here (header "cannot build", and how to build anyway): strict since M8c,
+/// so a run without a terminal or flag reports as `--deps=system` does. `root`: no `sudo`.
+pub fn report_deps(missing: &[Dep], os_release: Option<&str>, root: bool) -> Vec<String> {
+    report_deps_with(missing, os_release, root, false, false)
 }
 
 /// As `report_deps`; `apt_update`: the apt package lists are empty, so the command starts
@@ -323,7 +318,6 @@ pub fn report_deps_with(
     missing: &[Dep],
     os_release: Option<&str>,
     root: bool,
-    refuse: bool,
     apt_update: bool,
     build_route: bool,
 ) -> Vec<String> {
@@ -332,11 +326,7 @@ pub fn report_deps_with(
     if missing.is_empty() {
         return lines;
     }
-    lines.push(if refuse {
-        "pyenv: cannot build Python: missing build dependencies:".to_string()
-    } else {
-        "pyenv: the build will lack these optional modules:".to_string()
-    });
+    lines.push("pyenv: cannot build Python: missing build dependencies:".to_string());
     for d in missing {
         lines.push(format!("  {}", shown(d)));
     }
@@ -353,8 +343,7 @@ pub fn report_deps_with(
     }
     // M8b: the way out without root, where the build route can run (not when the compiler or
     // make itself is missing).
-    if refuse
-        && build_route
+    if build_route
         && !missing
             .iter()
             .any(|d| matches!(d.lib, "compiler" | "make" | "patch" | "awk"))
@@ -363,9 +352,7 @@ pub fn report_deps_with(
             "Without root, pyenv install --deps=build compiles them from source.".to_string(),
         );
     }
-    if refuse {
-        lines.push("To build anyway, set RPYENV_SKIP_PREFLIGHT=1.".to_string());
-    }
+    lines.push("To build anyway, set RPYENV_SKIP_PREFLIGHT=1.".to_string());
     lines
 }
 
@@ -1687,7 +1674,7 @@ exit 0
     }
 
     #[test]
-    fn report_deps_refuses_or_warns_by_its_flag() {
+    fn report_deps_refuses_and_names_the_way_to_build_anyway() {
         let d = [Dep {
             name: "uuid",
             required: true,
@@ -1696,7 +1683,7 @@ exit 0
         }];
         let os = "ID=debian
 ";
-        let refuse = report_deps(&d, Some(os), false, true);
+        let refuse = report_deps(&d, Some(os), false);
         assert_eq!(
             refuse,
             [
@@ -1708,7 +1695,7 @@ exit 0
             ]
         );
         // M8b: where the build route can run, the refusal names it.
-        let hint = report_deps_with(&d, Some(os), false, true, false, true);
+        let hint = report_deps_with(&d, Some(os), false, false, true);
         assert_eq!(
             hint[4..],
             [
@@ -1723,7 +1710,7 @@ exit 0
             missing: Missing::Program("cc".into()),
             lib: "compiler",
         }];
-        let no_cc = report_deps_with(&cc, Some(os), false, true, false, true);
+        let no_cc = report_deps_with(&cc, Some(os), false, false, true);
         assert!(
             !no_cc.iter().any(|l| l.contains("--deps=build")),
             "{no_cc:?}"
@@ -1739,31 +1726,23 @@ exit 0
             missing: Missing::Program("awk".into()),
             lib: "awk",
         }];
-        let no_awk = report_deps_with(&awk, Some(os), false, true, false, true);
+        let no_awk = report_deps_with(&awk, Some(os), false, false, true);
         assert!(
             !no_awk.iter().any(|l| l.contains("--deps=build")),
             "{no_awk:?}"
         );
-        let warn = report_deps(&d, Some(os), true, false);
-        assert_eq!(
-            warn,
-            [
-                "pyenv: the build will lack these optional modules:",
-                "  uuid (can't link -luuid)",
-                "Install them with:",
-                "  apt-get install uuid-dev",
-            ]
-        );
-        let upd = report_deps_with(&d, Some(os), false, false, true, false);
+        let root = report_deps(&d, Some(os), true);
+        assert_eq!(root[3], "  apt-get install uuid-dev");
+        let upd = report_deps_with(&d, Some(os), false, true, false);
         assert_eq!(
             upd[3],
             "  sudo apt-get update && sudo apt-get install uuid-dev"
         );
-        assert!(report_deps(&[], Some(os), false, true).is_empty());
+        assert!(report_deps(&[], Some(os), false).is_empty());
     }
 
     /// Ruling R15: on Rocky the printed report names CRB before the dnf command, without sudo
-    /// for root; in lenient mode too.
+    /// for root.
     #[test]
     fn rocky_reports_show_the_crb_line_before_the_command() {
         let d = [Dep {
@@ -1773,8 +1752,8 @@ exit 0
             lib: "libuuid",
         }];
         let rocky = "NAME=\"Rocky Linux\"\nID=\"rocky\"\nID_LIKE=\"rhel centos fedora\"\nVERSION_ID=\"9.6\"\n";
-        for (root, refuse) in [(true, true), (false, false)] {
-            let lines = report_deps(&d, Some(rocky), root, refuse);
+        for root in [true, false] {
+            let lines = report_deps(&d, Some(rocky), root);
             let sudo = if root { "" } else { "sudo " };
             let crb = format!("Some packages live in the CRB repository; enable it first: {sudo}dnf install dnf-plugins-core && {sudo}dnf config-manager --set-enabled crb");
             let at = lines
@@ -1784,7 +1763,7 @@ exit 0
             assert_eq!(lines[at + 1], "Install them with:");
             assert_eq!(lines[at + 2], format!("  {sudo}dnf install libuuid-devel"));
         }
-        let debian = report_deps(&d, Some("ID=debian\n"), false, true);
+        let debian = report_deps(&d, Some("ID=debian\n"), false);
         assert!(!debian.iter().any(|l| l.contains("CRB")), "{debian:?}");
     }
 

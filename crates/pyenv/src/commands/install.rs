@@ -499,30 +499,10 @@ fn resolve_deps(
                     }
                 }
             }
-        } else if let Some(r) = chosen {
-            r
         } else {
-            // D13, lenient mode: only the hard set stops the build; the rest warns and the
-            // build goes on (the builder prints the end summary).
-            let hard_missing = missing.iter().any(|d| deps::is_hard(d.lib));
-            for l in preflight::report_deps_with(
-                &missing,
-                os.as_deref(),
-                is_root,
-                hard_missing,
-                apt_update,
-                build_route,
-            ) {
-                say(&l);
-            }
-            return if hard_missing {
-                Err(1)
-            } else {
-                Ok(Resolution {
-                    cont: false,
-                    store: Vec::new(),
-                })
-            };
+            // D13 (strict since M8c): without a terminal and without `--deps` or
+            // RPYENV_BUILD_DEPS, every module is required, as with `--deps=system`.
+            chosen.unwrap_or(Route::System)
         };
         match (route, offer) {
             (Route::Build, _) => {
@@ -625,7 +605,6 @@ fn resolve_deps(
                     &missing,
                     os.as_deref(),
                     is_root,
-                    true,
                     apt_update,
                     build_route,
                 ) {
@@ -887,16 +866,9 @@ pub fn install(ctx: &Ctx, args: &[&str]) -> Output {
         if let Some(r) = &build_root {
             job_env.push(("PYTHON_BUILD_BUILD_PATH".into(), r.join(&name).into()));
         }
-        // M8 design D13: a run with no terminal and neither `--deps` nor RPYENV_BUILD_DEPS is
-        // lenient; the builder reads the mode to print its end summary.
-        let strict = at_terminal(&env)
-            || f.deps.is_some()
-            || env("RPYENV_BUILD_DEPS").is_some_and(|v| !v.is_empty());
-        // The mode is rpyenv's own: one set by hand must not make a run lenient (review M8).
+        // RPYENV_DEPS_MODE is rpyenv's own (`continue` after `[c]`): one set by hand must not
+        // turn a failed check into a summary (review M8).
         job_env.retain(|(k, _)| k != "RPYENV_DEPS_MODE");
-        if !strict {
-            job_env.push(("RPYENV_DEPS_MODE".into(), "lenient".into()));
-        }
         let job_get = |k: &str| builder::get(&job_env, k);
         // A binary install (PyPy) compiles nothing, so it needs no build dependencies.
         let compiles = parsed

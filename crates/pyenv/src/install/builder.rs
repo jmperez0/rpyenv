@@ -702,7 +702,7 @@ pub(crate) fn private_dir(
 }
 
 /// Runs the §4.4 check on the built interpreter and decides what a failure means: an error
-/// (strict), a warning (RPYENV_SKIP_PREFLIGHT=1, ruling P1) or the §5.2 summary (lenient, D13).
+/// (strict), a warning (RPYENV_SKIP_PREFLIGHT=1, ruling P1) or the `[c]` summary.
 fn stdlib_check(
     job: &Job,
     plan: &Plan,
@@ -797,12 +797,12 @@ fn stdlib_check(
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    // RPYENV_SKIP_PREFLIGHT=1 always gives P1's warning, lenient mode included (review M7).
+    // RPYENV_SKIP_PREFLIGHT=1 always gives P1's warning, the `[c]` summary included (review M7).
     let skip = get(job.env, "RPYENV_SKIP_PREFLIGHT").as_deref() == Some("1");
-    // `lenient`: a script (D13); `continue`: the prompt's `[c]`, chosen by the user.
+    // `continue`: the prompt's `[c]`, chosen by the user (rpyenv sets it; a user's is dropped).
     let mode = get(job.env, "RPYENV_DEPS_MODE");
-    if !skip && matches!(mode.as_deref(), Some("lenient" | "continue")) {
-        // Spec §5.2's summary, verbatim; the build counts as installed (D13). Root is read
+    if !skip && mode.as_deref() == Some("continue") {
+        // The `[c]` summary (M8 design §5.1); the build counts as installed. Root is read
         // the way `pyenv install` reads it: `id -u` on the build's PATH.
         let root = command("id", job.env)
             .arg("-u")
@@ -817,16 +817,7 @@ fn stdlib_check(
         }
         .unwrap_or_else(|| "/etc/os-release".into());
         let os = std::fs::read_to_string(os_path).ok();
-        let summary = lenient_summary(&name, &fails, minor, os.as_deref(), root);
-        // The "later release" notice is for scripts; the user at the prompt chose this.
-        say(if mode.as_deref() == Some("continue") {
-            summary
-                .split("\n  In a later rpyenv release")
-                .next()
-                .unwrap_or(&summary)
-        } else {
-            &summary
-        });
+        say(&continue_summary(&name, &fails, minor, os.as_deref(), root));
         return Ok(());
     }
     let lead = if skip { "pyenv: warning: " } else { "pyenv: " };
@@ -841,8 +832,8 @@ fn stdlib_check(
     Err(InstallError::Failed)
 }
 
-/// The three lines of M8 design §5.2 for a lenient run that ends with failures.
-fn lenient_summary(
+/// The summary after `[c]` (M8 design §5.1): what the build lacks and the command that adds it.
+fn continue_summary(
     name: &str,
     fails: &[String],
     minor: u32,
@@ -901,9 +892,7 @@ fn lenient_summary(
         .unwrap_or_default();
     format!(
         "pyenv: {name} was built without: {list}
-  Add them: {add}, then pyenv install -f {name}{crb}
-  In a later rpyenv release this stops the build; choose now with --deps=install,
-  --deps=build or --deps=system (or RPYENV_BUILD_DEPS)."
+  Add them: {add}, then pyenv install -f {name}{crb}"
     )
 }
 
@@ -1781,7 +1770,7 @@ mod tests {
     }
 
     #[test]
-    fn the_lenient_summary_is_the_three_lines_of_the_spec() {
+    fn the_continue_summary_is_the_three_lines_of_the_spec() {
         let os = "ID=debian
 VERSION_ID=\"12\"
 ";
@@ -1790,13 +1779,11 @@ VERSION_ID=\"12\"
             "uuid (import _uuid failed; needs libuuid)".to_string(),
         ];
         assert_eq!(
-            lenient_summary("3.12.14", &fails, 12, Some(os), false),
+            continue_summary("3.12.14", &fails, 12, Some(os), false),
             "pyenv: 3.12.14 was built without: tkinter, uuid
-  Add them: sudo apt-get install tk-dev uuid-dev, then pyenv install -f 3.12.14
-  In a later rpyenv release this stops the build; choose now with --deps=install,
-  --deps=build or --deps=system (or RPYENV_BUILD_DEPS)."
+  Add them: sudo apt-get install tk-dev uuid-dev, then pyenv install -f 3.12.14"
         );
-        let root = lenient_summary("3.12.14", &fails, 12, Some(os), true);
+        let root = continue_summary("3.12.14", &fails, 12, Some(os), true);
         assert!(
             root.contains(
                 "
@@ -1804,7 +1791,7 @@ VERSION_ID=\"12\"
             ),
             "{root}"
         );
-        let none = lenient_summary("3.12.14", &fails, 12, None, false);
+        let none = continue_summary("3.12.14", &fails, 12, None, false);
         assert!(
             none.contains("Add them: install the development packages for tkinter, uuid, then"),
             "{none}"
@@ -1814,29 +1801,29 @@ VERSION_ID=\"12\"
     /// Fedora 42+ ships Tk 9 as tk-devel: CPython 3.12 and older need tk8-devel, 3.13 and
     /// newer keep tk-devel; Fedora 41 has no tk8-devel (measured with dnf repoquery).
     #[test]
-    fn the_lenient_summary_names_tk8_devel_for_old_cpython_on_new_fedora() {
+    fn the_continue_summary_names_tk8_devel_for_old_cpython_on_new_fedora() {
         let fails = vec!["tkinter (import tkinter failed; needs tk)".to_string()];
         let f44 = "ID=fedora\nVERSION_ID=44\n";
-        assert!(lenient_summary("3.12.14", &fails, 12, Some(f44), false)
+        assert!(continue_summary("3.12.14", &fails, 12, Some(f44), false)
             .contains("Add them: sudo dnf install tk8-devel, then"),);
-        assert!(lenient_summary("3.13.16", &fails, 13, Some(f44), false)
+        assert!(continue_summary("3.13.16", &fails, 13, Some(f44), false)
             .contains("Add them: sudo dnf install tk-devel, then"),);
         let f41 = "ID=fedora\nVERSION_ID=41\n";
-        assert!(lenient_summary("3.12.14", &fails, 12, Some(f41), false)
+        assert!(continue_summary("3.12.14", &fails, 12, Some(f41), false)
             .contains("Add them: sudo dnf install tk-devel, then"),);
     }
 
     /// Rocky, Alma and RHEL: the summary's dnf command needs CRB, so the line is there too.
     #[test]
-    fn the_lenient_summary_names_crb_on_the_rhel_family() {
+    fn the_continue_summary_names_crb_on_the_rhel_family() {
         let fails = vec!["uuid (import _uuid failed; needs libuuid)".to_string()];
         let rocky = "ID=\"rocky\"\nID_LIKE=\"rhel centos fedora\"\nVERSION_ID=\"9.4\"\n";
-        let s = lenient_summary("3.12.14", &fails, 12, Some(rocky), false);
+        let s = continue_summary("3.12.14", &fails, 12, Some(rocky), false);
         assert!(
-            s.contains("\n  Some packages live in the CRB repository; enable it first: sudo dnf install dnf-plugins-core && sudo dnf config-manager --set-enabled crb\n"),
+            s.contains("\n  Some packages live in the CRB repository; enable it first: sudo dnf install dnf-plugins-core && sudo dnf config-manager --set-enabled crb"),
             "{s}"
         );
-        let fedora = lenient_summary(
+        let fedora = continue_summary(
             "3.12.14",
             &fails,
             12,
