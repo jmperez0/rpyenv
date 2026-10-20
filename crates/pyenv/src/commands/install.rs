@@ -932,20 +932,20 @@ pub fn install(ctx: &Ctx, args: &[&str]) -> Output {
             let patch = f.patch || needs_patch(&found, &parsed);
             let abs_root = std::path::absolute(&ctx.root).unwrap_or_else(|_| ctx.root.clone());
             let snapshot = job_env.clone();
-            // `cache/deps` turns on `$PYENV_ROOT/cache`: made first, so the store's downloads
-            // (the bootstrap's CPython tarball among them) are cached and the main build finds
-            // that tarball there (ruling C6). python-build reads a cache only when it is a
-            // directory; the store downloads with the same mirror and cache settings.
-            let _ = std::fs::create_dir_all(store::deps_dir(&abs_root));
-            let store_fetcher = Fetcher::from_env(
-                &|k: &str| builder::get(&snapshot, k),
-                download_cache(&snapshot, &abs_root),
-            );
             let mut build = |keys: &[&'static str],
                              say: &mut dyn FnMut(&str)|
              -> Result<Vec<store::Entry>, InstallError> {
                 let rows = catalog::table(&|k: &str| builder::get(&snapshot, k))
                     .map_err(InstallError::Message)?;
+                // `cache/deps` turns on `$PYENV_ROOT/cache`: made first, so the store's downloads
+                // (the bootstrap's CPython tarball among them) are cached and the main build finds
+                // that tarball there (ruling C6). python-build reads a cache only when it is a
+                // directory; the store downloads with the same mirror and cache settings.
+                let _ = std::fs::create_dir_all(store::deps_dir(&abs_root));
+                let store_fetcher = Fetcher::from_env(
+                    &|k: &str| builder::get(&snapshot, k),
+                    download_cache(&snapshot, &abs_root),
+                );
                 let openssldir = store::ssl_dir(&abs_root);
                 store::ensure(
                     &store::Build {
