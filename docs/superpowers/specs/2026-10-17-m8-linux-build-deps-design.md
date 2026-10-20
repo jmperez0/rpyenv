@@ -36,7 +36,8 @@ python.org's builds.
 | D10 | Fonts in a no-root Tk | Tk built without Xft in the no-root case: fewer libraries, plainer fonts (accepted in review of §6). |
 | D11 | Tcl/Tk version | 8.6 for every source build, as CPython's own builds. Tk 9 only through the prebuilt route. |
 | D12 | Parity | Upstream pyenv has none of this. Each user-visible difference gets an allowlist entry. |
-| D13 | Scripts that set nothing (user, after a side-agent note) | **Phased.** Until M8b ships, a run with no terminal and neither `--deps` nor `RPYENV_BUILD_DEPS` keeps today's rule: the compiler, `make`, `patch`, `awk`, OpenSSL and zlib stop the build (`awk` added after the first real runs: Tumbleweed's base image has no `awk`, and CPython's configure needs it); every other missing library only warns, and the build goes on. The run ends with a summary naming what is missing, the command that adds it, and the notice that a later release makes this stop the build. **M8c** makes the script default strict (`system`), because from then on a script without root can always answer with `--deps=build` (moved from M8b by the user on 2026-10-17: M8b can't build X11, so a script without root on a machine without X11 headers could not pass). Chosen over strict everywhere (breaks today's Dockerfiles on upgrade, while a script without root could only fail), lenient for good (scripts never get every module), a policy per pyenv root (Dockerfiles make fresh roots), automatic installs as root (installs packages nobody approved) and splitting libraries by weight (still breaks on the newly checked gdbm, uuid and crypt). |
+| D13 | Scripts that set nothing (user, after a side-agent note) | **Phased.** Until M8b ships, a run with no terminal and neither `--deps` nor `RPYENV_BUILD_DEPS` keeps today's rule: the compiler, `make`, `patch`, `awk`, OpenSSL and zlib stop the build (`awk` added after the first real runs: Tumbleweed's base image has no `awk`, and CPython's configure needs it); every other missing library only warns, and the build goes on. The run ends with a summary naming what is missing, the command that adds it, and the notice that a later release makes this stop the build. **M8c** makes the script default strict (`system`), because from then on a script without root can always answer with `--deps=build` (moved from M8b by the user on 2026-10-17: M8b can't build X11, so a script without root on a machine without X11 headers could not pass). Chosen over strict everywhere (breaks today's Dockerfiles on upgrade, while a script without root could only fail), lenient for good (scripts never get every module), a policy per pyenv root (Dockerfiles make fresh roots), automatic installs as root (installs packages nobody approved) and splitting libraries by weight (still breaks on the newly checked gdbm, uuid and crypt). Done in M8c (2026-10-20). |
+| D14 | Python for xcb's code generator (user, 2026-10-19) | A minimal CPython built from the tarball being installed, used from its build tree and removed afterwards (measured on 3.7.17, 3.8.20, 3.12.15 and 3.14.8: libxcb's generated C is byte-identical). Chosen over the system's `python3` first (two paths), requiring `python3` (fails in minimal containers), pregenerated C published by rpyenv (modified sources), a pinned bootstrap CPython (an extra download; kept as the fallback had 3.7/3.8 failed) and others. |
 
 ## 3. Parts
 
@@ -123,7 +124,8 @@ How should rpyenv get them?
   recognized. Running as root (most containers), `i` runs the command without `sudo`.
 - **`b`** appears from M8b on, **`s`** from M8d on.
 - **`c`** (added after M8a, user decision) builds without the missing libraries and ends
-  with D13's summary, without its "later release" notice. It is offered only when nothing
+  with a two-line summary (since M8c; D13's earlier three-line summary had a "later release"
+  notice). It is offered only when nothing
   in D13's hard set (compiler, `make`, `patch`, `awk`, OpenSSL, zlib) is missing, so a user
   without sudo is never stuck before M8b brings `b`.
 
@@ -131,16 +133,7 @@ How should rpyenv get them?
 
 `pyenv install --deps=system|install|build|prebuilt` or `RPYENV_BUILD_DEPS` with the
 same values; then every module is required, as at a terminal. `install` uses `sudo -n`
-and fails with a clear message when `sudo` needs a password. With neither set, D13's
-phased rule applies: until M8c, only the compiler, `make`, `patch`, `awk`, OpenSSL and zlib stop the
-build, and the run ends with this summary when anything else is missing:
-
-```
-pyenv: 3.12.14 was built without: tkinter, uuid
-  Add them: sudo apt-get install tk-dev uuid-dev, then pyenv install -f 3.12.14
-  In a later rpyenv release this stops the build; choose now with --deps=install,
-  --deps=build or --deps=system (or RPYENV_BUILD_DEPS).
-```
+and fails with a clear message when `sudo` needs a password. With neither set, the run is `--deps=system` (D13).
 
 ### 5.3 Distribution details
 
@@ -182,7 +175,8 @@ for the conda table.
 
 ### 6.3 Building CPython against the store
 
-`CPPFLAGS`, `LDFLAGS` and `PKG_CONFIG_PATH` point at the store entries used,
+`CPPFLAGS`, `LDFLAGS` and `PKG_CONFIG_PATH` point at the store entries used (the X11
+entries are the exception: §6.4),
 `--with-openssl=<entry>` for OpenSSL, and the Tcl/Tk options for the version's
 `configure`. Each version records the libraries it was built with, and their versions,
 in `versions/<v>/.rpyenv-deps`. Linux has no `pyenv update` (it is pyenv-win's command),
@@ -204,10 +198,17 @@ with a compiled-in path that never exists.)
 
 ### 6.4 X11 (M8c)
 
-Only when the user can't install packages (D9): xorgproto, libXau, libxcb, xtrans,
-libX11 and libXext join the catalog, all static. Tk is then built without Xft (D10),
-which saves fontconfig, freetype and libXft. With system X11, Tk is built as the
-distribution's Tk is.
+Only when the user can't install packages (D9): xorgproto, libXau, xcb-proto, libxcb, xtrans and
+libX11 join the catalog, all static (libXext is not needed: measured in M8c, Tk 8.6 links only
+libX11). libX11 absorbs libxcb and libXau, and reads its locale data from `/usr/share/X11/locale`.
+xcb-proto and libxcb need Python (D14). Tk is then built without Xft (D10), which saves
+fontconfig, freetype and libXft. With system X11, Tk is built as the distribution's Tk is.
+
+The X11 entries reach CPython only through Tk. The store's libX11 and xorgproto include folders
+go into Tk's compiler flags (`TCLTK_CFLAGS`, `--with-tcltk-includes`), because `tk.h` includes
+`<X11/Xlib.h>`; libX11 links only through Tk's `TK_LIBS`. They get no `CPPFLAGS`, `LDFLAGS` or
+`pkg-config` folder. A definition that fetches CPython with git has no tarball for D14's Python,
+so it keeps the refusal for `tkinter` and needs the X11 headers.
 
 ### 6.5 CA certificates for a self-built OpenSSL
 
@@ -230,8 +231,7 @@ into a link and one that loses them turns it back into the pinned file. The pin 
 rpyenv; when an rpyenv upgrade brings a newer one, the next `pyenv install` replaces the
 file (only a regular file with another hash), and every version built against it uses the
 new bundle at once (the path, not the content, is compiled into OpenSSL). The build route needs CPython 3.7 or later, a `PYENV_ROOT`
-without spaces, Perl's core modules for OpenSSL and libxcrypt, and (until M8c) the system's
-X11 headers for Tk.
+without spaces, Perl's core modules for OpenSSL and libxcrypt.
 
 ## 7. The prebuilt route (M8d)
 
