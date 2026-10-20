@@ -190,7 +190,9 @@ jobs:
   # musl build: a glibc binary from this runner would not start on Rocky 9. Two more
   # legs (`build: true`) run M8b's build route on Ubuntu and Fedora with no `-dev` package at all
   # (`ci/check_deps.sh` BUILD=1); weekly, on the other four too, and on Ubuntu without CA
-  # certificates (`no_ca: true`).
+  # certificates (`no_ca: true`). The Ubuntu build leg (every PR) and the Debian one (weekly)
+  # have no X11 headers either, so they build X11 (M8c, spec §9 row 4); Ubuntu also opens a Tk
+  # window under Xvfb, and weekly rebuilds libxcb with 3.8's bootstrap.
   deps:
     runs-on: ubuntu-latest
     timeout-minutes: 90
