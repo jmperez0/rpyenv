@@ -73,17 +73,15 @@ even at a terminal. The flag wins over the variable.
 | `prebuilt` | Says it comes in a later release |
 
 **Scripts that set neither.** Without a terminal, `--deps` or `RPYENV_BUILD_DEPS`,
-rpyenv is lenient, as upstream is. Only the compiler, `make`, `patch` (when the
-definition needs it), `awk`, OpenSSL and zlib stop the build. Any other missing library is a
-warning, and the run ends with a three-line summary. A later rpyenv release will make
-that summary stop the build. To choose now, use `--deps=install`, `--deps=build` or
-`--deps=system`.
+rpyenv treats the run as `--deps=system`: anything missing stops the build, and the report names the
+packages and, where it can run, `--deps=build`. (Before M8c rpyenv only warned, as upstream
+does.) CPython 2.x keeps the earlier check: for it, a missing optional library is still only a
+warning.
 
 **After the build.** rpyenv imports every standard-library module, checks that CA
 certificates exist, and starts Tcl. If one fails, it removes the build and tells you
 which module and which package. For missing CA certificates, it names the file and the
-directory the built Python looked in. In lenient mode this is the three-line summary,
-and the build stays. With `RPYENV_SKIP_PREFLIGHT=1` it is a one-line warning, and the
+directory the built Python looked in. After `[c]` this is a two-line summary, and the build stays. With `RPYENV_SKIP_PREFLIGHT=1` it is a one-line warning, and the
 build stays. `RPYENV_SKIP_PREFLIGHT=1` also skips the check before the build.
 
 ### Building libraries without root
@@ -104,8 +102,13 @@ and links it into Python statically. Nothing is installed on the system.
 - **Versions:** rpyenv pins each library's version and SHA-256 and checks every download. A
   Python version whose definition pins OpenSSL or readline gets that version.
 - **What the system still needs:** a C compiler, `make`, `patch` and `awk` (`gawk`; Tumbleweed's base image has none). OpenSSL and libxcrypt also
-  need Perl with its core modules (`perl-core` on Fedora); Tk needs the X11 headers
-  (`libx11-dev`, `libX11-devel`) until a later release builds those too.
+  need Perl with its core modules (`perl-core` on Fedora); Tk uses the system's X11 headers when it has them. Without
+  them rpyenv builds the X11 client libraries too (about a minute, plus about 40 s for a minimal
+  Python from the same tarball that runs xcb's code generator). A version whose definition
+  fetches CPython with git (`3.14-dev`) can't build X11 that way and needs the headers.
+- **X11 locale data:** a self-built X11 reads its locale data from `/usr/share/X11/locale` when the system has
+  it. Without that folder (package `libx11-data` or `libX11-common`), Tk windows open and
+  plain typing works; dead keys and Compose sequences may not.
 - **`PYENV_ROOT`** must have no space, colon or shell character in its path.
 - **CA certificates:** a self-built OpenSSL gets a private folder, `$PYENV_ROOT/.rpyenv/ssl/`,
   with no `openssl.cnf` (a distribution's config is written for its own OpenSSL; Tumbleweed's
