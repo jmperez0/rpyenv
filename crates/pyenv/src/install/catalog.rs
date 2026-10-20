@@ -313,13 +313,7 @@ static RECIPES: &[Recipe] = &[
             "make -j{jobs}",
             "make install DESTDIR={destdir}",
             // libxcb and libXau join the archive: `-lX11` then stands alone (ruling P11).
-            r"cd {stage}/lib && mv libX11.a in-libX11.a && printf 'create libX11.a
-addlib in-libX11.a
-addlib {dep:libxcb}/lib/libxcb.a
-addlib {dep:libXau}/lib/libXau.a
-save
-end
-' | ar -M && rm in-libX11.a",
+            r"cd {stage}/lib && mv libX11.a in-libX11.a && printf 'create libX11.a\naddlib in-libX11.a\naddlib {dep:libxcb}/lib/libxcb.a\naddlib {dep:libXau}/lib/libXau.a\nsave\nend\n' | ar -M && rm in-libX11.a",
         ],
     },
     Recipe {
