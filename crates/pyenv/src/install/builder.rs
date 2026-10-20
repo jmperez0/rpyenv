@@ -435,7 +435,7 @@ pub fn patch_files(found: &Found, package: &str) -> Vec<(String, Vec<u8>)> {
 
 /// `apply_patch`: `patch -p0|-p1 --force -i <tmp>` in the package directory, output to the log,
 /// the temporary file removed afterwards (plan Decision 5).
-fn apply_patch(
+pub(crate) fn apply_patch(
     log: &BuildLog,
     dir: &Path,
     tmp: &Path,

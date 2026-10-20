@@ -3,6 +3,8 @@
 
 pub mod archive;
 #[cfg(unix)]
+pub mod bootstrap;
+#[cfg(unix)]
 pub mod builder;
 #[cfg(unix)]
 pub mod catalog;
