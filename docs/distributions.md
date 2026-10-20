@@ -81,8 +81,8 @@ warning.
 **After the build.** rpyenv imports every standard-library module, checks that CA
 certificates exist, and starts Tcl. If one fails, it removes the build and tells you
 which module and which package. For missing CA certificates, it names the file and the
-directory the built Python looked in. After `[c]` this is a two-line summary, and the build stays. With `RPYENV_SKIP_PREFLIGHT=1` it is a one-line warning, and the
-build stays. `RPYENV_SKIP_PREFLIGHT=1` also skips the check before the build.
+directory the built Python looked in. After `[c]` this is a short summary, and the build stays.
+With `RPYENV_SKIP_PREFLIGHT=1` it is a one-line warning, and the build stays. `RPYENV_SKIP_PREFLIGHT=1` also skips the check before the build.
 
 ### Building libraries without root
 
@@ -98,14 +98,16 @@ and links it into Python statically. Nothing is installed on the system.
   made from it, reads Tcl's and Tk's scripts from `$PYENV_ROOT/.rpyenv/tcltk/`. Keep that
   folder: if it is deleted, `pyenv install` and `pyenv rehash` re-create it from the installed
   versions, and `pyenv uninstall` removes what no installed version uses.
-- Creating `cache/deps` also creates `$PYENV_ROOT/cache`, which turns on the download cache for later installs (as creating it by hand does).
+- Creating `cache/deps` also creates `$PYENV_ROOT/cache`, which turns on the download cache for
+  later installs (as creating it by hand does).
 - **Versions:** rpyenv pins each library's version and SHA-256 and checks every download. A
   Python version whose definition pins OpenSSL or readline gets that version.
 - **What the system still needs:** a C compiler, `make`, `patch` and `awk` (`gawk`; Tumbleweed's base image has none). OpenSSL and libxcrypt also
   need Perl with its core modules (`perl-core` on Fedora); Tk uses the system's X11 headers when it has them. Without
-  them rpyenv builds the X11 client libraries too (about a minute, plus about 40 s for a minimal
-  Python from the same tarball that runs xcb's code generator). A version whose definition
-  fetches CPython with git (`3.14-dev`) can't build X11 that way and needs the headers.
+  them rpyenv builds the X11 client libraries too (about 35 s, plus 35 to 60 s for a minimal
+  Python from the same tarball that runs xcb's code generator; measured on one machine). A
+  version whose definition fetches CPython with git (the `-dev` definitions, such as `3.14-dev`)
+  can't build X11 that way and needs the headers.
 - **X11 locale data:** a self-built X11 reads its locale data from `/usr/share/X11/locale` when the system has
   it. Without that folder (package `libx11-data` or `libX11-common`), Tk windows open and
   plain typing works; dead keys and Compose sequences may not.

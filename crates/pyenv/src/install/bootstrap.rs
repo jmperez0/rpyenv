@@ -5,9 +5,10 @@
 //! tree, and removed when the store run ends.
 
 use super::archive::{extract, Kind};
-use super::builder::{apply_patch, get, logged};
+use super::builder::{apply_patch, get, logged, UNSET};
 use super::fetch::{Check, FetchRequest, Fetcher};
 use super::log::BuildLog;
+use super::store::plain_path;
 use super::InstallError;
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -63,6 +64,22 @@ pub fn build(
         .filter(|v| !v.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/tmp"));
+    // `{python}` is spliced unquoted into the recipes' shell lines (plan ruling P5).
+    let tmp = std::path::absolute(&tmp).unwrap_or(tmp);
+    if !plain_path(&tmp) {
+        say(&format!(
+            "pyenv: TMPDIR is {}, which has a space or a shell character; building xcb's code generator needs a plain path. Set TMPDIR to one.",
+            tmp.display()
+        ));
+        return Err(InstallError::Failed);
+    }
+    // The build sees what python-build's builds see: no PYTHONHOME or PYTHONPATH.
+    let env: Vec<(OsString, OsString)> = env
+        .iter()
+        .filter(|(k, _)| !UNSET.iter().any(|u| k == *u))
+        .cloned()
+        .collect();
+    let env = &env[..];
     let pid = std::process::id();
     let work = tmp.join(format!("rpyenv-bootstrap.{pid}"));
     let log_path = tmp.join(format!("rpyenv-bootstrap.{pid}.log"));
@@ -153,7 +170,7 @@ mod tests {
     // `r##`: the text holds `"#`, which would end an `r#"…"#` string.
     const CONFIGURE: &str = r##"#!/bin/sh
 [ -f patched.txt ] || { echo 'not patched'; exit 1; }
-printf 'python:\n\tprintf "#!/bin/sh\\n[ -f sharedmods.txt ] || exit 1\\n[ -z \\"$$FAKE_NO_EXPAT\\" ]\\n" > python && chmod +x python\nsharedmods: python\n\ttouch sharedmods.txt\n' > Makefile
+printf 'python:\n\tprintf "#!/bin/sh\\n[ -f sharedmods.txt ] || exit 1\\n[ -z \\"$$FAKE_NO_EXPAT\\" ] || exit 1\\n[ -z \\"$$PYTHONHOME\\" ]\\n" > python && chmod +x python\nsharedmods: python\n\ttouch sharedmods.txt\n' > Makefile
 "##;
 
     const PATCH: &str = "diff --git a/patched.txt b/patched.txt\nnew file mode 100644\n--- /dev/null\n+++ b/patched.txt\n@@ -0,0 +1 @@\n+yes\n";
@@ -231,7 +248,70 @@ printf 'python:\n\tprintf "#!/bin/sh\\n[ -f sharedmods.txt ] || exit 1\\n[ -z \\
         assert!(leftovers(&f).is_empty(), "{:?}", leftovers(&f));
     }
 
-    // Review Focus 4
+    #[test]
+    fn a_tmpdir_with_a_space_or_a_shell_character_is_refused() {
+        let mut f = fake();
+        f.env.retain(|(k, _)| k != "TMPDIR");
+        f.env.push(("TMPDIR".into(), "/tmp/a b".into()));
+        let mut said = Vec::new();
+        let r = build(
+            &f.src,
+            &f.env,
+            &Fetcher::direct(),
+            "2",
+            false,
+            &mut |s: &str| said.push(s.to_string()),
+        );
+        assert!(matches!(r, Err(InstallError::Failed)));
+        let last = said.last().unwrap();
+        assert!(
+            last.contains("TMPDIR") && last.contains("/tmp/a b"),
+            "{last}"
+        );
+    }
+
+    #[test]
+    fn a_relative_tmpdir_gives_an_absolute_python() {
+        let mut f = fake();
+        // The folder's path from the current directory, by way of the root.
+        let up: PathBuf = std::env::current_dir()
+            .unwrap()
+            .components()
+            .skip(1)
+            .map(|_| "..")
+            .collect();
+        let target = f.tmp.path().join("tmp");
+        let rel = up.join(target.strip_prefix("/").unwrap());
+        f.env.retain(|(k, _)| k != "TMPDIR");
+        f.env.push(("TMPDIR".into(), rel.into()));
+        let py = build(
+            &f.src,
+            &f.env,
+            &Fetcher::direct(),
+            "2",
+            false,
+            &mut |_: &str| {},
+        )
+        .unwrap();
+        assert!(py.exe.is_absolute(), "{:?}", py.exe);
+    }
+
+    #[test]
+    fn the_build_does_not_see_pythonhome() {
+        let mut f = fake();
+        f.env.push(("PYTHONHOME".into(), "/user/pyhome".into()));
+        let py = build(
+            &f.src,
+            &f.env,
+            &Fetcher::direct(),
+            "2",
+            false,
+            &mut |_: &str| {},
+        );
+        assert!(py.is_ok(), "the fake python fails when it sees PYTHONHOME");
+    }
+
+    /// A failed bootstrap names its log, keeps only the log, and removes its folder.
     #[test]
     fn a_failed_bootstrap_names_its_log_and_leaves_no_folder() {
         let mut f = fake();

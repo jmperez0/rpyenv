@@ -389,12 +389,14 @@ const DROPPED: [&str; 7] = [
     "PKG_CONFIG_LIBDIR",
 ];
 
-/// The environment of a library build: the job's, without `DROPPED`, with `CFLAGS=-O2 -fPIC`,
+/// The environment of a library build: the job's, without `DROPPED` and python-build's `UNSET`, with `CFLAGS=-O2 -fPIC`,
 /// and with the store's pkgconf first on `PATH` once it has been built (ruling P10).
 fn step_env(env: &[(OsString, OsString)], pkgconf: Option<&Path>) -> Vec<(OsString, OsString)> {
     let mut out: Vec<(OsString, OsString)> = env
         .iter()
-        .filter(|(k, _)| !DROPPED.iter().any(|d| k == d))
+        .filter(|(k, _)| {
+            !DROPPED.iter().any(|d| k == d) && !super::builder::UNSET.iter().any(|u| k == u)
+        })
         .cloned()
         .collect();
     out.push(("CFLAGS".into(), "-O2 -fPIC".into()));
@@ -1260,6 +1262,18 @@ cp tcl_library.txt "$p/lib/tcl_library.txt"
         let env = std::fs::read_to_string(e[0].dir.join("lib/env.txt")).unwrap();
         assert!(env.lines().any(|l| l == "CFLAGS=-O2 -fPIC"), "{env}");
         assert!(!env.contains("/user/include"), "{env}");
+    }
+
+    /// The library build does not inherit the variables python-build unsets (`PYTHONHOME`).
+    #[test]
+    fn the_library_build_does_not_see_pythonhome_or_pythonpath() {
+        let mut f = fixture(false);
+        f.env.push(("PYTHONHOME".into(), "/user/pyhome".into()));
+        f.env.push(("PYTHONPATH".into(), "/user/pypath".into()));
+        let e = run(&f, &mut Vec::new()).unwrap();
+        let env = std::fs::read_to_string(e[0].dir.join("lib/env.txt")).unwrap();
+        assert!(!env.contains("PYTHONHOME"), "{env}");
+        assert!(!env.contains("PYTHONPATH"), "{env}");
     }
 
     #[test]
