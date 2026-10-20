@@ -1,5 +1,5 @@
 //! `pyenv install` and missing build libraries (M8 design §5): the routes, the prompt, the
-//! install command and the lenient mode for scripts (D13). The fake CPython serves as in
+//! install command and the strict default for scripts (D13). The fake CPython serves as in
 //! `cli_install.rs`; detection is faked with RPYENV_TEST_PREFLIGHT and the package manager
 //! with shell stubs on the fixture's PATH, so no test ever runs a real `sudo` or `apt-get`.
 #![cfg(unix)]
@@ -187,7 +187,7 @@ fn without_a_terminal_or_flag_openssl_still_stops_the_build() {
     let f = Fixture::new();
     plugin_def(&f);
     stubs(&f, 0);
-    // Lenient mode (D13): OpenSSL is in the hard set.
+    // Without a terminal or flag (D13, strict): OpenSSL is missing.
     let r = run(
         &f,
         &["install", "3.12.99"],
@@ -222,7 +222,7 @@ fn without_a_terminal_or_flag_a_missing_awk_stops_the_build_naming_gawk() {
     let f = Fixture::new();
     plugin_def(&f);
     stubs(&f, 0);
-    // Lenient mode (D13): awk is in the hard set (CPython's configure runs it).
+    // Without a terminal or flag (D13, strict): awk is missing (CPython's configure runs it).
     let r = run(
         &f,
         &["install", "3.12.99"],
@@ -252,49 +252,34 @@ fn without_a_terminal_or_flag_a_missing_awk_stops_the_build_naming_gawk() {
 }
 
 // allowlist D-117
+// Review Focus 5
 #[test]
-fn without_a_terminal_or_flag_other_libraries_only_warn_and_the_build_goes_on() {
-    let f = Fixture::new();
+fn without_a_terminal_or_flag_a_missing_optional_library_stops_the_build() {
+    // A plain root, so the build-route hint shows (ruling P5).
+    let f = Fixture::plain();
     plugin_def(&f);
     stubs(&f, 0);
     let r = run(
         &f,
         &["install", "3.12.99"],
-        &[
-            ("RPYENV_TEST_PREFLIGHT", "tk,libuuid"),
-            ("FAKE_PY_MISSING", "tkinter _uuid"),
-        ],
+        &[("RPYENV_TEST_PREFLIGHT", "tk,libuuid")],
     );
-    assert_eq!(r.code, 0, "{}", r.stderr);
-    assert!(installed(&f), "{}", r.stderr);
-    // The end summary (§5.2): the built interpreter really lacks both, and the run succeeds.
+    assert_eq!(r.code, 1, "{}", r.stderr);
+    for want in [
+        "pyenv: cannot build Python: missing build dependencies:\n",
+        "\n  sudo apt-get install tk-dev uuid-dev\n",
+        "Without root, pyenv install --deps=build compiles them from source.\n",
+        "To build anyway, set RPYENV_SKIP_PREFLIGHT=1.",
+    ] {
+        assert!(r.stderr.contains(want), "{want:?} in {}", r.stderr);
+    }
     assert!(
-        r.stderr.contains(
-            "pyenv: 3.12.99 was built without: tkinter, uuid
-  Add them: sudo apt-get install tk-dev uuid-dev, then pyenv install -f 3.12.99
-  In a later rpyenv release this stops the build; choose now with --deps=install,
-  --deps=build or --deps=system (or RPYENV_BUILD_DEPS).
-"
-        ),
+        !r.stderr.contains("In a later rpyenv release"),
         "{}",
         r.stderr
     );
-    assert!(
-        r.stderr
-            .contains("pyenv: the build will lack these optional modules:\n"),
-        "{}",
-        r.stderr
-    );
-    assert!(
-        r.stderr
-            .contains("\n  sudo apt-get install tk-dev uuid-dev\n"),
-        "{}",
-        r.stderr
-    );
-    // Nothing is refused: no "cannot build", no way to skip the check.
-    assert!(!r.stderr.contains("cannot build"), "{}", r.stderr);
-    assert!(!r.stderr.contains("To build anyway"), "{}", r.stderr);
-    assert_eq!(log(&f), "");
+    assert!(!installed(&f));
+    assert_eq!(log(&f), "", "no package manager ran");
 }
 
 // allowlist D-122
@@ -389,7 +374,7 @@ fn the_build_deps_variable_chooses_a_route_like_the_flag() {
     let f = Fixture::new();
     plugin_def(&f);
     stubs(&f, 0);
-    // Without the variable this one-library run would be lenient and succeed.
+    // The variable is read like the flag: `system` here, the same as a flagless script run.
     let r = run(
         &f,
         &["install", "3.12.99"],
@@ -1125,7 +1110,7 @@ fn rocky(f: &Fixture, dnf_exit: i32) -> String {
 }
 
 /// Ruling R15: on a RHEL-family system the printed report names CRB before the dnf command,
-/// for `--deps=system` and in lenient mode alike.
+/// for `--deps=system` and for a run without a terminal or flag alike.
 // allowlist D-120
 #[test]
 fn rocky_reports_show_the_crb_line_before_the_command() {
@@ -1144,7 +1129,7 @@ fn rocky_reports_show_the_crb_line_before_the_command() {
     );
     assert_eq!(r.code, 1, "{}", r.stderr);
     assert!(r.stderr.contains(&want), "{}", r.stderr);
-    // Lenient mode: OpenSSL stops the build; the report still names CRB.
+    // Without a terminal or flag: OpenSSL stops the build; the report still names CRB.
     let r = run(
         &f,
         &["install", "3.12.99"],
@@ -1234,11 +1219,11 @@ fn rocky_deps_install_shows_crb_after_a_failure() {
     assert!(!installed(&f));
 }
 
-/// Final review M7: RPYENV_SKIP_PREFLIGHT=1 in lenient mode gives P1's warning line, not the
-/// summary that promises a later release will stop the build.
+/// Final review M7: D13 is strict since M8c; RPYENV_SKIP_PREFLIGHT=1 still gives P1's warning
+/// line.
 // allowlist D-122
 #[test]
-fn skip_preflight_in_lenient_mode_warns_without_the_summary() {
+fn skip_preflight_without_a_terminal_warns_and_keeps_the_build() {
     let f = Fixture::new();
     plugin_def(&f);
     stubs(&f, 0);
@@ -1264,17 +1249,18 @@ fn skip_preflight_in_lenient_mode_warns_without_the_summary() {
     assert!(installed(&f));
 }
 
-/// Final review M8: the lenient mode is rpyenv's to set; a user's RPYENV_DEPS_MODE is dropped.
+/// Final review M8: `continue` is rpyenv's to set (after `[c]`); a user's RPYENV_DEPS_MODE is
+/// dropped.
 #[test]
-fn a_users_deps_mode_does_not_make_a_strict_run_lenient() {
+fn a_users_deps_mode_does_not_make_a_run_continue() {
     let f = Fixture::new();
     plugin_def(&f);
     stubs(&f, 0);
     let r = run(
         &f,
-        &["install", "--deps=system", "3.12.99"],
+        &["install", "3.12.99"],
         &[
-            ("RPYENV_DEPS_MODE", "lenient"),
+            ("RPYENV_DEPS_MODE", "continue"),
             ("RPYENV_TEST_PREFLIGHT", ""),
             ("FAKE_PY_MISSING", "_uuid"),
         ],
@@ -1292,6 +1278,7 @@ fn a_users_deps_mode_does_not_make_a_strict_run_lenient() {
         "{}",
         r.stderr
     );
+    assert!(!r.stderr.contains("Add them:"), "{}", r.stderr);
     assert!(!installed(&f));
 }
 

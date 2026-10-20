@@ -101,7 +101,7 @@ fn a_pypy_definition_installs_with_upstreams_links_and_pip() {
 
 /// Ruling R14: M8 design §4.4's module check is for CPython built from source. A PyPy that
 /// lacks `_uuid` (the real PyPy 3.11 does) installs as before M8a, at a terminal or not: only
-/// upstream's checks, no "was built without" and no lenient summary.
+/// upstream's checks, no "was built without" and no `[c]` summary.
 #[test]
 fn a_pypy_without_uuid_installs_with_upstreams_checks_only() {
     let mut bad: Vec<String> = Vec::new();
