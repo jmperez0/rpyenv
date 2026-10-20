@@ -926,6 +926,7 @@ pub fn install(ctx: &Ctx, args: &[&str]) -> Output {
                         openssldir,
                         certs: store::detect_system_certs(),
                         verbose: f.verbose,
+                        bootstrap: None,
                     },
                     keys,
                     say,

@@ -272,7 +272,9 @@ pub fn entry_name(key: &str, version: &str, fingerprint: &str) -> String {
 
 /// Everything that makes two builds of a library differ (spec D6): its source, its recipe,
 /// the compiler and target, `OPENSSLDIR` for OpenSSL, the script home for Tcl and Tk (both are
-/// compiled in), and the entries it was built against.
+/// compiled in), the entries it was built against and, for Tk built against the store's X11,
+/// its X11 arguments.
+#[allow(clippy::too_many_arguments)]
 pub fn fingerprint(
     r: &Recipe,
     row: &Row,
@@ -281,6 +283,7 @@ pub fn fingerprint(
     openssldir: &str,
     scripts: &str,
     deps: &[String],
+    store_x11: bool,
 ) -> String {
     let mut s = format!(
         "{}\n{}\n{}\n{}\n{cc}\n{triple}\n",
@@ -300,6 +303,23 @@ pub fn fingerprint(
     for d in deps {
         s.push_str(d);
         s.push('\n');
+    }
+    // Tk against the store's X11 (ruling C4): another build, another entry. Without it the
+    // text is M8b's, so existing entries keep their names.
+    if store_x11 {
+        s.push_str(r.x11_args);
+        s.push('\n');
+    }
+    s
+}
+
+/// A recipe's steps, with its `x11_args` added to the first when the store supplies X11.
+pub fn steps_of(r: &Recipe, store_x11: bool) -> Vec<String> {
+    let mut s: Vec<String> = r.steps.iter().map(|x| x.to_string()).collect();
+    if store_x11 {
+        if let Some(first) = s.first_mut() {
+            first.push_str(r.x11_args);
+        }
     }
     s
 }
@@ -353,6 +373,9 @@ pub struct Build<'a> {
     /// What `ssl_dir` links to.
     pub certs: SystemCerts,
     pub verbose: bool,
+    /// The CPython tarball a bootstrap Python is built from when xcb-proto or libxcb must be
+    /// built (M8c); `None` when the definition has none (it fetches CPython with git).
+    pub bootstrap: Option<&'a super::bootstrap::Source>,
 }
 
 /// The variables a library build must not inherit (plan ruling P7).
@@ -428,6 +451,9 @@ pub fn ensure(b: &Build, keys: &[&'static str], say: &mut dyn FnMut(&str)) -> R<
         sync_ssl_dir(b.root, &b.certs, b.rows, b.fetcher, say)?;
     }
     let mut done: Vec<Entry> = Vec::new();
+    // The bootstrap Python, built on first need; dropping it at the end of `ensure`, on every
+    // path, removes it.
+    let mut boot: Option<super::bootstrap::Python> = None;
     for &key in keys {
         if interrupted() {
             return Err(InstallError::Interrupted);
@@ -438,7 +464,14 @@ pub fn ensure(b: &Build, keys: &[&'static str], say: &mut dyn FnMut(&str)) -> R<
             .ok_or_else(|| message(format!("pyenv: the build catalog has no {key}")))?;
         let mut vars: Vec<(String, String)> = Vec::new();
         let mut deps: Vec<String> = Vec::new();
-        for n in recipe.needs {
+        // Tk against the store's X11, when this run built libX11 (M8c, ruling C4).
+        let store_x11 = recipe.x11 && done.iter().any(|e| e.key == "libX11");
+        let extra: &[&str] = if store_x11 {
+            &["xorgproto", "libX11"]
+        } else {
+            &[]
+        };
+        for n in recipe.needs.iter().chain(extra) {
             let e = done
                 .iter()
                 .find(|e| e.key == *n)
@@ -459,7 +492,16 @@ pub fn ensure(b: &Build, keys: &[&'static str], say: &mut dyn FnMut(&str)) -> R<
         let name = entry_name(
             key,
             &row.version,
-            &fingerprint(recipe, &row, &cc, &triple, &openssldir, &scripts, &deps),
+            &fingerprint(
+                recipe,
+                &row,
+                &cc,
+                &triple,
+                &openssldir,
+                &scripts,
+                &deps,
+                store_x11,
+            ),
         );
         let prefix = dir.join(&name);
         let lock_path = locks.join(format!("{name}.lock"));
@@ -515,9 +557,30 @@ pub fn ensure(b: &Build, keys: &[&'static str], say: &mut dyn FnMut(&str)) -> R<
                 .iter()
                 .find(|e| e.key == "pkgconf")
                 .map(|e| e.dir.join("bin"));
+            if recipe.python {
+                let src = b.bootstrap.ok_or_else(|| {
+                    message(format!(
+                        "pyenv: building {key} needs Python, and this definition has no CPython source tarball"
+                    ))
+                })?;
+                if boot.is_none() {
+                    boot = Some(super::bootstrap::build(
+                        src,
+                        &step_env(b.env, pkgconf.as_deref()),
+                        b.fetcher,
+                        &jobs,
+                        b.verbose,
+                        say,
+                    )?);
+                }
+                if let Some(p) = &boot {
+                    vars.push(("python".to_string(), p.exe.display().to_string()));
+                }
+            }
             build_one(
                 b,
                 recipe,
+                &steps_of(recipe, store_x11),
                 &row,
                 &name,
                 &prefix,
@@ -555,6 +618,7 @@ pub fn ensure(b: &Build, keys: &[&'static str], say: &mut dyn FnMut(&str)) -> R<
 fn build_one(
     b: &Build,
     recipe: &Recipe,
+    steps: &[String],
     row: &Row,
     name: &str,
     prefix: &Path,
@@ -609,7 +673,7 @@ fn build_one(
         vars.push(("destdir".to_string(), destdir.display().to_string()));
         vars.push(("stage".to_string(), stage.display().to_string()));
         let env = step_env(b.env, pkgconf);
-        for step in recipe.steps {
+        for step in steps {
             let line = expand(step, &vars);
             log.line(&format!("+ {line}"));
             let mut c = Command::new("sh");
@@ -807,6 +871,8 @@ pub fn link(entries: Vec<Entry>, minor: u32, read: &dyn Fn(&Path) -> Option<Stri
             "openssl" => l
                 .configure
                 .push(format!("--with-openssl={}", e.dir.display())),
+            // The X11 entries reach CPython only through Tk's `TK_LIBS` (ruling C5).
+            k if catalog::X11.contains(&k) => {}
             k => {
                 l.cppflags.push(format!("-I{}/include", e.dir.display()));
                 for inc in catalog::recipe(k).map(|r| r.includes).unwrap_or(&[]) {
@@ -845,6 +911,7 @@ pub fn link(entries: Vec<Entry>, minor: u32, read: &dyn Fn(&Path) -> Option<Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::install::bootstrap;
     use crate::install::defs::Definition;
     use std::io::Write;
 
@@ -957,6 +1024,7 @@ install_dev:
             openssldir: ssl_dir(&f.root),
             certs: SystemCerts::default(),
             verbose: false,
+            bootstrap: None,
         };
         ensure(&b, keys, say)
     }
@@ -1242,6 +1310,183 @@ cp tcl_library.txt "$p/lib/tcl_library.txt"
     }
 
     #[test]
+    fn tk_with_the_stores_x11_gets_the_x11_args_and_another_entry() {
+        let tk = catalog::recipe("tk").unwrap();
+        assert_eq!(
+            steps_of(tk, false),
+            tk.steps.iter().map(|s| s.to_string()).collect::<Vec<_>>()
+        );
+        let with = steps_of(tk, true);
+        assert!(with[0].ends_with(tk.x11_args), "{}", with[0]);
+        assert_eq!(&with[1..], &steps_of(tk, false)[1..]);
+        let row = Row {
+            key: "tk".into(),
+            version: "1".into(),
+            url: "u".into(),
+            sha256: "s".into(),
+        };
+        let deps = vec!["tcl-1-x".to_string()];
+        assert_ne!(
+            fingerprint(tk, &row, "cc", "t", "o", "s", &deps, true),
+            fingerprint(tk, &row, "cc", "t", "o", "s", &deps, false)
+        );
+    }
+
+    // Review Focus 3
+    #[test]
+    fn a_python_recipe_reused_from_the_store_needs_no_bootstrap() {
+        let f = fixture(false);
+        let row = Row {
+            key: "xcb-proto".into(),
+            version: "1.0".into(),
+            url: "file:///nonexistent/xcb-proto-1.0.tar.xz".into(),
+            sha256: "a".repeat(64),
+        };
+        let rows = vec![row.clone()];
+        let cc = get(&f.env, "CC")
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| "cc".into());
+        let triple = triple_of(&cc, &f.env);
+        let name = entry_name(
+            "xcb-proto",
+            "1.0",
+            &fingerprint(
+                catalog::recipe("xcb-proto").unwrap(),
+                &row,
+                &cc,
+                &triple,
+                &ssl_dir(&f.root).display().to_string(),
+                &scripts_home(&f.root, "xcb-proto", "1.0")
+                    .display()
+                    .to_string(),
+                &[],
+                false,
+            ),
+        );
+        std::fs::create_dir_all(deps_dir(&f.root).join(&name)).unwrap();
+        let boot = bootstrap::Source {
+            name: "Python-9.9.9".into(),
+            url: "file:///nonexistent/Python-9.9.9.tar.xz".into(),
+            sha256: "b".repeat(64),
+            patches: vec![],
+        };
+        let def = Definition::default();
+        let fetcher = Fetcher::direct();
+        let b = Build {
+            root: &f.root,
+            rows: &rows,
+            definition: &def,
+            env: &f.env,
+            fetcher: &fetcher,
+            openssldir: ssl_dir(&f.root),
+            certs: SystemCerts::default(),
+            verbose: false,
+            bootstrap: Some(&boot),
+        };
+        let mut said = Vec::new();
+        ensure(&b, &["xcb-proto"], &mut |s: &str| said.push(s.to_string())).unwrap();
+        assert!(
+            said.iter()
+                .any(|s| s.starts_with("Using xcb-proto 1.0 from ")),
+            "{said:?}"
+        );
+        assert!(!said.iter().any(|s| s.contains("bootstrap")), "{said:?}");
+    }
+
+    #[test]
+    fn a_python_recipe_without_a_cpython_tarball_fails_before_downloading() {
+        let f = fixture(false);
+        let rows = vec![Row {
+            key: "xcb-proto".into(),
+            version: "1.0".into(),
+            url: "file:///nonexistent/xcb-proto-1.0.tar.xz".into(),
+            sha256: "a".repeat(64),
+        }];
+        let def = Definition::default();
+        let fetcher = Fetcher::direct();
+        let b = Build {
+            root: &f.root,
+            rows: &rows,
+            definition: &def,
+            env: &f.env,
+            fetcher: &fetcher,
+            openssldir: ssl_dir(&f.root),
+            certs: SystemCerts::default(),
+            verbose: false,
+            bootstrap: None,
+        };
+        let r = ensure(&b, &["xcb-proto"], &mut |_: &str| {});
+        match r {
+            Err(InstallError::Message(m)) => assert_eq!(
+                m,
+                "pyenv: building xcb-proto needs Python, and this definition has no CPython source tarball"
+            ),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn link_leaves_the_x11_entries_to_tks_flags() {
+        let e = |key: &'static str, dir: &str| Entry {
+            key,
+            version: "1".into(),
+            origin: Origin::Catalog,
+            dir: PathBuf::from(dir),
+        };
+        let entries = vec![
+            e("xorgproto", "/s/xorgproto-1-a"),
+            e("libX11", "/s/libX11-1-b"),
+            e("tcl", "/s/tcl-1-c"),
+            e("tk", "/s/tk-1-d"),
+        ];
+        let l = link(entries, 12, &|p: &Path| {
+            p.ends_with("tkConfig.sh").then(|| {
+                "TK_LIBS='-L/s/libX11-1-b/lib -lX11   -lpthread -lm'
+"
+                .to_string()
+            })
+        });
+        let all = format!("{:?} {:?} {:?}", l.cppflags, l.ldflags, l.pkg_config_path);
+        assert!(
+            !all.contains("libX11") && !all.contains("xorgproto"),
+            "{all}"
+        );
+        let libs = &l
+            .configure_env
+            .iter()
+            .find(|(k, _)| k == "TCLTK_LIBS")
+            .unwrap()
+            .1;
+        assert!(
+            libs.ends_with("-L/s/libX11-1-b/lib -lX11 -lpthread -lm"),
+            "{libs}"
+        );
+        assert_eq!(l.entries.len(), 4, "the record still names every entry");
+    }
+
+    // Review Focus 2: with the system's X11, an rpyenv upgrade keeps M8b's entries.
+    #[test]
+    fn tk_without_store_x11_keeps_its_m8b_entry_name() {
+        let rows = catalog::parse(include_str!("../../deps/catalog.tsv")).unwrap();
+        let row = rows.iter().find(|r| r.key == "tk").unwrap();
+        assert_eq!(
+            row.version, "8.6.18",
+            "update this pin when the catalog moves Tk"
+        );
+        let fp = fingerprint(
+            catalog::recipe("tk").unwrap(),
+            row,
+            "cc",
+            "x86_64-linux-gnu",
+            "/r/.rpyenv/ssl",
+            "/r/.rpyenv/tcltk/tk-8.6.18",
+            &["tcl-8.6.18-aaaaaaaaaaaa".to_string()],
+            false,
+        );
+        assert_eq!(entry_name("tk", "8.6.18", &fp), "tk-8.6.18-c8a45ea4f16c");
+    }
+
+    #[test]
     fn the_entry_name_changes_with_every_input_of_the_fingerprint() {
         let r = catalog::recipe("openssl").unwrap();
         let row = Row {
@@ -1250,7 +1495,16 @@ cp tcl_library.txt "$p/lib/tcl_library.txt"
             url: "u".into(),
             sha256: "a".repeat(64),
         };
-        let base = fingerprint(r, &row, "cc", "x86_64-linux-gnu", "/etc/ssl", "/h", &[]);
+        let base = fingerprint(
+            r,
+            &row,
+            "cc",
+            "x86_64-linux-gnu",
+            "/etc/ssl",
+            "/h",
+            &[],
+            false,
+        );
         let name = entry_name("openssl", "3.6.5", &base);
         assert!(
             name.starts_with("openssl-3.6.5-") && name.len() == "openssl-3.6.5-".len() + 12,
@@ -1258,9 +1512,36 @@ cp tcl_library.txt "$p/lib/tcl_library.txt"
         );
         assert_eq!(name, entry_name("openssl", "3.6.5", &base), "stable");
         for other in [
-            fingerprint(r, &row, "gcc-14", "x86_64-linux-gnu", "/etc/ssl", "/h", &[]),
-            fingerprint(r, &row, "cc", "aarch64-linux-gnu", "/etc/ssl", "/h", &[]),
-            fingerprint(r, &row, "cc", "x86_64-linux-gnu", "/etc/pki/tls", "/h", &[]),
+            fingerprint(
+                r,
+                &row,
+                "gcc-14",
+                "x86_64-linux-gnu",
+                "/etc/ssl",
+                "/h",
+                &[],
+                false,
+            ),
+            fingerprint(
+                r,
+                &row,
+                "cc",
+                "aarch64-linux-gnu",
+                "/etc/ssl",
+                "/h",
+                &[],
+                false,
+            ),
+            fingerprint(
+                r,
+                &row,
+                "cc",
+                "x86_64-linux-gnu",
+                "/etc/pki/tls",
+                "/h",
+                &[],
+                false,
+            ),
             fingerprint(
                 r,
                 &row,
@@ -1269,6 +1550,7 @@ cp tcl_library.txt "$p/lib/tcl_library.txt"
                 "/etc/ssl",
                 "/h",
                 &["dep-1".into()],
+                false,
             ),
             fingerprint(
                 r,
@@ -1281,6 +1563,7 @@ cp tcl_library.txt "$p/lib/tcl_library.txt"
                 "/etc/ssl",
                 "/h",
                 &[],
+                false,
             ),
         ] {
             assert_ne!(entry_name("openssl", "3.6.5", &other), name);
@@ -1292,13 +1575,13 @@ cp tcl_library.txt "$p/lib/tcl_library.txt"
             ..row.clone()
         };
         assert_eq!(
-            fingerprint(z, &zrow, "cc", "t", "/etc/ssl", "/h", &[]),
-            fingerprint(z, &zrow, "cc", "t", "/etc/pki/tls", "/h", &[])
+            fingerprint(z, &zrow, "cc", "t", "/etc/ssl", "/h", &[], false),
+            fingerprint(z, &zrow, "cc", "t", "/etc/pki/tls", "/h", &[], false)
         );
         // The script home only matters for Tcl and Tk, which have it compiled in.
         assert_eq!(
-            fingerprint(z, &zrow, "cc", "t", "/etc/ssl", "/h", &[]),
-            fingerprint(z, &zrow, "cc", "t", "/etc/ssl", "/other", &[])
+            fingerprint(z, &zrow, "cc", "t", "/etc/ssl", "/h", &[], false),
+            fingerprint(z, &zrow, "cc", "t", "/etc/ssl", "/other", &[], false)
         );
         for k in ["tcl", "tk"] {
             let r = catalog::recipe(k).unwrap();
@@ -1307,8 +1590,26 @@ cp tcl_library.txt "$p/lib/tcl_library.txt"
                 ..row.clone()
             };
             assert_ne!(
-                fingerprint(r, &row, "cc", "t", "/etc/ssl", "/r1/.rpyenv/tcltk/x", &[]),
-                fingerprint(r, &row, "cc", "t", "/etc/ssl", "/r2/.rpyenv/tcltk/x", &[]),
+                fingerprint(
+                    r,
+                    &row,
+                    "cc",
+                    "t",
+                    "/etc/ssl",
+                    "/r1/.rpyenv/tcltk/x",
+                    &[],
+                    false
+                ),
+                fingerprint(
+                    r,
+                    &row,
+                    "cc",
+                    "t",
+                    "/etc/ssl",
+                    "/r2/.rpyenv/tcltk/x",
+                    &[],
+                    false
+                ),
                 "{k}"
             );
         }
@@ -1643,6 +1944,7 @@ cp tcl_library.txt "$p/lib/tcl_library.txt"
                 dir: None,
             },
             verbose: false,
+            bootstrap: None,
         };
         ensure(&b, &["openssl"], &mut |_: &str| {}).unwrap();
         assert_eq!(
