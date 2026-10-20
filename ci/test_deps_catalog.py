@@ -41,6 +41,13 @@ class Versions(unittest.TestCase):
         self.assertIsNone(version)
         self.assertIsNone(url)
 
+    def test_x_org_listings_take_the_newest(self):
+        page = '<a href="libX11-1.8.13.tar.xz">a</a> <a href="libX11-1.8.14.tar.xz">b</a> libX11-1.8.14.tar.xz.sig libXau-1.0.12.tar.xz'
+        src = dc.SOURCES["libX11"]
+        self.assertEqual(dc.newest(dc.matches(page, src[2])), "1.8.14")
+        page = "xcb-proto-1.16.0.tar.xz xcb-proto-1.17.0.tar.xz libxcb-1.17.0.tar.xz"
+        self.assertEqual(dc.newest(dc.matches(page, dc.SOURCES["xcb-proto"][2])), "1.17.0")
+
     def test_cacert_names_sort_by_date(self):
         page = "cacert-2026-07-16.pem cacert-2026-09-25.pem cacert-2026-08-13.pem"
         self.assertEqual(dc.cacert_latest(page), "2026-09-25")

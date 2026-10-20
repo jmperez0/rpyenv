@@ -44,8 +44,8 @@ impl Origin {
 /// tree's `dir`. `store::expand` fills in `{prefix}` (the entry), `{destdir}` (where `make
 /// install` stages it), `{stage}` (`{destdir}{prefix}`), `{jobs}`, `{triple}` (`cc
 /// -dumpmachine`), `{openssldir}`, `{scripts}` (`<root>/.rpyenv/tcltk/<key>-<version>`, the
-/// shared home of Tcl's and Tk's script folders) and `{dep:<key>}` (the entry of a library in
-/// `needs`).
+/// shared home of Tcl's and Tk's script folders), `{python}` (the bootstrap CPython, for recipes
+/// with `python`) and `{dep:<key>}` (the entry of a library in `needs`).
 pub struct Recipe {
     pub key: &'static str,
     /// The subdirectory of the source tree the commands run in (`unix` for Tcl and Tk).
@@ -54,8 +54,14 @@ pub struct Recipe {
     pub needs: &'static [&'static str],
     /// Its build runs Perl scripts that need Perl's core modules (ruling P4).
     pub perl: bool,
-    /// It needs the system's X11 headers and libX11 (Tk, until M8c; ruling P3).
+    /// It needs X11: the system's headers and libX11, or the store's (M8c, spec §6.4).
     pub x11: bool,
+    /// Its steps run Python (xcb's code generator): `{python}` is the bootstrap CPython
+    /// (`install::bootstrap`).
+    pub python: bool,
+    /// Added to the first step when the store built X11 in the same run (Tk only, ruling C4):
+    /// Tk then uses the store's libX11, without Xft (D10).
+    pub x11_args: &'static str,
     /// Include directories under the entry besides `include`, for CPython's `CPPFLAGS`.
     pub includes: &'static [&'static str],
     pub steps: &'static [&'static str],
@@ -63,8 +69,20 @@ pub struct Recipe {
 
 const EMBEDDED: &str = include_str!("../../deps/catalog.tsv");
 
+/// The X11 client libraries the store builds for Tk when the system has no X11 headers
+/// (M8c, spec §6.4), in build order. libXext is not among them: Tk 8.6 doesn't use it
+/// (measured, ruling C2).
+pub const X11: [&str; 6] = [
+    "xorgproto",
+    "libXau",
+    "xcb-proto",
+    "libxcb",
+    "xtrans",
+    "libX11",
+];
+
 /// The order libraries are built in: each after the ones it needs.
-pub const ORDER: [&str; 17] = [
+pub const ORDER: [&str; 23] = [
     "pkgconf",
     "zlib",
     "bzip2",
@@ -74,6 +92,12 @@ pub const ORDER: [&str; 17] = [
     "gdbm",
     "sqlite",
     "libffi",
+    "xorgproto",
+    "libXau",
+    "xcb-proto",
+    "libxcb",
+    "xtrans",
+    "libX11",
     "tcl",
     "tk",
     "libuuid",
@@ -102,6 +126,8 @@ static RECIPES: &[Recipe] = &[
         needs: &[],
         perl: false,
         x11: false,
+        python: false,
+        x11_args: "",
         includes: &[],
         steps: &[
             "./configure --prefix={prefix} --disable-shared --with-system-libdir=/lib:/usr/lib:/lib64:/usr/lib64 --with-system-includedir=/usr/include --with-pkg-config-dir=/usr/local/lib/pkgconfig:/usr/local/share/pkgconfig:/usr/lib/{triple}/pkgconfig:/usr/lib64/pkgconfig:/usr/lib/pkgconfig:/usr/share/pkgconfig",
@@ -116,6 +142,8 @@ static RECIPES: &[Recipe] = &[
         needs: &[],
         perl: false,
         x11: false,
+        python: false,
+        x11_args: "",
         includes: &[],
         steps: autotools!("./configure --static --prefix={prefix}"),
     },
@@ -125,6 +153,8 @@ static RECIPES: &[Recipe] = &[
         needs: &[],
         perl: false,
         x11: false,
+        python: false,
+        x11_args: "",
         includes: &[],
         steps: &[
             r#"make -j{jobs} libbz2.a CC="${CC:-cc}" "CFLAGS=-O2 -fPIC -D_FILE_OFFSET_BITS=64""#,
@@ -138,6 +168,8 @@ static RECIPES: &[Recipe] = &[
         needs: &[],
         perl: false,
         x11: false,
+        python: false,
+        x11_args: "",
         includes: &[],
         steps: autotools!("./configure --prefix={prefix} --disable-shared --enable-static --with-pic --disable-xz --disable-xzdec --disable-lzmadec --disable-lzmainfo --disable-scripts --disable-doc --disable-nls"),
     },
@@ -147,6 +179,8 @@ static RECIPES: &[Recipe] = &[
         needs: &[],
         perl: false,
         x11: false,
+        python: false,
+        x11_args: "",
         // `term.h` (`setupterm`, for `_curses`) is only there (measured).
         includes: &["include/ncursesw"],
         steps: autotools!("./configure --prefix={prefix} --without-shared --with-normal --enable-widec --without-debug --without-ada --without-cxx-binding --without-manpages --without-tests --enable-pc-files --with-pkg-config-libdir={prefix}/lib/pkgconfig --with-default-terminfo-dir=/usr/share/terminfo --with-terminfo-dirs=/etc/terminfo:/lib/terminfo:/usr/share/terminfo"),
@@ -157,6 +191,8 @@ static RECIPES: &[Recipe] = &[
         needs: &["ncurses"],
         perl: false,
         x11: false,
+        python: false,
+        x11_args: "",
         includes: &[],
         steps: &[
             "CPPFLAGS='-I{dep:ncurses}/include -I{dep:ncurses}/include/ncursesw' ./configure --prefix={prefix} --disable-shared --enable-static --with-curses",
@@ -172,6 +208,8 @@ static RECIPES: &[Recipe] = &[
         needs: &[],
         perl: false,
         x11: false,
+        python: false,
+        x11_args: "",
         includes: &[],
         steps: &[
             "./configure --prefix={prefix} --disable-shared --enable-static --with-pic --enable-libgdbm-compat --without-readline --disable-nls",
@@ -187,6 +225,8 @@ static RECIPES: &[Recipe] = &[
         needs: &[],
         perl: false,
         x11: false,
+        python: false,
+        x11_args: "",
         includes: &[],
         steps: autotools!("./configure --prefix={prefix} --disable-shared --enable-static"),
     },
@@ -196,8 +236,91 @@ static RECIPES: &[Recipe] = &[
         needs: &[],
         perl: false,
         x11: false,
+        python: false,
+        x11_args: "",
         includes: &[],
         steps: autotools!("./configure --prefix={prefix} --disable-shared --enable-static --with-pic --disable-docs --disable-multi-os-directory"),
+    },
+    Recipe {
+        key: "xorgproto",
+        dir: "",
+        needs: &[],
+        perl: false,
+        x11: false,
+        python: false,
+        x11_args: "",
+        includes: &[],
+        steps: autotools!("./configure --prefix={prefix}"),
+    },
+    Recipe {
+        key: "libXau",
+        dir: "",
+        needs: &["xorgproto"],
+        perl: false,
+        x11: false,
+        python: false,
+        x11_args: "",
+        includes: &[],
+        steps: autotools!("PKG_CONFIG_PATH={dep:xorgproto}/share/pkgconfig ./configure --prefix={prefix} --disable-shared --enable-static --with-pic"),
+    },
+    Recipe {
+        key: "xcb-proto",
+        dir: "",
+        needs: &[],
+        perl: false,
+        x11: false,
+        python: true,
+        x11_args: "",
+        includes: &[],
+        // Installs xcbgen (pure Python) under the bootstrap's `lib/python3.X` (ruling C9).
+        steps: autotools!("PYTHON={python} ./configure --prefix={prefix}"),
+    },
+    Recipe {
+        key: "libxcb",
+        dir: "",
+        needs: &["xorgproto", "libXau", "xcb-proto"],
+        perl: false,
+        x11: false,
+        python: true,
+        x11_args: "",
+        includes: &[],
+        steps: autotools!("PYTHON={python} PKG_CONFIG_PATH={dep:xcb-proto}/share/pkgconfig:{dep:libXau}/lib/pkgconfig:{dep:xorgproto}/share/pkgconfig ./configure --prefix={prefix} --disable-shared --enable-static --with-pic --disable-devel-docs --without-doxygen"),
+    },
+    Recipe {
+        key: "xtrans",
+        dir: "",
+        needs: &[],
+        perl: false,
+        x11: false,
+        python: false,
+        x11_args: "",
+        includes: &[],
+        steps: autotools!("./configure --prefix={prefix}"),
+    },
+    Recipe {
+        key: "libX11",
+        dir: "",
+        needs: &["xorgproto", "libXau", "libxcb", "xtrans"],
+        perl: false,
+        x11: false,
+        python: false,
+        x11_args: "",
+        includes: &[],
+        steps: &[
+            // `--datadir=/usr/share`: locale data and XErrorDB come from the system's path, so
+            // the store stays a cache (ruling C3, measured).
+            "PKG_CONFIG_PATH={dep:libxcb}/lib/pkgconfig:{dep:libXau}/lib/pkgconfig:{dep:xtrans}/share/pkgconfig:{dep:xorgproto}/share/pkgconfig ./configure --prefix={prefix} --datadir=/usr/share --disable-shared --enable-static --with-pic --disable-specs --without-xmlto --without-fop --disable-xf86bigfont",
+            "make -j{jobs}",
+            "make install DESTDIR={destdir}",
+            // libxcb and libXau join the archive: `-lX11` then stands alone (ruling P11).
+            r"cd {stage}/lib && mv libX11.a in-libX11.a && printf 'create libX11.a
+addlib in-libX11.a
+addlib {dep:libxcb}/lib/libxcb.a
+addlib {dep:libXau}/lib/libXau.a
+save
+end
+' | ar -M && rm in-libX11.a",
+        ],
     },
     Recipe {
         key: "tcl",
@@ -205,6 +328,8 @@ static RECIPES: &[Recipe] = &[
         needs: &[],
         perl: false,
         x11: false,
+        python: false,
+        x11_args: "",
         includes: &[],
         // The compiled-in library path is the shared script home outside the store, so Tcl
         // finds it from a venv too, and never the store's copy; without it, Tcl falls back to
@@ -221,6 +346,8 @@ static RECIPES: &[Recipe] = &[
         needs: &["tcl"],
         perl: false,
         x11: true,
+        python: false,
+        x11_args: " --disable-xft --disable-xss --x-includes={dep:libX11}/include --x-libraries={dep:libX11}/lib CPPFLAGS=-I{dep:xorgproto}/include",
         includes: &[],
         steps: &[
             "./configure --prefix={prefix} --disable-shared --with-tcl={dep:tcl}/lib",
@@ -234,6 +361,8 @@ static RECIPES: &[Recipe] = &[
         needs: &[],
         perl: false,
         x11: false,
+        python: false,
+        x11_args: "",
         // CPython 3.8's setup.py looks for `uuid.h` itself, not `uuid/uuid.h` (measured).
         includes: &["include/uuid"],
         steps: autotools!("./configure --prefix={prefix} --disable-all-programs --enable-libuuid --disable-shared --enable-static --with-pic --without-python --disable-nls --disable-bash-completion --without-systemd --without-udev --disable-liblastlog2"),
@@ -244,6 +373,8 @@ static RECIPES: &[Recipe] = &[
         needs: &[],
         perl: true,
         x11: false,
+        python: false,
+        x11_args: "",
         includes: &[],
         // Without `--disable-symvers`, `_crypt` doesn't link (measured).
         steps: autotools!("./configure --prefix={prefix} --disable-shared --enable-static --with-pic --disable-symvers --disable-failure-tokens"),
@@ -254,6 +385,8 @@ static RECIPES: &[Recipe] = &[
         needs: &[],
         perl: false,
         x11: false,
+        python: false,
+        x11_args: "",
         includes: &["include/tirpc"],
         steps: autotools!("./configure --prefix={prefix} --disable-shared --enable-static --with-pic --disable-gssapi"),
     },
@@ -263,6 +396,8 @@ static RECIPES: &[Recipe] = &[
         needs: &["libtirpc"],
         perl: false,
         x11: false,
+        python: false,
+        x11_args: "",
         includes: &[],
         steps: &[
             r#"TIRPC_CFLAGS=-I{dep:libtirpc}/include/tirpc TIRPC_LIBS="-L{dep:libtirpc}/lib -ltirpc" ./configure --prefix={prefix} --disable-shared --enable-static --with-pic"#,
@@ -277,6 +412,8 @@ static RECIPES: &[Recipe] = &[
         needs: &[],
         perl: false,
         x11: false,
+        python: false,
+        x11_args: "",
         includes: &[],
         steps: &[
             "make -C lib -j{jobs} libzstd.a",
@@ -289,6 +426,8 @@ static RECIPES: &[Recipe] = &[
         needs: &[],
         perl: true,
         x11: false,
+        python: false,
+        x11_args: "",
         includes: &[],
         // `./config` and `build_libs`/`install_dev` exist in 1.1.1, 3.x and 4.x alike (1.1.1 has
         // no `build_sw`); CPython needs the libraries and headers, not the `openssl` program
@@ -363,6 +502,8 @@ pub fn keys_for(lib: &str) -> &'static [&'static str] {
         "libnsl" => &["libtirpc", "libnsl"],
         "zstd" => &["zstd"],
         "pkg-config" => &["pkgconf"],
+        // No X11 headers: the store builds the X11 libraries Tk needs (M8c).
+        "x11" => &X11,
         _ => &[],
     }
 }
@@ -480,6 +621,69 @@ mod tests {
                     rest = &tail[k.len()..];
                 }
             }
+            let mut rest = r.x11_args;
+            while let Some(i) = rest.find("{dep:") {
+                let tail = &rest[i + 5..];
+                let k = &tail[..tail.find('}').unwrap()];
+                assert!(X11.contains(&k), "{}'s x11_args use {{dep:{k}}}", r.key);
+                assert!(
+                    ORDER.iter().position(|o| *o == k).unwrap() < at,
+                    "{k} after {}",
+                    r.key
+                );
+                rest = &tail[k.len()..];
+            }
+        }
+    }
+
+    #[test]
+    fn x11_is_planned_before_tk_in_build_order() {
+        assert_eq!(
+            plan(&["tk", "x11"]),
+            [
+                "xorgproto",
+                "libXau",
+                "xcb-proto",
+                "libxcb",
+                "xtrans",
+                "libX11",
+                "tcl",
+                "tk"
+            ]
+        );
+        assert_eq!(
+            plan(&["tk"]),
+            ["tcl", "tk"],
+            "with the system's X11, no X11 key"
+        );
+        assert_eq!(keys_for("x11"), X11);
+    }
+
+    #[test]
+    fn only_tk_has_x11_args_and_only_xcb_runs_python() {
+        for r in RECIPES {
+            assert_eq!(r.x11_args.is_empty(), r.key != "tk", "{}", r.key);
+            let uses = r.steps.iter().any(|s| s.contains("{python}"));
+            assert_eq!(
+                uses, r.python,
+                "{}: {{python}} and `python` disagree",
+                r.key
+            );
+            assert_eq!(
+                r.python,
+                matches!(r.key, "xcb-proto" | "libxcb"),
+                "{}",
+                r.key
+            );
+        }
+        let tk = recipe("tk").unwrap().x11_args;
+        for want in [
+            "--disable-xft",
+            "--x-includes={dep:libX11}/include",
+            "--x-libraries={dep:libX11}/lib",
+            "-I{dep:xorgproto}/include",
+        ] {
+            assert!(tk.contains(want), "{tk}");
         }
     }
 
