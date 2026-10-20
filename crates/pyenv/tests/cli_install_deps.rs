@@ -1564,6 +1564,23 @@ fn at_a_terminal_b_offers_tkinter_without_x11_headers() {
     assert!(store_entries(&f).is_empty(), "p builds nothing");
 }
 
+/// Only the store turns on the download cache (ruling C6): an install with nothing missing
+/// never creates `$PYENV_ROOT/cache`.
+#[test]
+fn an_install_with_nothing_missing_creates_no_download_cache() {
+    let f = Fixture::plain();
+    plugin_def(&f);
+    stubs(&f, 0);
+    let r = run(
+        &f,
+        &["install", "3.12.99"],
+        &[("RPYENV_TEST_PREFLIGHT", "")],
+    );
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert!(installed(&f));
+    assert!(!f.root.join("cache").exists(), "{}", r.stderr);
+}
+
 #[test]
 fn at_a_terminal_b_builds_what_it_can_and_the_rest_comes_back_to_the_prompt() {
     let f = Fixture::plain();
@@ -1592,6 +1609,10 @@ fn at_a_terminal_b_builds_what_it_can_and_the_rest_comes_back_to_the_prompt() {
         r.stderr
     );
     assert_eq!(uuid_runs(&f), 1);
+    assert!(
+        f.root.join("cache/deps").is_dir(),
+        "the store turns on the cache"
+    );
     assert!(installed(&f));
     let record = std::fs::read_to_string(f.root.join("versions/3.12.99/.rpyenv-deps")).unwrap();
     assert!(record.contains("libuuid 9.9 catalog"), "{record}");
