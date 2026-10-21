@@ -1,0 +1,5 @@
+# Upstream PyPy files pypy.org's checksum page doesn't list (M7a design §4.1); reviewed by hand.
+pypy-1.6-linux64.tar.bz2
+pypy-1.7-linux64.tar.bz2
+pypy-1.8-linux64.tar.bz2
+pypy-1.9-linux64.tar.bz2

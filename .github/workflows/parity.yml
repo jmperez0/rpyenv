@@ -8,8 +8,10 @@ on:
 permissions:
   contents: read
 
+# The pyenv commit compared against is the one the vendored python-build comes from, read from
+# crates/pyenv/python-build/UPSTREAM (`pyenv <commit> <version>`). It lives there, not here,
+# because the weekly sync bumps it, and GITHUB_TOKEN may not push changes to workflow files.
 env:
-  PYENV_SHA: 07171d013cac53d1cc9248b4c160217f288a2965
   # pyenv-virtualenv v1.4.0, fetched by commit (plan M4b Task 1).
   PYENV_VIRTUALENV_SHA: eda64556af9b2992386deeb75dad2130899fc4c9
   PYENV_WIN_SHA: 856ed5a8c107879d53374f782a4b40cc794f19e0
@@ -39,6 +41,7 @@ jobs:
       - name: Fetch upstream pyenv and bats
         run: |
           mkdir -p upstream
+          PYENV_SHA=$(cut -d ' ' -f 2 crates/pyenv/python-build/UPSTREAM)
           curl -fsSL "https://github.com/pyenv/pyenv/archive/${PYENV_SHA}.tar.gz" | tar -xz -C upstream
           mv "upstream/pyenv-${PYENV_SHA}" upstream/pyenv
           curl -fsSL "https://github.com/bats-core/bats-core/archive/refs/tags/v${BATS_VERSION}.tar.gz" | tar -xz -C upstream

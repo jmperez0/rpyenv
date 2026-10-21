@@ -1,0 +1,470 @@
+"""Installs and uninstalls rpyenv's MSI and checks what each step leaves (M6b design §7.4).
+
+CI only: it changes the current user's PATH, PowerShell profiles and installed
+programs, so it refuses to run unless CI=true (GitHub Actions sets it).
+Usage: python installer/test_msi.py <dist-dir> <next-dist-dir>
+"""
+import ctypes
+import os
+import shutil
+import subprocess
+import sys
+import winreg
+from ctypes import wintypes
+from pathlib import Path
+
+LINE = 'iex ((pyenv init - pwsh) -join "`n")'
+USER_DIR = Path(os.environ["LOCALAPPDATA"]) / "Programs" / "rpyenv"
+MACHINE_DIR = Path(os.environ["ProgramFiles"]) / "rpyenv"
+ROOT = Path(os.environ["USERPROFILE"]) / ".pyenv" / "pyenv-win"
+SHIMS = ROOT / "shims"
+ACTIVE_SETUP = r"SOFTWARE\Microsoft\Active Setup\Installed Components\{73C5FAF3-A93A-472F-BD99-814909823229}"
+MACHINE_ENV = r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"
+
+
+def documents() -> Path:
+    class GUID(ctypes.Structure):
+        _fields_ = [("a", wintypes.DWORD), ("b", wintypes.WORD), ("c", wintypes.WORD), ("d", ctypes.c_ubyte * 8)]
+
+    folder = GUID(0xFDD39AD0, 0x238F, 0x46AF, (ctypes.c_ubyte * 8)(0xAD, 0xB4, 0x6C, 0x85, 0x48, 0x03, 0x69, 0xC7))
+    path = ctypes.c_wchar_p()
+    if ctypes.windll.shell32.SHGetKnownFolderPath(ctypes.byref(folder), 0, None, ctypes.byref(path)) != 0:
+        raise OSError("SHGetKnownFolderPath(Documents) failed")
+    result = Path(path.value)
+    ctypes.windll.ole32.CoTaskMemFree(path)
+    return result
+
+
+PROFILES = [documents() / sub / "Microsoft.PowerShell_profile.ps1" for sub in ("WindowsPowerShell", "PowerShell")]
+
+
+LOGS = Path("msi-logs")
+_log_count = 0
+_last_log = None
+
+
+def log_text(log: Path) -> str:
+    raw = log.read_bytes() if log.exists() else b""
+    return raw.decode("utf-16", "replace") if raw[:2] == b"\xff\xfe" else raw.decode("utf-8", "replace")
+
+
+def last_log() -> str:
+    """The verbose log of the latest msiexec run."""
+    return log_text(_last_log) if _last_log else ""
+
+
+def msiexec(args: str, expect=(0, 3010)) -> int:
+    global _log_count, _last_log
+    _log_count += 1
+    LOGS.mkdir(exist_ok=True)
+    log = (LOGS / f"{_log_count:02d}-msiexec.log").resolve()
+    _last_log = log
+    code = subprocess.run(f'msiexec {args} /qn /l*v "{log}"', timeout=900).returncode
+    if code not in expect:
+        lines = log_text(log).splitlines()
+        # The failing action is the first "Return value 3"; show what led to it.
+        failed = next((i for i, line in enumerate(lines) if "Return value 3" in line), None)
+        shown = lines[max(0, failed - 40):failed + 5] if failed is not None else lines[-80:]
+        raise AssertionError(f"msiexec {args}: exit {code}, expected {expect}\n" + "\n".join(shown))
+    return code
+
+
+def reg(root, key: str, name: str):
+    try:
+        with winreg.OpenKey(root, key, 0, winreg.KEY_READ | winreg.KEY_WOW64_64KEY) as k:
+            return winreg.QueryValueEx(k, name)[0]
+    except FileNotFoundError:
+        return None
+
+
+def set_user_path(value: str) -> None:
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment", 0, winreg.KEY_SET_VALUE) as k:
+        winreg.SetValueEx(k, "Path", 0, winreg.REG_EXPAND_SZ, value)
+
+
+def entries(path) -> list:
+    return [e.rstrip("\\").lower() for e in (path or "").split(";") if e.strip()]
+
+
+def user_path() -> list:
+    return entries(reg(winreg.HKEY_CURRENT_USER, "Environment", "Path"))
+
+
+def machine_path() -> list:
+    return entries(reg(winreg.HKEY_LOCAL_MACHINE, MACHINE_ENV, "Path"))
+
+
+def profile_has_line() -> bool:
+    return any(LINE in p.read_text(encoding="utf-8", errors="replace") for p in PROFILES if p.exists())
+
+
+def check(ok: bool, what: str) -> None:
+    if not ok:
+        raise AssertionError(what)
+
+
+def low(p: Path) -> str:
+    return str(p).lower()
+
+
+def per_user(msi: Path) -> None:
+    msiexec(f'/i "{msi}"')
+    check((USER_DIR / "bin" / "pyenv.exe").is_file(), "pyenv.exe in LocalAppData\\Programs")
+    check((USER_DIR / "completions" / "pyenv.pwsh").is_file(), "completions installed")
+    check((USER_DIR / "share" / "conda" / "windows.tsv").is_file(), "conda table installed")
+    check(low(USER_DIR / "bin") in user_path(), f"bin on the user PATH: {user_path()}")
+    check(user_path()[:1] == [low(SHIMS)], f"shims first on the user PATH: {user_path()}")
+    check((ROOT / ".rpyenv-setup").is_file(), "setup ran (marker)")
+    check(profile_has_line(), "the PowerShell line")
+    check(reg(winreg.HKEY_CURRENT_USER, r"Software\rpyenv", "Installed") == 1, "HKCU marker")
+    msiexec(f'/x "{msi}"')
+    check(not (USER_DIR / "bin" / "pyenv.exe").exists(), "files removed")
+    check(low(USER_DIR / "bin") not in user_path(), f"bin off the user PATH: {user_path()}")
+    check(low(SHIMS) not in user_path(), f"shims off the user PATH (setup --undo): {user_path()}")
+    check(not profile_has_line(), "the PowerShell line removed")
+    check(not (ROOT / ".rpyenv-setup").exists(), "marker removed")
+    check((ROOT / "versions").is_dir(), "PYENV_ROOT kept")
+    check(reg(winreg.HKEY_CURRENT_USER, r"Software\rpyenv", "Installed") is None, "HKCU marker removed")
+
+
+def live_rehash(msi: Path) -> None:
+    msiexec(f'/i "{msi}" LIVEREHASH=1')
+    check(reg(winreg.HKEY_CURRENT_USER, "Environment", "RPYENV_LIVE_REHASH") == "1", "RPYENV_LIVE_REHASH=1")
+    msiexec(f'/x "{msi}"')
+    check(reg(winreg.HKEY_CURRENT_USER, "Environment", "RPYENV_LIVE_REHASH") is None, "RPYENV_LIVE_REHASH removed")
+
+
+def migrate(msi: Path) -> None:
+    bin_dir = ROOT / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    for name in ("pyenv.ps1", "pyenv.bat", "pyenv"):
+        (bin_dir / name).write_text(f"{name} from pyenv-win\n", encoding="utf-8")
+    before = reg(winreg.HKEY_CURRENT_USER, "Environment", "Path") or ""
+    # pyenv-win's installer puts both bin and shims on the user Path.
+    set_user_path(f"{bin_dir};{SHIMS};{before}")
+    try:
+        msiexec(f'/i "{msi}" MIGRATEPYENVWIN=1')
+        check((ROOT / ".rpyenv-migrate" / "bin" / "pyenv.ps1").is_file(), "pyenv-win's launchers backed up")
+        check(not (bin_dir / "pyenv.ps1").exists(), "pyenv-win's launchers moved aside")
+        check(low(bin_dir) not in user_path(), "pyenv-win's bin off the user PATH")
+        msiexec(f'/x "{msi}"')
+        check((bin_dir / "pyenv.ps1").is_file(), "pyenv-win's launchers restored")
+        check(low(bin_dir) in user_path(), "pyenv-win's bin back on the user PATH")
+        # M6b final review I1: setup didn't add the shims entry, so undo keeps it.
+        check(low(SHIMS) in user_path(), f"pyenv-win's shims entry kept: {user_path()}")
+        check(not (ROOT / ".rpyenv-migrate").exists(), "the migrate backup is gone")
+    finally:
+        set_user_path(before)
+        for name in ("pyenv.ps1", "pyenv.bat", "pyenv"):
+            (bin_dir / name).unlink(missing_ok=True)
+
+
+def rollback(msi: Path) -> None:
+    """M6b final review M2: an install that fails after migrate and setup ran (the test hook
+    RPYENV_TEST_FAIL_LATE=1) rolls them back too, so nothing is left that no product can
+    undo: pyenv-win's launchers and bin are back, its shims entry stays, setup's marker and
+    profile line are gone."""
+    bin_dir = ROOT / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    for name in ("pyenv.ps1", "pyenv.bat", "pyenv"):
+        (bin_dir / name).write_text(f"{name} from pyenv-win\n", encoding="utf-8")
+    before = reg(winreg.HKEY_CURRENT_USER, "Environment", "Path") or ""
+    set_user_path(f"{bin_dir};{SHIMS};{before}")
+    try:
+        msiexec(f'/i "{msi}" MIGRATEPYENVWIN=1 RPYENV_TEST_FAIL_LATE=1', expect=(1603,))
+        check(not (USER_DIR / "bin" / "pyenv.exe").exists(), "the failed install left no files")
+        check((bin_dir / "pyenv.ps1").is_file(), "pyenv-win's launchers back (migrate rolled back)")
+        check(not (ROOT / ".rpyenv-migrate").exists(), "no migrate backup left")
+        check(low(bin_dir) in user_path(), f"pyenv-win's bin back on the user PATH: {user_path()}")
+        check(low(SHIMS) in user_path(), f"pyenv-win's shims entry kept: {user_path()}")
+        check(not (ROOT / ".rpyenv-setup").exists(), "setup rolled back (marker)")
+        check(not profile_has_line(), "setup rolled back (profile line)")
+        check(reg(winreg.HKEY_CURRENT_USER, r"Software\rpyenv", "Installed") is None, "no HKCU marker")
+    finally:
+        set_user_path(before)
+        for name in ("pyenv.ps1", "pyenv.bat", "pyenv"):
+            (bin_dir / name).unlink(missing_ok=True)
+
+
+PS_POLICY = r"SOFTWARE\Microsoft\PowerShell\1\ShellIds\Microsoft.PowerShell"
+PS_GPO = r"SOFTWARE\Policies\Microsoft\Windows\PowerShell"
+
+
+def set_policy(root, value):
+    """Sets (or with None, deletes) Windows PowerShell's ExecutionPolicy under `root`."""
+    with winreg.CreateKeyEx(root, PS_POLICY, 0, winreg.KEY_SET_VALUE | winreg.KEY_WOW64_64KEY) as k:
+        if value is None:
+            try:
+                winreg.DeleteValue(k, "ExecutionPolicy")
+            except FileNotFoundError:
+                pass
+        else:
+            winreg.SetValueEx(k, "ExecutionPolicy", 0, winreg.REG_SZ, value)
+
+
+def client_windows() -> bool:
+    """Client Windows (ProductType WinNT), whose default execution policy is Restricted."""
+    return reg(winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\ProductOptions", "ProductType") == "WinNT"
+
+
+def allow_scripts(msi: Path) -> None:
+    """Sandbox S1's checkbox, silently. Everywhere: where an administrator's LocalMachine
+    AllSigned (set for the scenario) blocks scripts, ALLOWSCRIPTS=1 leaves that choice alone
+    (final review, user's ruling), as does a plain install. On client Windows also: where
+    only the default (Restricted) blocks them, ALLOWSCRIPTS=1 sets CurrentUser RemoteSigned
+    and the profile line, and uninstall takes both back; a Server runner's default already
+    allows scripts, so it can't show this. Prints which runs ran."""
+    for root in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+        check(reg(root, PS_GPO, "EnableScripts") is None, "no Group Policy for PowerShell scripts on this runner")
+    old_machine = reg(winreg.HKEY_LOCAL_MACHINE, PS_POLICY, "ExecutionPolicy")
+    old_user = reg(winreg.HKEY_CURRENT_USER, PS_POLICY, "ExecutionPolicy")
+    user_policy = lambda: reg(winreg.HKEY_CURRENT_USER, PS_POLICY, "ExecutionPolicy")
+    no_line = lambda: not PROFILES[0].exists() or LINE not in PROFILES[0].read_text(encoding="utf-8", errors="replace")
+    record = ROOT / ".rpyenv-allowed-scripts"
+    try:
+        set_policy(winreg.HKEY_CURRENT_USER, None)
+        set_policy(winreg.HKEY_LOCAL_MACHINE, "AllSigned")
+        for args in ("ALLOWSCRIPTS=1", ""):
+            msiexec(f'/i "{msi}" {args}'.rstrip())
+            check(user_policy() is None, f"{args or 'plain'}: the administrator's policy left alone: {user_policy()}")
+            check(not record.exists(), f"{args or 'plain'}: nothing recorded")
+            check(no_line(), f"{args or 'plain'}: no Windows PowerShell profile line while scripts are blocked")
+            check((ROOT / ".rpyenv-setup").is_file(), f"{args or 'plain'}: setup still finished")
+            msiexec(f'/x "{msi}"')
+            check(user_policy() is None, f"{args or 'plain'}: still no CurrentUser policy: {user_policy()}")
+        print("allow_scripts: an administrator's AllSigned left alone (with and without ALLOWSCRIPTS=1)")
+
+        if not client_windows():
+            print("allow_scripts: Windows Server runner, whose default allows scripts: the box's own change not run here")
+            return
+        set_policy(winreg.HKEY_LOCAL_MACHINE, None)  # client Windows' default, Restricted
+        msiexec(f'/i "{msi}" ALLOWSCRIPTS=1')
+        check(user_policy() == "RemoteSigned", f"CurrentUser policy RemoteSigned: {user_policy()}")
+        check(not no_line(), "Windows PowerShell's profile line")
+        check(record.is_file(), "setup recorded the policy it set")
+        msiexec(f'/x "{msi}"')
+        check(user_policy() is None, f"CurrentUser policy taken back: {user_policy()}")
+        check(not record.exists(), "the record removed")
+        check(no_line(), "the profile line removed")
+        msiexec(f'/i "{msi}"')
+        check(user_policy() is None, f"a plain silent install leaves the default: {user_policy()}")
+        check(no_line(), "no profile line while the default blocks scripts")
+        msiexec(f'/x "{msi}"')
+        print("allow_scripts: client Windows: ALLOWSCRIPTS=1 set RemoteSigned and uninstall took it back")
+    finally:
+        set_policy(winreg.HKEY_LOCAL_MACHINE, old_machine)
+        set_policy(winreg.HKEY_CURRENT_USER, old_user)
+
+
+def upgrade(msi: Path, next_msi: Path) -> None:
+    msiexec(f'/i "{msi}" LIVEREHASH=1')
+    msiexec(f'/i "{next_msi}"')
+    # M6b final review I3: a silent upgrade keeps the options the install chose.
+    check(reg(winreg.HKEY_CURRENT_USER, "Environment", "RPYENV_LIVE_REHASH") == "1", "live rehash kept by the upgrade")
+    check(user_path().count(low(SHIMS)) == 1 and user_path()[:1] == [low(SHIMS)], f"shims still first, once: {user_path()}")
+    check(user_path().count(low(USER_DIR / "bin")) == 1, f"bin once on the user PATH: {user_path()}")
+    check((ROOT / ".rpyenv-setup").is_file(), "the upgrade didn't undo setup (marker)")
+    check(profile_has_line(), "the upgrade didn't undo setup (profile line)")
+    msiexec(f'/i "{msi}"', expect=(1603, 1638))  # a downgrade is refused
+    msiexec(f'/x "{next_msi}"')
+    check(not (USER_DIR / "bin" / "pyenv.exe").exists(), "the upgraded install uninstalls")
+
+
+def scope_refusal(msi: Path, next_msi: Path) -> None:
+    msiexec(f'/i "{msi}"')
+    # The same package again: Windows Installer sees it installed for this user (the same
+    # product code) and runs maintenance; nothing goes to Program Files.
+    msiexec(f'/i "{msi}" ALLUSERS=1 MSIINSTALLPERUSER=""')
+    check(not (MACHINE_DIR / "bin").exists(), "the same package isn't installed for all users too")
+    # A newer package can't see the per-user install from the machine context; the
+    # scope marker refuses it (design §4.5).
+    msiexec(f'/i "{next_msi}" ALLUSERS=1 MSIINSTALLPERUSER=""', expect=(1603,))
+    # The refusal itself, not just any failure (M6b final review M8).
+    check("already installed just for you" in last_log(), "refused with the per-user message")
+    check(not (MACHINE_DIR / "bin").exists(), "no all-users install over a per-user one")
+    msiexec(f'/x "{msi}"')
+
+
+def all_users(msi: Path, next_msi: Path) -> None:
+    msiexec(f'/i "{msi}" ALLUSERS=1 MSIINSTALLPERUSER=""')
+    check((MACHINE_DIR / "bin" / "pyenv.exe").is_file(), "pyenv.exe in Program Files")
+    check((MACHINE_DIR / "share" / "conda" / "windows.tsv").is_file(), "conda table installed")
+    check(low(MACHINE_DIR / "bin") in machine_path(), f"bin on the machine PATH: {machine_path()}")
+    stub = reg(winreg.HKEY_LOCAL_MACHINE, ACTIVE_SETUP, "StubPath") or ""
+    check(stub.lower().endswith('pyenv.exe" setup'), f"Active Setup StubPath: {stub!r}")
+    check(reg(winreg.HKEY_LOCAL_MACHINE, r"Software\rpyenv", "Installed") == 1, "HKLM marker")
+    # The other direction (design §4.5): a newer just-for-me install over this one.
+    msiexec(f'/i "{next_msi}"', expect=(1603,))
+    check("already installed for all users of this computer" in last_log(), "refused with the all-users message")
+    check(not (USER_DIR / "bin" / "pyenv.exe").exists(), "no per-user install over an all-users one")
+    msiexec(f'/x "{msi}" ALLUSERS=1')
+    check(not (MACHINE_DIR / "bin" / "pyenv.exe").exists(), "files removed")
+    check(low(MACHINE_DIR / "bin") not in machine_path(), "bin off the machine PATH")
+    check(reg(winreg.HKEY_LOCAL_MACHINE, ACTIVE_SETUP, "StubPath") is None, "Active Setup key removed")
+
+
+def all_users_by_msiinstallperuser(msi: Path) -> None:
+    # MSIINSTALLPERUSER cleared, ALLUSERS left at the package's 2: Windows installs per-machine,
+    # and everything else must too. From the command line this passed before the Sandbox S5
+    # fix as well (Windows settles ALLUSERS there); the dialog path, which S5 broke, is a
+    # Windows Sandbox check (installer/sandbox/CHECKLIST.md, step 4).
+    msiexec(f'/i "{msi}" MSIINSTALLPERUSER=""')
+    try:
+        check((MACHINE_DIR / "bin" / "pyenv.exe").is_file(), "pyenv.exe in Program Files")
+        check(low(MACHINE_DIR / "bin") in machine_path(), f"bin on the machine PATH: {machine_path()}")
+        check(low(MACHINE_DIR / "bin") not in user_path(), f"bin not on the user PATH: {user_path()}")
+        stub = reg(winreg.HKEY_LOCAL_MACHINE, ACTIVE_SETUP, "StubPath") or ""
+        check(stub.lower().endswith('pyenv.exe" setup'), f"Active Setup StubPath: {stub!r}")
+        check(reg(winreg.HKEY_LOCAL_MACHINE, r"Software\rpyenv", "Installed") == 1, "HKLM marker")
+        check(reg(winreg.HKEY_CURRENT_USER, r"Software\rpyenv", "Installed") is None, "no HKCU marker")
+        check(not (ROOT / ".rpyenv-setup").exists(), "setup left to Active Setup (no marker)")
+    finally:
+        msiexec(f'/x "{msi}" ALLUSERS=1')
+    check(not (MACHINE_DIR / "bin" / "pyenv.exe").exists(), "files removed")
+
+
+PUBLIC = Path(os.environ.get("PUBLIC", r"C:\Users\Public"))
+
+
+def as_user(name: str, password: str, args: str) -> int:
+    """Runs `msiexec <args> /qn` as local user `name`, with its profile loaded; its exit code.
+
+    The log goes to Public (a standard user may not write the workspace) and is copied
+    into msi-logs afterwards.
+    """
+    global _log_count
+    _log_count += 1
+    log = PUBLIC / f"rpyenv-{name}-{_log_count:02d}.log"
+    # pwsh, not Windows PowerShell: started from a PowerShell 7 step, `powershell` inherits
+    # its module path and can't load ConvertTo-SecureString. WaitForExit waits for msiexec
+    # alone (Start-Process -Wait also waits for every descendant); reading Handle first keeps
+    # the exit code readable.
+    script = (
+        "$ErrorActionPreference = 'Stop'; "
+        f"$c = New-Object System.Management.Automation.PSCredential('{name}', "
+        f"(ConvertTo-SecureString '{password}' -AsPlainText -Force)); "
+        f"$p = Start-Process msiexec -ArgumentList '{args} /qn /l*v \"{log}\"' -Credential $c "
+        "-LoadUserProfile -WorkingDirectory C:\\ -PassThru; $null = $p.Handle; "
+        "$p.WaitForExit(); exit $p.ExitCode"
+    )
+    code = subprocess.run(
+        ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script], timeout=900
+    ).returncode
+    if log.exists():
+        LOGS.mkdir(exist_ok=True)
+        shutil.copy(log, LOGS / log.name)
+    return code
+
+
+INSTALLER_POLICY = r"SOFTWARE\Policies\Microsoft\Windows\Installer"
+
+
+def set_disable_msi(value):
+    """Sets (or with None, deletes) the machine's DisableMSI policy; returns the old value."""
+    old = reg(winreg.HKEY_LOCAL_MACHINE, INSTALLER_POLICY, "DisableMSI")
+    with winreg.CreateKeyEx(winreg.HKEY_LOCAL_MACHINE, INSTALLER_POLICY, 0,
+                            winreg.KEY_SET_VALUE | winreg.KEY_WOW64_64KEY) as k:
+        if value is None:
+            try:
+                winreg.DeleteValue(k, "DisableMSI")
+            except FileNotFoundError:
+                pass
+        else:
+            winreg.SetValueEx(k, "DisableMSI", 0, winreg.REG_DWORD, value)
+    return old
+
+
+def standard_user(msi: Path) -> None:
+    """Side-agent note (2026-10-10): "Just for me" must need no administrator rights.
+
+    Installs and uninstalls as a fresh standard account. With /qn there is no prompt, so a
+    step that needs elevation fails instead of asking.
+    """
+    # Windows Server turns Windows Installer off for non-administrators (machine policy
+    # DisableMsi is 1 on the windows-2025 runner; error 1625). Client Windows, what "just for
+    # me" is for, allows it: behave like it for this scenario, then put the policy back.
+    old_policy = set_disable_msi(0)
+    try:
+        standard_user_install(msi)
+    finally:
+        set_disable_msi(old_policy)
+
+
+def standard_user_install(msi: Path) -> None:
+    import secrets
+
+    name = "rpyenvstd"
+    # 14 characters at most: `net user` asks "continue (Y/N)?" for a longer password, and
+    # fails with nobody to answer. Upper, lower, digit and symbol meet the complexity rules.
+    password = secrets.token_hex(5) + "Aa1-"
+    added = subprocess.run(["net", "user", name, password, "/add"], capture_output=True, text=True)
+    check(added.returncode == 0, f"net user /add: {added.returncode}\n{added.stdout}{added.stderr}")
+    try:
+        members = subprocess.run(["net", "localgroup", "Administrators"], capture_output=True, text=True).stdout
+        check(name not in members, f"{name} is a standard account, not an administrator")
+        home = Path(os.environ["SystemDrive"] + "\\") / "Users" / name
+        # Public is readable by every user; the workspace may not be.
+        shared = PUBLIC / msi.name
+        shutil.copy(msi, shared)
+        msi = shared
+        code = as_user(name, password, f'/i "{msi}"')
+        check(code in (0, 3010), f"just for me as a standard user: msiexec exit {code}")
+        check((home / "AppData" / "Local" / "Programs" / "rpyenv" / "bin" / "pyenv.exe").is_file(),
+              "pyenv.exe in the standard user's LocalAppData\\Programs")
+        check((home / ".pyenv" / "pyenv-win" / ".rpyenv-setup").is_file(), "setup ran for the standard user")
+        code = as_user(name, password, f'/x "{msi}"')
+        check(code in (0, 3010), f"uninstall as a standard user: msiexec exit {code}")
+        check(not (home / "AppData" / "Local" / "Programs" / "rpyenv" / "bin" / "pyenv.exe").exists(),
+              "uninstalled for the standard user")
+    finally:
+        subprocess.run(["net", "user", name, "/delete"], capture_output=True)
+
+
+def missing_exe(msi: Path) -> None:
+    msiexec(f'/i "{msi}"')
+    (USER_DIR / "bin" / "pyenv.exe").unlink()
+    msiexec(f'/x "{msi}"')  # the custom actions fail; the uninstall must not
+    check(not (USER_DIR / "bin" / "pyenv-shim.exe").exists(), "uninstalled without pyenv.exe")
+
+
+def only_msi(folder: str) -> Path:
+    found = sorted(Path(folder).glob("*.msi"))
+    if len(found) != 1:
+        raise SystemExit(f"expected one .msi in {folder}, found {[f.name for f in found]}")
+    return found[0].resolve()
+
+
+def main(argv) -> int:
+    # GitHub's own runners only: many local tools set CI too (M6b final review M6).
+    hosted = (os.environ.get("CI") == "true" and os.environ.get("GITHUB_ACTIONS") == "true"
+              and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted")
+    if not hosted:
+        print("refusing: this changes the current user's PATH, profiles and installed programs; it runs on GitHub-hosted runners only")
+        return 2
+    if (ROOT / "bin" / "pyenv.ps1").exists():
+        print(f"refusing: a real pyenv-win is installed in {ROOT}; the migrate scenario would overwrite it")
+        return 2
+    if len(argv) != 2:
+        print(__doc__)
+        return 2
+    msi, next_msi = only_msi(argv[0]), only_msi(argv[1])
+    for name, run in [
+        ("per_user", lambda: per_user(msi)),
+        ("live_rehash", lambda: live_rehash(msi)),
+        ("migrate", lambda: migrate(msi)),
+        ("allow_scripts", lambda: allow_scripts(msi)),
+        ("rollback", lambda: rollback(msi)),
+        ("upgrade", lambda: upgrade(msi, next_msi)),
+        ("scope_refusal", lambda: scope_refusal(msi, next_msi)),
+        ("all_users", lambda: all_users(msi, next_msi)),
+        ("all_users_by_msiinstallperuser", lambda: all_users_by_msiinstallperuser(msi)),
+        ("standard_user", lambda: standard_user(msi)),
+        ("missing_exe", lambda: missing_exe(msi)),  # last: it leaves setup's changes behind
+    ]:
+        run()
+        print(f"ok {name}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

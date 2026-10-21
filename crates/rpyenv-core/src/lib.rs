@@ -1,5 +1,7 @@
 //! Version resolution and `PYENV_ROOT` layout, shared by the `pyenv` CLI and the shims.
 
+pub mod conda_list;
+pub mod conda_owner;
 #[cfg(windows)]
 pub mod conpty;
 pub mod console;

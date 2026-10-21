@@ -1,0 +1,1 @@
+install_git "pypy-dev" "https://github.com/pypy/pypy" "main" "pypy_builder" verify_py3_latest ensurepip

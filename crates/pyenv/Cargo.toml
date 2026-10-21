@@ -50,3 +50,16 @@ libc = "0.2"
 [target.'cfg(windows)'.dev-dependencies]
 # Tests read the fixture's registry values as stored (`reg query` prints in the OEM code page).
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Registry"] }
+
+# Test-only multi-call fake of a conda NSIS installer (M7c plan Task 8); never packaged:
+# the MSI and tarball name their files.
+[[bin]]
+name = "fake-conda-installer"
+path = "tests/fake/fake_conda_installer.rs"
+test = false
+doc = false
+
+[target.'cfg(windows)'.dependencies]
+# The fake installer reads its raw command line as NSIS does (GetCommandLineW); winconda expands
+# 8.3 short names (GetLongPathNameW). rpyenv-core already builds this crate.
+windows-sys = { version = "0.61", features = ["Win32_System_Environment", "Win32_Storage_FileSystem"] }

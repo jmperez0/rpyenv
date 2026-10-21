@@ -39,6 +39,8 @@ fn main() {
 
     let gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
     let mut b = tar::Builder::new(gz);
+    // Fixed mtime, owner and mode, so two checkouts of one commit embed the same bytes.
+    b.mode(tar::HeaderMode::Deterministic);
     let patches = share.join("patches");
     add_dir(&mut b, &patches, Path::new(""));
     let bytes = b.into_inner().unwrap().finish().unwrap();

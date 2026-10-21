@@ -478,6 +478,7 @@ instructions, as upstream does.
       which has no `<file>.asc` for the file.
     - A `.asc` that is listed but can't be fetched, or that fails
       verification, stops the install. Neither ever downgrades to the warning.
+  PyPy (M7a) is the one exception to *fetched at install time*: PyPy's published hashes travel in tables CI builds and cross-checks against pypy.org (§15.1); only a Windows release newer than the table reads pypy.org's page at install time.
 - **MSI extraction** reads the MSI's tables and CAB streams in Rust and writes
   the files; `msiexec` is not run, so no product is registered. If the Rust
   reader can't decompress python.org's CABs, the first Windows installer task
@@ -522,6 +523,7 @@ instructions, as upstream does.
   rpyenv never publishes or computes the reference value itself, and MD5 is
   never accepted. The one exception is a file python.org publishes no
   signature or hash for: it installs with a warning (§9.1, *Unsigned files*).
+  PyPy (M7a) is the one exception to *fetched at install time*: PyPy's published hashes travel in tables CI builds and cross-checks against pypy.org (§15.1); only a Windows release newer than the table reads pypy.org's page at install time.
 - **`:latest` (M2).** `pyenv install 3.12:latest` installs the newest
   matching release. Candidates exclude `-dev`, `-src`, pre-releases
   (`a`/`b`/`rc`), and free-threaded builds (`t` suffix), and are sorted by
@@ -558,8 +560,9 @@ offers:
 
 - `msiexec /i rpyenv.msi /qn` installs per-user.
 - For all users, add `ALLUSERS=1 MSIINSTALLPERUSER=""` and start it from an
-  elevated prompt (for example `sudo msiexec …`). A fully silent install is
-  expected to have no way to show a UAC prompt; verify this in M6.
+  elevated prompt (for example `sudo msiexec …`). A fully silent install has no
+  way to show a UAC prompt: run by a standard user it shows none and fails with
+  exit 1603 (Error 1925), installing nothing (M6b, Windows Sandbox, 2026-10-13).
 
 **Where things go:**
 
@@ -649,6 +652,79 @@ Any `python.exe` in the machine `PATH` (for example from an all-users
 python.org install) therefore wins over the per-user shims. `pyenv setup`
 warns when it finds one. pyenv-win has the same limitation.
 
+**As built (M6b):** WiX 5.0.2 (`installer/rpyenv.wxs`, built by
+`installer/build.ps1`). After the Welcome page, a custom Options page (M6b plan P1)
+offers the scope, live rehash, and, just for me, "Move pyenv-win aside" (shown when
+pyenv-win is found, checked) and "Let Windows PowerShell run local scripts for me if it
+blocks them" (checked). The page publishes the scope as `ALLUSERS` itself (`1`, or
+cleared with `MSIINSTALLPERUSER=1`): Windows settles `ALLUSERS=2` once on each side of
+the install, so a property the dialog only deletes never reaches the server (Sandbox
+S5). Silent options are `LIVEREHASH=1`, `MIGRATEPYENVWIN=1` (not `MIGRATE`, which
+Windows Installer reserves) and `ALLOWSCRIPTS=1`; a silent install changes no execution
+policy without it, and an upgrade keeps live rehash. One install per machine, as the
+installing user sees it: installing for the other scope while their per-user install or
+the all-users one exists is refused with a message (another user's per-user install isn't
+visible to the check). Uninstall runs `pyenv migrate --restore` and `pyenv
+setup --undo` (M6b design §5), which takes back the user `PATH` entry, the profile
+lines, the marker and an execution policy `--allow-scripts` set; both are skipped
+during an upgrade. Active Setup's GUID is `{73C5FAF3-A93A-472F-BD99-814909823229}`,
+its StubPath `"<bin>\pyenv.exe" setup`.
+
+Windows PowerShell 5.1 runs a profile only where its execution policy allows local
+scripts, and client Windows' default, `Restricted`, doesn't, so the profile line would
+fail on every start (Sandbox S1). `pyenv setup` and `pyenv migrate` therefore leave its
+profile alone where the effective policy (Group Policy, then CurrentUser, then
+LocalMachine, then the system default) is `Restricted` or `AllSigned`, and say how to
+allow scripts; `pyenv setup --allow-scripts` (the checkbox) first sets the CurrentUser
+policy to `RemoteSigned`, unless Group Policy, an administrator (LocalMachine) or the user set one, and records it in
+`PYENV_ROOT\.rpyenv-allowed-scripts` for `--undo`, which removes it only if it's still
+`RemoteSigned`. `pyenv shell`, `activate` and `deactivate` without integration name a
+blocking policy and the two commands that allow scripts.
+
+Active Setup (M6b, 2026-10-13): on a Windows 11 VM (Enterprise evaluation, build
+26300), the first sign-ins of an administrator and of a new standard user after a
+silent all-users install each ran `pyenv.exe setup` from Explorer (process-creation
+audit) and set the user up. Windows Sandbox can't show this: its sign-in records
+Active Setup versions but launches no stubs, and `runonce.exe /AlternateShellStartup`
+doesn't run them while Explorer is the shell. Whether a console window flashes during
+that sign-in wasn't observed: the sign-ins were automatic and unwatched, and `pyenv.exe`
+is a console program, so one may.
+
+### 9.5 Installing rpyenv itself on Linux
+
+A tarball per architecture, `rpyenv-<version>-linux-x64.tar.gz` and `-linux-arm64`
+(static musl builds), holds `bin/pyenv`, `bin/pyenv-shim`,
+`completions/pyenv.{bash,zsh,fish}`, `LICENSE` and `README.md`, laid out like
+`$PYENV_ROOT` so `pyenv init` finds the completions. `install.sh` (POSIX `sh`):
+
+```sh
+curl -fsSL https://github.com/jmperez0/rpyenv/releases/latest/download/install.sh | sh
+# options: sh -s -- [--version vX.Y.Z] [--init|--no-init] [--take-over]
+#                   [--restore-upstream] [--uninstall]
+```
+
+- It runs on Linux x86_64 or aarch64 only, downloads the tarball and `SHA256SUMS`
+  (curl or wget) and checks it with `sha256sum` or `shasum -a 256`; a mismatch or a
+  missing tool stops it before anything is written.
+- `PYENV_ROOT` defaults to `~/.pyenv`. Over an upstream checkout (`libexec/pyenv` or
+  `.git` there) it asks to take over, or stops when it can't ask, unless given
+  `--take-over`. Taking over moves every top-level entry into `.upstream-pyenv/` except
+  the user's data, `versions/`, `version`, `shims/`, `cache/`, `default-packages`,
+  `sources/` and `plugins/` (whose
+  `python-build` alone moves, since rpyenv embeds its own), and lists what it moved in
+  `.upstream-pyenv/moved.txt`; `--restore-upstream` removes rpyenv's files and moves
+  back exactly that list.
+- It unpacks into a temporary folder and then moves `bin/` and `completions/` into
+  place, so a failed run leaves the previous install working; running it again
+  upgrades.
+- Asked through `/dev/tty` (which works under `curl | sh`), it adds pyenv to the
+  shell's startup file with `pyenv init --install <shell>`; otherwise it prints the
+  lines. `--uninstall` removes only its own files; Python versions stay.
+
+Releases carry `SHA256SUMS` and GitHub build-provenance attestations
+(`gh attestation verify <file> --repo jmperez0/rpyenv --source-ref refs/tags/v<version>`;
+without `--source-ref`, a dry run's attestation from any branch would pass too).
+
 ## 10. Virtualenvs
 
 - **Layout:** as in pyenv-virtualenv: `versions/<base>/envs/<name>`, with
@@ -731,8 +807,9 @@ warns when it finds one. pyenv-win has the same limitation.
   into `?` (allowlist D-48); a console set to code page 65001 gets UTF-8
   always. Text written to a console is Unicode. `RPYENV_DEBUG_LOG` is always
   UTF-8. Linux writes UTF-8.
-- **Debugging:** `PYENV_DEBUG=1` (upstream's variable) prints where the
-  version came from and which executable was chosen.
+- **Debugging:** upstream's `PYENV_DEBUG` turns on a bash `set -x` trace. rpyenv has
+  none (allowlist D-19); a non-empty `PYENV_DEBUG` only makes `pyenv install` verbose,
+  as `-v` does. `RPYENV_DEBUG_LOG` is rpyenv's own diagnostics file.
 - **Downloads:** retry with backoff, then report the URL and suggest
   `PYTHON_BUILD_MIRROR_URL`. A hash mismatch is fatal and deletes the file.
 
@@ -804,16 +881,16 @@ warns when it finds one. pyenv-win has the same limitation.
 | `PYENV_ROOT` (`PYENV`, `PYENV_HOME` on Windows) | upstream | Root directory |
 | `PYENV_VERSION` | upstream | Version override for the current shell |
 | `PYENV_SHELL` | upstream | Set by `pyenv init` |
-| `PYENV_DEBUG` | upstream | Trace output |
+| `PYENV_DEBUG` | upstream | Linux: makes `pyenv install` verbose, as `-v` does (no bash trace, D-19) |
 | `PYTHON_BUILD_MIRROR_URL`, `PYTHON_CONFIGURE_OPTS`, `PYTHON_CFLAGS`, `MAKE_OPTS`, `PYTHON_MAKE_OPTS` | upstream | Installer options |
 | `RPYENV_LIVE_REHASH` | rpyenv | `1` enables the live watcher |
 | `RPYENV_CONSOLE` | rpyenv | Windows: `lazy` (default) or `eager`, for a shim started without a console |
 | `RPYENV_CONSOLE_HOLD` | rpyenv | Windows: after a failure, a window the shim opened stays until a key (default); `0` closes it at once; a positive whole number N closes it after N seconds |
 | `RPYENV_DEBUG_LOG` | rpyenv | File for diagnostics from shims and `pyenv exec` when there is no console |
 | `RPYENV_BATCH_FORWARD` | rpyenv | `;`-separated batch-target names that get a `.cmd` forwarder instead of an exe shim (Windows) |
-| `RPYENV_CATALOG_URL` | rpyenv (M7, only if kept) | Alternative location for the PyPy/conda listing, if M7 keeps one (§15.1); not used for CPython |
+| `RPYENV_CATALOG_URL` | rpyenv | Unused: M7a builds the PyPy tables in CI and publishes no catalog; M7b may revisit it for conda (§15.1) |
 | `RPYENV_SKIP_PREFLIGHT` | rpyenv | `1` skips the Linux build pre-flight check (§9.2), for headers in places the check doesn't look |
-| `RPYENV_BUILD_DEPS` | rpyenv (M8) | `system`, `install`, or `build`: how `pyenv install` resolves missing Linux build dependencies when there is no terminal to ask |
+| `RPYENV_BUILD_DEPS` | rpyenv (M8) | `system`, `install`, `build` or `prebuilt`: how `pyenv install` resolves missing Linux build dependencies when there is no terminal to ask |
 
 `RPYENV_FORWARD_CP`, `RPYENV_FORWARD_PYENV`, `RPYENV_FORWARD_TARGET` and `RPYENV_FORWARD_DIR` are internal helpers that `.cmd` forwarders set and clear while they run; they are not user settings (allowlist D-47).
 
@@ -843,7 +920,7 @@ Each milestone gets its own implementation plan.
    `pyenv setup`, and `pyenv migrate`; Linux tarball and install script;
    release workflow.
 
-7. **M7 PyPy, Anaconda, Miniconda, Miniforge** (a later release, see §15.1).
+7. **M7a PyPy** (spec docs/superpowers/specs/2026-10-14-m7a-pypy-design.md); **M7b Anaconda, Miniconda and Miniforge on Linux** (spec docs/superpowers/specs/2026-10-15-m7b-conda-linux-design.md); **M7c Anaconda, Miniconda and Miniforge on Windows** (spec docs/superpowers/specs/2026-10-16-m7c-conda-windows-design.md; see also §15.1).
 8. **M8 Missing Linux build dependencies** (a later release, see §15.2).
 9. **M9 Shared admin-managed versions** (only if needed, see §15.3).
 
@@ -866,6 +943,7 @@ each milestone.
    `anaconda3-<release>`, `miniconda3-<release>`. Conda environments appear as
    `<install>/envs/<name>`, as upstream shows them. Version resolution (§4)
    already accepts any directory name.
+   **Amended by M7a (2026-10-14):** names follow each OS's drop-in target: upstream's on Linux, pyenv-win's codes on Windows (`pypy3.11-v7.3.20-win64`).
 2. **Launch plans** (§5.1). Conda Python on Windows expects its activation
    folders on `PATH`: the install root, `Library\mingw-w64\bin`,
    `Library\usr\bin`, `Library\bin`, `Scripts`, and `bin`. Without them, some
@@ -882,7 +960,7 @@ each milestone.
      is written into the installed files. So conda installs straight into the
      final `versions/<name>` folder, writes a completion marker last, and
      deletes the folder on failure. A folder without the marker counts as not
-     installed.
+     installed. Implemented on Linux by M7b (§4.3 of its spec).
 5. **Catalog:** on Linux, upstream `python-build` already has PyPy, Anaconda,
    Miniconda, and Miniforge definitions with hashes. On Windows, where versions
    and hashes come from is decided when M7 is planned, under the same rule as
@@ -917,6 +995,8 @@ each milestone.
      that rule. Its scheduled-workflow idea would make the rpyenv repo a trust
      anchor; if kept, it may only list where files and their published hashes
      are, never the hashes themselves.
+   - **For PyPy, superseded by M7a (2026-10-14):** tables built in CI from upstream's definitions (evaluated with stubs, no network) and from pypy.org's versions.json and checksum page, cross-checked, and embedded in rpyenv; a Windows release newer than the table reads the checksum page at install time. rpyenv publishes no catalog; `RPYENV_CATALOG_URL` stays unused.
+   - **For conda on Windows, superseded by M7c (2026-10-16):** a shipped, updatable table rebuilt from the publishers; hashes pinned (spec D2-D4).
    - **PyPy on Windows is x64 only:** PyPy 8.0.0 (Python 3.12) ships Windows
      binaries only for x64.
 2. **Conda silent install:**
@@ -968,6 +1048,9 @@ each milestone.
        resolution 1) compares the copy with upstream's file and opens a pull
        request when they differ. A copy that lags between rpyenv releases does
        no harm, since the ownership rule already excludes these tools.
+     - **Linux (M7b, 2026-10-15):** upstream's `conda.d/default.list` only, as
+       upstream's hook applies it; the ownership rule and its list are M7c's
+       (Windows).
    - **`conda` itself:** `Scripts\conda.exe` is owned by `conda`, so
      `conda install …` works through its shim. `conda activate` needs conda's
      own shell integration and isn't supported. Conda environments are
@@ -982,6 +1065,8 @@ each milestone.
      Miniconda, and upstream pyenv already lists `miniforge3-*` versions.
 
 ### 15.2 Missing Linux build dependencies (M8)
+
+Designed in docs/superpowers/specs/2026-10-17-m8-linux-build-deps-design.md.
 
 **Goal:** `pyenv install` on Linux succeeds even when library headers that
 CPython needs aren't installed. It either installs them through the
@@ -1072,8 +1157,10 @@ that an administrator later runs.
    (§9.1). Answered 2026-10-03: the index's zips for 3.11+, python.org's
    component MSIs for everything else, no NuGet (§9.1 table).
 2. **Code signing** for the shim executables and the MSI, which affects
-   SmartScreen warnings and machines that only allow signed code. Options and
-   cost to be evaluated before M6.
+   SmartScreen warnings and machines that only allow signed code. Answered
+   2026-10-10 (M6b design §9): v0.1.0 ships unsigned; the release workflow's
+   `installer/sign.ps1` hook takes SignPath Foundation or Azure Artifact Signing
+   later.
 3. **Default for `RPYENV_CONSOLE`.** Resolved in M5a: `lazy`, with the measured
    cost in the lazy-console doc (its open question 3).
 4. **The lazy-console doc's other open questions.** The initial pseudo-console

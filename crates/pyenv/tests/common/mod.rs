@@ -4,6 +4,10 @@
 #[cfg(unix)]
 pub mod buildharness;
 pub mod fakebuild;
+#[cfg(unix)]
+pub mod fakeconda;
+#[cfg(unix)]
+pub mod fakepypy;
 pub mod server;
 pub mod winfake;
 #[cfg(windows)]
@@ -31,6 +35,17 @@ pub struct Fixture {
 
 impl Fixture {
     pub fn new() -> Fixture {
+        // Review focus 2: a space and a non-ASCII letter in every path.
+        Fixture::under("py env ñ")
+    }
+
+    /// As `new`, but every path is plain (no space or shell character): the build route
+    /// refuses a `PYENV_ROOT` that isn't (M8b plan ruling P5).
+    pub fn plain() -> Fixture {
+        Fixture::under("pyenv-plain")
+    }
+
+    fn under(dir: &str) -> Fixture {
         // The binaries honor the RPYENV_TEST_* overrides only in debug builds (plan M6a, R1):
         // a release binary would edit the real user PATH and PowerShell profiles.
         if !cfg!(debug_assertions) {
@@ -39,8 +54,7 @@ impl Fixture {
             );
         }
         let tmp = tempfile::tempdir().unwrap();
-        // Review focus 2: a space and a non-ASCII letter in every path.
-        let base = tmp.path().join("py env ñ");
+        let base = tmp.path().join(dir);
         let root = base.join("root");
         let work = base.join("work");
         let syspath = base.join("sys").join("bin");
@@ -112,6 +126,29 @@ impl Fixture {
 
     pub fn pyenv_env(&self, args: &[&str], env: &[(&str, &str)]) -> Run {
         self.run(&self.work, args, env)
+    }
+
+    /// `pyenv args` with `input` on stdin (the prompt tests set RPYENV_TEST_TTY=1).
+    pub fn pyenv_input(&self, args: &[&str], env: &[(&str, &str)], input: &str) -> Run {
+        use std::io::Write;
+        let mut c = self.command(Path::new(env!("CARGO_BIN_EXE_pyenv")), &self.work, env);
+        c.args(args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let mut child = c.spawn().unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(input.as_bytes())
+            .unwrap();
+        let out = child.wait_with_output().unwrap();
+        Run {
+            stdout: decode(&out.stdout),
+            stderr: decode(&out.stderr),
+            code: out.status.code().unwrap_or(-1),
+        }
     }
 
     pub fn pyenv_in(&self, dir: &Path, args: &[&str]) -> Run {

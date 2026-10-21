@@ -62,17 +62,30 @@ pub struct Wanted {
 }
 
 /// pyenv-win's layout: `<stem>.exe` for every `.exe`, `.bat` and `.cmd` in a version's
-/// folder, `Scripts` and `bin`, each with the shim binary it needs: GUI only when every
+/// folder, `Scripts` and `bin` (a conda tree: by owner, `conda_owner`, in `Library\bin`),
+/// each with the shim binary it needs: GUI only when every
 /// version's file is a GUI program, and a `.cmd` forwarder for a name in `forward`
 /// (`RPYENV_BATCH_FORWARD`, spec §5.3). Names compare without case; when versions
 /// disagree, a forwarder beats an exe shim, and a console shim beats a GUI shim.
 pub fn shims_win(versions_dir: &Path, forward: &[String]) -> Vec<Wanted> {
     let mut by_key: BTreeMap<String, Wanted> = BTreeMap::new();
     for entry in installed::top_level(versions_dir, Flavor::PyenvWin) {
-        for dir in [
-            entry.path.clone(),
-            entry.path.join("Scripts"),
-            entry.path.join("bin"),
+        // A conda tree (`conda-meta\`) shims by package ownership and searches `Library\bin`
+        // instead of `bin` (M7c design §6.3).
+        let owners = entry
+            .path
+            .join("conda-meta")
+            .is_dir()
+            .then(|| crate::conda_owner::Owners::read(&entry.path));
+        let (third, third_rel) = if owners.is_some() {
+            (entry.path.join("Library").join("bin"), "Library/bin/")
+        } else {
+            (entry.path.join("bin"), "bin/")
+        };
+        for (dir, rel_dir) in [
+            (entry.path.clone(), ""),
+            (entry.path.join("Scripts"), "Scripts/"),
+            (third, third_rel),
         ] {
             let Ok(rd) = std::fs::read_dir(&dir) else {
                 continue;
@@ -92,6 +105,12 @@ pub fn shims_win(versions_dir: &Path, forward: &[String]) -> Vec<Wanted> {
                     || !path.is_file()
                 {
                     continue;
+                }
+                if let Some(o) = &owners {
+                    let rel = format!("{rel_dir}{}", f.file_name().to_string_lossy());
+                    if !o.shim(&rel, stem) {
+                        continue;
+                    }
                 }
                 let lower = stem.to_ascii_lowercase();
                 let is_batch = ext == "bat" || ext == "cmd";
@@ -283,13 +302,21 @@ pub fn forwardable_name(name: &str) -> bool {
 /// forward list (Windows); the caller decides where it comes from (`rehash::batch_forward`).
 pub fn wanted(ctx: &Ctx, forward: &[String]) -> Vec<Wanted> {
     match ctx.flavor {
-        Flavor::Pyenv => executables_pyenv(&ctx.versions_dir())
-            .into_iter()
-            .map(|name| Wanted {
-                name,
-                kind: ShimKind::Console,
-            })
-            .collect(),
+        Flavor::Pyenv => {
+            // Upstream's conda.bash rehash hook: with any conda around, its bundled system
+            // tools get no shim.
+            let drop = crate::conda_list::conda_exists(&ctx.versions_dir());
+            executables_pyenv(&ctx.versions_dir())
+                .into_iter()
+                .filter(|name| {
+                    !(drop && crate::conda_list::names().contains(name.to_str().unwrap_or("")))
+                })
+                .map(|name| Wanted {
+                    name,
+                    kind: ShimKind::Console,
+                })
+                .collect()
+        }
         Flavor::PyenvWin => shims_win(&ctx.versions_dir(), forward),
     }
 }
@@ -382,6 +409,49 @@ mod tests {
                 "python.exe",
                 "pythonw.exe"
             ]
+        );
+    }
+
+    // allowlist D-113
+    #[test]
+    fn conda_tree_shims_follow_package_ownership_in_library_bin() {
+        // M7c design §6.3: a version with `conda-meta` searches `Library\bin`, not `bin`,
+        // and shims by owner; a version without it keeps the folder/bin rule.
+        let tmp = tempfile::tempdir().unwrap();
+        let v = tmp.path().join("versions");
+        let meta = |name: &str, files: &str| {
+            let d = v.join("miniconda3-x/conda-meta");
+            fs::create_dir_all(&d).unwrap();
+            fs::write(
+                d.join(format!("{name}-1.json")),
+                format!(r#"{{"name":"{name}","files":[{files}]}}"#),
+            )
+            .unwrap();
+        };
+        meta("python", r#""python.exe""#);
+        meta("libcurl", r#""Library/bin/lib.exe""#);
+        meta(
+            "menuinst",
+            r#""Lib/site-packages/menuinst/__init__.py","Library/bin/menu.exe""#,
+        );
+        for f in [
+            "miniconda3-x/python.exe",
+            "miniconda3-x/pre_uninstall.bat",
+            "miniconda3-x/Library/bin/lib.exe",
+            "miniconda3-x/Library/bin/menu.exe",
+            "miniconda3-x/Library/bin/free.exe",
+            "miniconda3-x/Scripts/mytool.exe",
+            "miniconda3-x/bin/inbin.exe",
+            "3.9.1/bin/inbin2.exe",
+        ] {
+            file(&v.join(f), true);
+        }
+        assert_eq!(
+            shims_win(&v, &[])
+                .iter()
+                .map(|w| w.name.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            ["inbin2.exe", "menu.exe", "mytool.exe", "python.exe"]
         );
     }
 

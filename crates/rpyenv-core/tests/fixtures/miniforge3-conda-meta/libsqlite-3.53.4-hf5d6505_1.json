@@ -1,0 +1,1 @@
+{"name": "libsqlite", "version": "3.53.4", "files": ["Library/bin/sqlite3.dll", "Library/include/sqlite3.h", "Library/include/sqlite3ext.h", "Library/lib/pkgconfig/sqlite3.pc", "Library/lib/sqlite3.lib"]}

@@ -1,0 +1,97 @@
+# Checks an rpyenv MSI's tables (M6b design §4) without installing it: safe on any machine.
+param([Parameter(Mandatory)] [string] $Msi)
+$ErrorActionPreference = 'Stop'
+
+$installer = New-Object -ComObject WindowsInstaller.Installer
+function Call($Target, [string] $Member, [System.Reflection.BindingFlags] $Kind, $Arguments) {
+    $Target.GetType().InvokeMember($Member, $Kind, $null, $Target, $Arguments)
+}
+$database = Call $installer 'OpenDatabase' InvokeMethod @((Resolve-Path $Msi).Path, 0)
+function Rows([string] $Sql) {
+    $view = Call $database 'OpenView' InvokeMethod @($Sql)
+    Call $view 'Execute' InvokeMethod $null | Out-Null
+    $rows = @()
+    while ($record = Call $view 'Fetch' InvokeMethod $null) {
+        $count = Call $record 'FieldCount' GetProperty $null
+        # [int]: COM rejects PowerShell's wrapped pipeline value (DISP_E_TYPEMISMATCH).
+        $rows += , @(1..$count | ForEach-Object { Call $record 'StringData' GetProperty @([int]$_) })
+    }
+    Call $view 'Close' InvokeMethod $null | Out-Null
+    , $rows
+}
+
+$failures = [System.Collections.Generic.List[string]]::new()
+function Expect([bool] $Ok, [string] $What) { if (-not $Ok) { $failures.Add($What) } }
+
+$props = @{}
+foreach ($r in (Rows 'SELECT `Property`, `Value` FROM `Property`')) { $props[$r[0]] = $r[1] }
+Expect ($props['ALLUSERS'] -eq '2') 'ALLUSERS=2 (one package, both scopes)'
+Expect ($props['MSIINSTALLPERUSER'] -eq '1') 'MSIINSTALLPERUSER=1 (just for me by default)'
+Expect ($props['ARPNOMODIFY'] -eq '1') 'ARPNOMODIFY=1'
+# Windows Installer reserves MIGRATE (MigrateFeatureStates): MIGRATE=1 fails with error 2601.
+Expect (-not (("$($props['SecureCustomProperties'])" -split ';') -contains 'MIGRATE')) 'no MIGRATE option (reserved)'
+
+$files = (Rows 'SELECT `FileName` FROM `File`') | ForEach-Object { ($_[0] -split '\|')[-1] }
+foreach ($f in 'pyenv.exe', 'pyenv-shim.exe', 'pyenv-shimw.exe', 'pyenv.pwsh', 'pyenv.bash', 'pyenv.zsh', 'pyenv.fish', 'windows.tsv') {
+    Expect ($files -contains $f) "file $f"
+}
+
+# M7c design D3: the conda table lands in <INSTALLFOLDER>\share\conda, next to bin\.
+$dirs = @{}
+foreach ($r in (Rows 'SELECT `Directory`, `Directory_Parent`, `DefaultDir` FROM `Directory`')) { $dirs[$r[0]] = $r }
+Expect ($dirs.ContainsKey('ShareCondaFolder') -and $dirs['ShareCondaFolder'][1] -eq 'ShareFolder' -and $dirs['ShareCondaFolder'][2] -eq 'conda' -and
+        $dirs.ContainsKey('ShareFolder') -and $dirs['ShareFolder'][1] -eq 'INSTALLFOLDER' -and $dirs['ShareFolder'][2] -eq 'share') 'share\conda under INSTALLFOLDER'
+
+$environment = Rows 'SELECT `Name`, `Value` FROM `Environment`'
+$paths = @($environment | Where-Object { $_[0] -match 'PATH$' })
+Expect (@($paths | Where-Object { $_[0] -match '\*' }).Count -eq 1) 'bin on the machine PATH'
+Expect (@($paths | Where-Object { $_[0] -notmatch '\*' }).Count -eq 1) 'bin on the user PATH'
+Expect (@($environment | Where-Object { $_[0] -match 'RPYENV_LIVE_REHASH$' }).Count -eq 2) 'live rehash, both scopes'
+
+$registry = Rows 'SELECT `Key`, `Name`, `Value` FROM `Registry`'
+Expect (@($registry | Where-Object {
+            $_[0] -eq 'SOFTWARE\Microsoft\Active Setup\Installed Components\{73C5FAF3-A93A-472F-BD99-814909823229}' -and
+            $_[1] -eq 'StubPath' -and $_[2] -like '*pyenv.exe" setup' }).Count -eq 1) 'Active Setup StubPath'
+
+$sequence = @{}
+foreach ($r in (Rows 'SELECT `Action`, `Condition` FROM `InstallExecuteSequence`')) { $sequence[$r[0]] = $r[1] }
+foreach ($a in 'RpyenvMigrate', 'RpyenvSetup', 'RpyenvRestore', 'RpyenvUndo', 'RefuseMachineOverUser', 'RefuseUserOverMachine') {
+    Expect ($sequence.ContainsKey($a)) "action $a scheduled"
+}
+Expect ("$($sequence['RpyenvUndo'])" -like '*NOT UPGRADINGPRODUCTCODE*') 'undo skipped during upgrades'
+
+$targets = (Rows 'SELECT `Action`, `Target` FROM `CustomAction`') | ForEach-Object { "$($_[1])" }
+foreach ($c in '" migrate', '" setup [RpyenvSetupArgs]', '" migrate --restore', '" setup --undo') {
+    # Escaped: -like reads [RpyenvSetupArgs] as a character class.
+    $pattern = '*pyenv.exe' + [WildcardPattern]::Escape($c)
+    Expect (@($targets | Where-Object { $_ -like $pattern }).Count -ge 1) "command pyenv.exe$c"
+}
+# Sandbox S1's checkbox: ALLOWSCRIPTS=1 adds --allow-scripts to setup's command line.
+Expect (@($targets | Where-Object { $_ -eq '--allow-scripts' }).Count -eq 1) 'setup --allow-scripts when ALLOWSCRIPTS=1'
+Expect ((("$($props['SecureCustomProperties'])" -split ';') -contains 'ALLOWSCRIPTS')) 'ALLOWSCRIPTS reaches the server'
+
+# M6b final review I3: an upgrade reads live rehash back (both scopes) and keeps it.
+$searches = (Rows 'SELECT `Signature_`, `Root`, `Key`, `Name` FROM `RegLocator`') | Where-Object { $_[2] -eq 'Software\rpyenv' -and $_[3] -eq 'LiveRehash' }
+Expect (@($searches).Count -eq 2) 'live rehash read back from HKCU and HKLM'
+$setters = @((Rows 'SELECT `Action`, `Source`, `Target` FROM `CustomAction`') | Where-Object { $_[1] -eq 'LIVEREHASH' -and $_[2] -eq '1' })
+Expect ($setters.Count -eq 2) 'live rehash set again in the dialog and silently'
+
+# M6b final review M2: a rollback takes back migrate and setup (not during an upgrade).
+$types = @{}
+foreach ($r in (Rows 'SELECT `Action`, `Type` FROM `CustomAction`')) { $types[$r[0]] = [int]$r[1] }
+foreach ($a in 'RpyenvMigrateRollback', 'RpyenvSetupRollback') {
+    Expect ($types.ContainsKey($a) -and ($types[$a] -band 0x100)) "$a is a rollback action"
+    Expect ("$($sequence[$a])" -like '*NOT WIX_UPGRADE_DETECTED*') "$a skipped during upgrades"
+}
+Expect ($sequence.ContainsKey('RpyenvTestFailLate') -and "$($sequence['RpyenvTestFailLate'])" -like '*RPYENV_TEST_FAIL_LATE=1*') 'the late-failure test hook'
+
+$dialogs = (Rows 'SELECT `Dialog` FROM `Dialog`') | ForEach-Object { $_[0] }
+Expect ($dialogs -contains 'OptionsDlg') 'the Options page'
+$controls = Rows 'SELECT `Dialog_`, `Control`, `Property` FROM `Control`'
+Expect (@($controls | Where-Object { $_[0] -eq 'OptionsDlg' -and $_[1] -eq 'AllowScripts' -and $_[2] -eq 'ALLOWSCRIPTS' }).Count -eq 1) 'the allow-scripts checkbox'
+
+if ($failures.Count) {
+    $failures | ForEach-Object { Write-Host "missing: $_" }
+    exit 1
+}
+Write-Host "MSI tables: ok ($Msi)"

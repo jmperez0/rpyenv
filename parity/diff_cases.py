@@ -10,7 +10,7 @@ class Case:
     name: str
     args: tuple
     os: str = "both"  # "both", "Linux" or "Windows"
-    env: tuple = ()  # (name, value) pairs; value None removes the variable; {v0}/{v1}/{sysroot} expand
+    env: tuple = ()  # (name, value) pairs; value None removes the variable; {v0}/{v1}/{sysroot}/{root} expand
     files: tuple = ()  # (path, content) pairs; path "root/…" or "work/…"; {v0}/{v1} expand
     remove: tuple = ()  # paths removed after the fixture is built
     readonly: tuple = ()  # paths made read-only after the fixture is built
@@ -28,6 +28,12 @@ class Case:
 # and D-20 (with D-01, on Windows): if upstream stopped showing one of those differences, its case
 # would still read allowed. rpyenv's side of each is still pinned by its golden. When touching
 # those areas, give each of D-02, D-13 and D-20 its own single-row case.
+# A plugin definition whose release (3.99.0) is not defined. If a run ever does try to build
+# it, the download fails at once (.invalid never resolves).
+PRERELEASE_ONLY = ("root/plugins/fake/share/python-build/3.99.0rc1",
+                   'install_package "Python-3.99.0rc1" '
+                   '"https://example.invalid/Python-3.99.0rc1.tar.xz" standard\n')
+
 CASES = (
     Case("--version", ("--version",), allow=("D-01",)),
     Case("root", ("root",), allow=("D-12",)),
@@ -178,18 +184,36 @@ CASES = (
          env=(("PATH", r"{sysroot}\System32;{sysroot}"),),
          files=(("root/shims/python.bat", ""), ("root/shims/python.exe", "")), allow=("D-54",)),
     # M2a (Linux): install, latest and uninstall. {v0} is the fixture's first version.
-    Case("install --help", ("install", "--help"), os="Linux"),
-    Case("help install", ("help", "install"), os="Linux"),
-    Case("install with a bad option", ("install", "-x"), os="Linux"),
+    # D-121: the help text has rpyenv's `--deps=<route>` line.
+    Case("install --help", ("install", "--help"), os="Linux", allow=("D-121",)),
+    Case("help install", ("help", "install"), os="Linux", allow=("D-121",)),
+    Case("install with a bad option", ("install", "-x"), os="Linux", allow=("D-121",)),
     Case("install an unknown version", ("install", "9.9.9"), os="Linux"),
-    Case("install a version that only has prereleases", ("install", "3.15.0"), os="Linux"),
+    # The pre-release-only cases use a plugin definition, 3.99.0rc1: the vendored
+    # pre-releases come and go (pyenv 2.8.9 replaced 3.15.0rc3 by 3.15.0, and the old
+    # `install 3.15.0` case started a real build).
+    Case("install a version that only has prereleases", ("install", "3.99.0"), os="Linux",
+         files=(PRERELEASE_ONLY,)),
     Case("install --list", ("install", "--list"), os="Linux", allow=("D-55",)),
     Case("install --list --bare", ("install", "--list", "--bare"), os="Linux", allow=("D-55",)),
+    # M7a: the vendored PyPy definitions make PyPy names resolve as upstream's do.
+    Case("latest -k pypy3.10", ("latest", "-k", "pypy3.10"), os="Linux"),
+    Case("latest -k pypy3.11", ("latest", "-k", "pypy3.11"), os="Linux"),
+    Case("latest -k pypy3", ("latest", "-k", "pypy3"), os="Linux"),
+    # M7b: the vendored conda definitions make conda names resolve as upstream's do.
+    Case("latest -k anaconda3", ("latest", "-k", "anaconda3"), os="Linux"),
+    Case("latest -k miniconda3", ("latest", "-k", "miniconda3"), os="Linux"),
+    Case("latest -k miniforge3", ("latest", "-k", "miniforge3"), os="Linux"),
     Case("install --version", ("install", "--version"), os="Linux", allow=("D-66",)),
-    Case("install X:latest with no match", ("install", "3.15:latest"), os="Linux", allow=("D-61",)),
+    Case("install X:latest with no match", ("install", "3.99:latest"), os="Linux", allow=("D-61",),
+         files=(PRERELEASE_ONLY,)),
     Case("latest -k 3.12", ("latest", "-k", "3.12"), os="Linux"),
     Case("latest -k 3t", ("latest", "-k", "3t"), os="Linux"),
-    Case("latest -k 3.15", ("latest", "-k", "3.15"), os="Linux"),
+    # A standalone `latest -k` reads no plugin directories, so the definition comes in
+    # through PYTHON_BUILD_DEFINITIONS.
+    Case("latest -k with only prereleases", ("latest", "-k", "3.99"), os="Linux",
+         env=(("PYTHON_BUILD_DEFINITIONS", "{root}/plugins/fake/share/python-build"),),
+         files=(PRERELEASE_ONLY,)),
     Case("latest with installed versions", ("latest", "3"), os="Linux"),
     Case("uninstall --help", ("uninstall", "--help"), os="Linux"),
     Case("uninstall a missing version", ("uninstall", "9.9"), os="Linux"),
@@ -244,7 +268,7 @@ CASES = (
     Case("commands --sh", ("commands", "--sh"), os="Linux", allow=("D-103",)),
     Case("help shell", ("help", "shell"), os="Linux"),
     Case("help --usage init", ("help", "--usage", "init"), os="Linux"),
-    Case("help sh-rehash", ("help", "sh-rehash"), os="Linux"),
+    Case("help sh-rehash", ("help", "sh-rehash"), os="Linux", allow=("D-130",)),
     # M3: shell integration (Windows). pyenv-win has no init or completions (D-91), and
     # its `shell` sets the variable through pyenv.bat, which rpyenv can't (D-89).
     Case("init help for pwsh on Windows", ("init", "pwsh"), os="Windows", allow=("D-91",)),

@@ -8,6 +8,7 @@ use crate::commands::{self, Listing};
 use crate::output::Output;
 use rpyenv_core::ctx::Ctx;
 use rpyenv_core::flavor::Flavor;
+use rpyenv_core::installed;
 use rpyenv_core::shellname::{self, Family};
 use std::path::Path;
 
@@ -59,7 +60,7 @@ pub fn init(ctx: &Ctx, args: &[&str]) -> Output {
         Mode::Path => {
             let mut o = Output::new();
             path_lines(&mut o, ctx, family, a.no_push_path);
-            rehash_line(&mut o, family, a.no_rehash);
+            rehash_line(&mut o, ctx, family, a.no_rehash);
             finish(o, family)
         }
         Mode::Print => {
@@ -70,7 +71,7 @@ pub fn init(ctx: &Ctx, args: &[&str]) -> Output {
             path_lines(&mut o, ctx, family, a.no_push_path);
             env_line(&mut o, &shell, family);
             completion_line(&mut o, &shell, family);
-            rehash_line(&mut o, family, a.no_rehash);
+            rehash_line(&mut o, ctx, family, a.no_rehash);
             o.stdout.push_str(&function(ctx, family));
             finish(o, family)
         }
@@ -222,8 +223,10 @@ fn completion_line(o: &mut Output, shell: &str, family: Family) {
     });
 }
 
-fn rehash_line(o: &mut Output, family: Family, no_rehash: bool) {
-    if !no_rehash {
+/// Not while no version is installed: Windows rehash then only prints pyenv-win's "No version
+/// installed" message, which every new shell would show (Sandbox S2).
+fn rehash_line(o: &mut Output, ctx: &Ctx, family: Family, no_rehash: bool) {
+    if !no_rehash && !installed::top_level(&ctx.versions_dir(), Flavor::PyenvWin).is_empty() {
         o.out(if family == Family::Pwsh {
             "& (Get-Command -CommandType Application pyenv -TotalCount 1) rehash"
         } else {

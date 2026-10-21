@@ -22,9 +22,13 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo build --workspace
+      - name: Static C runtime (M6b design §7.1)
+        if: startsWith(matrix.os, 'windows')
+        run: python ci/pe_imports.py --check target/debug/pyenv.exe target/debug/pyenv-shim.exe target/debug/pyenv-shimw.exe
       - name: Shim dependency guard (spec §3)
         if: matrix.os == 'ubuntu-latest'
         run: |
+          python3 ci/pe_imports.py --self-test
           python3 ci/shim_deps.py --self-test
           python3 ci/shim_deps.py
       - run: cargo test --workspace

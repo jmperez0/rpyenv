@@ -3,7 +3,7 @@
 
 mod common;
 use common::server::{start_with, Reply, Server};
-use common::winfake::{index_json, sha256, zip_bytes};
+use common::winfake::{checksums_page, index_json, sha256, zip_bytes};
 use common::Fixture;
 
 const BANNER: &str = ":: [Info] ::  Mirror: https://www.python.org/ftp/python\r\n:: [Info] ::  Mirror: https://downloads.python.org/pypy/versions.json\r\n:: [Info] ::  Mirror: https://api.github.com/repos/oracle/graalpython/releases\r\n";
@@ -212,12 +212,183 @@ fn a_failure_stops_the_run_exits_1_and_leaves_no_version() {
 
 // allowlist D-82
 #[test]
-fn pypy_and_graalpy_codes_are_refused() {
+fn graalpy_codes_are_refused() {
     let f = Fixture::new();
-    db(&f, &[("pypy3.10-v7.3.19-win64", true)]);
-    let r = f.pyenv(&["install", "pypy3.10-v7.3.19-win64"]);
+    db(&f, &[("graalpy-24.2.1-windows-amd64", true)]);
+    let r = f.pyenv(&["install", "graalpy-24.2.1-windows-amd64"]);
     assert_eq!(r.code, 1);
-    assert!(r.stdout.ends_with(":: [Error] :: rpyenv cannot install pypy3.10-v7.3.19-win64 yet: only CPython is supported.\r\n"), "{}", r.stdout);
+    assert!(r.stdout.ends_with(":: [Error] :: rpyenv cannot install graalpy-24.2.1-windows-amd64: only CPython, PyPy and conda are supported.\r\n"), "{}", r.stdout);
+}
+
+const PYPY: &str = "pypy3.11-v7.3.99-win64";
+
+/// A PyPy zip with one top folder, as pypy.org ships them (M7a design §3).
+fn pypy_zip(extra_top: bool) -> Vec<u8> {
+    let mut entries: Vec<(String, &[u8])> = vec![
+        (format!("{PYPY}/python.exe"), b"MZ"),
+        (format!("{PYPY}/pypy3.11.exe"), b"MZ"),
+        (format!("{PYPY}/Lib/os.py"), b""),
+    ];
+    if extra_top {
+        entries.push(("README.txt".to_string(), b"x"));
+    }
+    let refs: Vec<(&str, &[u8])> = entries.iter().map(|(n, b)| (n.as_str(), *b)).collect();
+    zip_bytes(&refs)
+}
+
+/// Serves `/pypy/<PYPY>.zip` and `/pypy/checksums.html` (`page`); returns the server.
+fn pypy_server(zip: Vec<u8>, page: Option<Vec<u8>>) -> Server {
+    let mut routes: Vec<(String, Vec<Reply>)> =
+        vec![(format!("/pypy/{PYPY}.zip"), vec![Reply::Body(zip)])];
+    if let Some(p) = page {
+        routes.push(("/pypy/checksums.html".into(), vec![Reply::Body(p)]));
+    }
+    start_with(move |_| routes)
+}
+
+/// Runs `install` with the PyPy row in the cache, `RPYENV_TEST_PYPY` at the server and the
+/// tables in `tables` (a `windows.tsv` line, or none).
+fn install_pypy(f: &Fixture, s: &Server, row: Option<String>) -> common::Run {
+    db(f, &[(PYPY, true)]);
+    let t = f.base.join("tables");
+    f.file(&t.join("linux.tsv"), "");
+    f.file(&t.join("windows.tsv"), &row.unwrap_or_default());
+    let base = s.url("/pypy");
+    let tables = t.display().to_string();
+    f.pyenv_env(
+        &["install", PYPY],
+        &[
+            ("RPYENV_TEST_PYPY", base.as_str()),
+            ("RPYENV_TEST_PYPY_TABLES", tables.as_str()),
+            ("RPYENV_TEST_PYTHON_ORG", base.as_str()),
+        ],
+    )
+}
+
+fn table_row(sha: &str) -> Option<String> {
+    Some(format!(
+        "{PYPY}\thttps://downloads.python.org/pypy/{PYPY}.zip\t{sha}\n"
+    ))
+}
+
+// allowlist D-104
+#[test]
+fn a_pypy_code_installs_from_the_table() {
+    let f = Fixture::new();
+    let zip = pypy_zip(false);
+    let s = pypy_server(zip.clone(), None);
+    let r = install_pypy(&f, &s, table_row(&sha256(&zip)));
+    assert_eq!(r.code, 0, "{}", r.stdout);
+    let v = f.root.join("versions").join(PYPY);
+    assert!(v.join("python.exe").is_file() && v.join("pypy3.11.exe").is_file());
+    assert!(
+        !v.join("pythonpypy3.exe").exists(),
+        "no pyenv-win style copies (allowlist D-104)"
+    );
+    assert!(
+        r.stdout
+            .contains(&format!(":: [Info] :: completed! {PYPY}\r\n")),
+        "{}",
+        r.stdout
+    );
+    assert_eq!(
+        s.hits("/pypy/checksums.html"),
+        0,
+        "a known version never reads the page"
+    );
+}
+
+#[test]
+fn a_release_newer_than_the_table_takes_its_hash_from_the_checksum_page() {
+    let f = Fixture::new();
+    let zip = pypy_zip(false);
+    let page = checksums_page(&[(&format!("{PYPY}.zip"), &sha256(&zip))], 500);
+    let s = pypy_server(zip, Some(page));
+    let r = install_pypy(&f, &s, None);
+    assert_eq!(r.code, 0, "{}", r.stdout);
+    assert!(f
+        .root
+        .join("versions")
+        .join(PYPY)
+        .join("python.exe")
+        .is_file());
+}
+
+#[test]
+fn an_unreadable_checksum_page_says_to_update_rpyenv() {
+    let f = Fixture::new();
+    let s = pypy_server(pypy_zip(false), None);
+    let r = install_pypy(&f, &s, None);
+    assert_eq!(r.code, 1);
+    assert!(r.stdout.contains(&format!(":: [Error] :: {PYPY} is newer than this rpyenv's PyPy table and pypy.org's checksum page couldn't be read: update rpyenv\r\n")), "{}", r.stdout);
+    assert!(!f.root.join("versions").join(PYPY).exists());
+}
+
+/// Review focus 4.
+#[test]
+fn a_redesigned_checksum_page_says_to_update_rpyenv() {
+    let f = Fixture::new();
+    let zip = pypy_zip(false);
+    let page = checksums_page(&[(&format!("{PYPY}.zip"), &sha256(&zip))], 10);
+    let s = pypy_server(zip, Some(page));
+    let r = install_pypy(&f, &s, None);
+    assert_eq!(r.code, 1);
+    assert!(
+        r.stdout.contains("couldn't be read: update rpyenv"),
+        "{}",
+        r.stdout
+    );
+}
+
+#[test]
+fn a_file_the_page_has_no_hash_for_is_refused() {
+    let f = Fixture::new();
+    let s = pypy_server(pypy_zip(false), Some(checksums_page(&[], 500)));
+    let r = install_pypy(&f, &s, None);
+    assert_eq!(r.code, 1);
+    assert!(
+        r.stdout.contains(&format!(
+            "pypy.org publishes no SHA-256 for {PYPY}.zip, so rpyenv won't install it"
+        )),
+        "{}",
+        r.stdout
+    );
+}
+
+// allowlist D-105
+#[test]
+fn a_pypy_zip_with_another_hash_is_refused_and_not_cached() {
+    let f = Fixture::new();
+    let s = pypy_server(pypy_zip(false), None);
+    let r = install_pypy(&f, &s, table_row(&"0".repeat(64)));
+    assert_eq!(r.code, 1, "{}", r.stdout);
+    assert!(!f.root.join("versions").join(PYPY).exists());
+    assert!(!f
+        .root
+        .join("install_cache")
+        .join(format!("{PYPY}.zip"))
+        .exists());
+}
+
+/// Review focus 3.
+#[test]
+fn a_zip_without_one_top_folder_is_refused() {
+    let f = Fixture::new();
+    let zip = pypy_zip(true);
+    let s = pypy_server(zip.clone(), None);
+    let r = install_pypy(&f, &s, table_row(&sha256(&zip)));
+    assert_eq!(r.code, 1, "{}", r.stdout);
+    assert!(
+        r.stdout
+            .contains(&format!("{PYPY}.zip does not hold one top folder")),
+        "{}",
+        r.stdout
+    );
+    let left: Vec<String> = std::fs::read_dir(f.root.join("versions"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(left.is_empty(), "{left:?}");
 }
 
 #[test]

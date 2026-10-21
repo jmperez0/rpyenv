@@ -12,11 +12,17 @@ on:
       - "crates/rpyenv-core/**"
       - "Cargo.lock"
       - "crates/pyenv/python-build/**"
+      - "crates/pyenv/pypy/**"
+      - "crates/pyenv/conda/**"
+      - "crates/pyenv/deps/**"
       - "crates/pyenv/build.rs"
       - "ci/check_install.sh"
+      - "ci/check_deps.sh"
       - ".github/workflows/install-linux.yml"
   schedule:
     - cron: "17 3 * * *"
+    # Sundays: the deps job builds on all six distributions (the other jobs skip this entry).
+    - cron: "41 4 * * 0"
   workflow_dispatch:
 
 permissions:
@@ -24,6 +30,7 @@ permissions:
 
 jobs:
   versions:
+    if: github.event.schedule != '41 4 * * 0'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     outputs:
@@ -62,7 +69,7 @@ jobs:
       - name: Build dependencies (upstream's install-prerequisites list)
         run: |
           sudo apt-get update -q
-          sudo apt-get install -yq make build-essential libssl-dev zlib1g-dev libbz2-dev libreadline-dev libsqlite3-dev curl git llvm libncurses5-dev libncursesw5-dev xz-utils tk-dev libxml2-dev libxmlsec1-dev libffi-dev liblzma-dev libzstd-dev ccache
+          sudo apt-get install -yq make build-essential libssl-dev zlib1g-dev libbz2-dev libreadline-dev libsqlite3-dev curl git llvm libncurses5-dev libncursesw5-dev xz-utils tk-dev libxml2-dev libxmlsec1-dev libffi-dev liblzma-dev libzstd-dev ccache libgdbm-dev libgdbm-compat-dev uuid-dev libcrypt-dev libnsl-dev libtirpc-dev pkg-config ca-certificates
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ github.workspace }}/.ccache
@@ -97,3 +104,146 @@ jobs:
         env:
           VERSION: ${{ matrix.version }}
         run: bash ci/check_install.sh "$RUNNER_TEMP/root" "$VERSION"
+
+  # M7a design §8: a real PyPy binary install on both Linux architectures, every time the
+  # Linux build runs (it compiles nothing, so it takes about a minute).
+  pypy:
+    if: github.event.schedule != '41 4 * * 0'
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    name: pypy (${{ matrix.runner }})
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, 2026-10-02
+        with:
+          toolchain: "1.96"
+      - run: cargo build --release -p pyenv -p pyenv-shim
+      # The version `pyenv latest -k pypy3.11` picks, by upstream's sort (7.3.23 on 2026-10-14,
+      # not 8.0.0); rpyenv keeps that sort.
+      - name: pyenv install the version latest -k pypy3.11 picks
+        run: |
+          v=$(target/release/pyenv latest -k pypy3.11)
+          echo "VERSION=$v" >> "$GITHUB_ENV"
+          PYENV_ROOT="$RUNNER_TEMP/root" target/release/pyenv install "$v"
+      - name: Check the install
+        run: bash ci/check_install.sh "$RUNNER_TEMP/root" "$VERSION"
+
+  # M7b design §8: real conda installs. A numbered Miniforge on both architectures, a numbered
+  # Miniconda 25.x (the terms variable and `conda install pip` against defaults), and
+  # miniforge3-latest (the publisher's .sha256 path). Anaconda's ~1 GB installer is left to the
+  # tier-1 fake: its step is Miniconda's without `conda install`.
+  conda:
+    if: github.event.schedule != '41 4 * * 0'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-latest, family: miniforge3 }
+          - { runner: ubuntu-24.04-arm, family: miniforge3 }
+          # Pinned: `latest -k miniconda3` picks miniconda3-4.7.12 (upstream's sort; it is
+          # unsupported here), not a release that sets CONDA_PLUGINS_AUTO_ACCEPT_TOS.
+          - { runner: ubuntu-latest, family: miniconda3, pin: miniconda3-3.13-25.9.1-3 }
+          - { runner: ubuntu-latest, family: miniforge3-latest }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    name: conda (${{ matrix.runner }}, ${{ matrix.family }})
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, 2026-10-02
+        with:
+          toolchain: "1.96"
+      - run: cargo build --release -p pyenv -p pyenv-shim
+      - name: pyenv install
+        env:
+          FAMILY: ${{ matrix.family }}
+          PIN: ${{ matrix.pin }}
+        run: |
+          if [ -n "$PIN" ]; then
+            v=$PIN
+          else
+            case "$FAMILY" in
+              *-latest) v=$FAMILY ;;
+              *) v=$(target/release/pyenv latest -k "$FAMILY") ;;
+            esac
+          fi
+          echo "VERSION=$v" >> "$GITHUB_ENV"
+          # `$PYENV_ROOT/cache` is the download cache when it is a directory: the check's
+          # `install -f` then reuses the installer instead of fetching it again.
+          mkdir -p "$RUNNER_TEMP/root/cache"
+          PYENV_ROOT="$RUNNER_TEMP/root" target/release/pyenv install "$v"
+      - name: Check the install
+        run: bash ci/check_install.sh "$RUNNER_TEMP/root" "$VERSION" target/release/pyenv
+
+  # M8a design §9: the dependency check against real distributions. A container holds only a
+  # compiler and make; `pyenv install` with no flags must fail and print a package command.
+  # Detection-only legs run that command and require detection to come back empty. Full legs
+  # run `pyenv install --deps=install` instead, which runs the package manager itself and builds
+  # a CPython whose every standard-library module imports. A pull request runs Ubuntu and Fedora
+  # in full and detection only on the other four; the Sunday run, and a manual one, build on all
+  # six; the nightly run keeps the pull request's set. On Sundays Ubuntu also builds the newest
+  # 3.14 and a build without uuid-dev under RPYENV_SKIP_PREFLIGHT=1. Fedora builds the newest
+  # 3.13: its tk-devel is Tk 9, which 3.12 can't build against. pyenv is the release's static
+  # musl build: a glibc binary from this runner would not start on Rocky 9. Two more
+  # legs (`build: true`) run M8b's build route on Ubuntu and Fedora with no `-dev` package at all
+  # (`ci/check_deps.sh` BUILD=1); weekly, on the other four too, and on Ubuntu without CA
+  # certificates (`no_ca: true`). The Ubuntu build leg (every PR) and the Debian one (weekly)
+  # have no X11 headers either, so they build X11 (M8c, spec §9 row 4); Ubuntu also opens a Tk
+  # window under Xvfb, and weekly rebuilds libxcb with 3.8's bootstrap.
+  deps:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    name: deps (${{ matrix.distro }}${{ matrix.build && ', build' || '' }}${{ matrix.no_ca && ', no CA' || '' }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { distro: debian, image: "debian:stable-slim", full: false, version: "3.12.14" }
+          - { distro: ubuntu, image: "ubuntu:24.04", full: true, version: "3.12.14" }
+          - { distro: fedora, image: "fedora:44", full: true, version: "3.13" }
+          - { distro: rocky, image: "rockylinux:9", full: false, version: "3.12.14" }
+          - { distro: tumbleweed, image: "opensuse/tumbleweed", full: false, version: "3.12.14" }
+          - { distro: arch, image: "archlinux:latest", full: false, version: "3.12.14" }
+          - { distro: ubuntu, image: "ubuntu:24.04", full: true, version: "3.12.14", build: true }
+          - { distro: fedora, image: "fedora:44", full: true, version: "3.12.14", build: true }
+          # Spec §9: the build route on all six, weekly (and on a manual run).
+          - { distro: debian, image: "debian:stable-slim", full: true, version: "3.12.14", build: true, weekly_only: true }
+          - { distro: rocky, image: "rockylinux:9", full: true, version: "3.12.14", build: true, weekly_only: true }
+          - { distro: tumbleweed, image: "opensuse/tumbleweed", full: true, version: "3.12.14", build: true, weekly_only: true }
+          - { distro: arch, image: "archlinux:latest", full: true, version: "3.12.14", build: true, weekly_only: true }
+          # Allowlist D-128: the build route on a system without CA certificates, weekly.
+          - { distro: ubuntu, image: "ubuntu:24.04", full: true, version: "3.12.14", build: true, weekly_only: true, no_ca: true }
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, 2026-10-02
+        with:
+          toolchain: "1.96"
+          targets: x86_64-unknown-linux-musl
+      - run: sudo apt-get update -q && sudo apt-get install -yq musl-tools
+      - run: cargo build --release --target x86_64-unknown-linux-musl -p pyenv -p pyenv-shim
+      - name: ${{ matrix.image }}
+        if: ${{ !matrix.weekly_only || github.event.schedule == '41 4 * * 0' || github.event_name == 'workflow_dispatch' }}
+        env:
+          IMAGE: ${{ matrix.image }}
+          DISTRO: ${{ matrix.distro }}
+          VERSION: ${{ matrix.version }}
+          FULL: ${{ matrix.full || github.event.schedule == '41 4 * * 0' || github.event_name == 'workflow_dispatch' }}
+          WEEKLY: ${{ github.event.schedule == '41 4 * * 0' }}
+          BUILD: ${{ matrix.build || false }}
+          NO_CA: ${{ matrix.no_ca || false }}
+        run: |
+          bin="$PWD/target/x86_64-unknown-linux-musl/release"
+          args=()
+          if [ "$FULL" != true ]; then args+=(-e DETECT_ONLY=1); fi
+          if [ "$BUILD" = true ]; then args+=(-e BUILD=1); fi
+          if [ "$NO_CA" = true ]; then args+=(-e NO_CA=1); fi
+          # Ubuntu's full leg also removes uuid-dev once and requires the check to fail; on
+          # Sundays it builds the newest 3.14 and a build that lacks _uuid (M8 design §4.4).
+          if [ "$DISTRO" = ubuntu ] && [ "$BUILD" != true ]; then args+=(-e DISCRIMINATE=1); fi
+          # The no-CA leg checks downloads and the bundle; the extra weekly versions run elsewhere.
+          if [ "$WEEKLY" = true ] && [ "$NO_CA" != true ] && { [ "$DISTRO" = ubuntu ] || [ "$BUILD" = true ]; }; then args+=(-e WEEKLY=1); fi
+          docker run --rm "${args[@]}" -v "$PWD:/w:ro" -v "$bin:/in:ro" -w /root "$IMAGE" \
+            bash -c "cp /in/pyenv /in/pyenv-shim . && bash /w/ci/check_deps.sh $DISTRO $VERSION"

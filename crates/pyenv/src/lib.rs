@@ -114,6 +114,7 @@ fn run_pyenv_win(args: &[&str], raw: &[OsString], ctx: &Ctx) -> Output {
             .first()
             .map(|c| c.to_ascii_lowercase())
             .unwrap_or_default(),
+        args.get(1..).unwrap_or_default(),
     ) {
         first.emit(Flavor::PyenvWin);
     }

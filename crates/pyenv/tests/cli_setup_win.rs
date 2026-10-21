@@ -83,6 +83,201 @@ fn setup_puts_shims_first_adds_the_profile_line_and_marks_the_root() {
     assert!(r.stdout.contains("open a new terminal"), "{}", r.stdout);
 }
 
+fn profile(f: &Fixture, sub: &str) -> std::path::PathBuf {
+    f.base
+        .join("Documents")
+        .join(sub)
+        .join("Microsoft.PowerShell_profile.ps1")
+}
+
+/// Sandbox S1: where Windows PowerShell 5.1 can't run scripts (client Windows' default,
+/// `Restricted`, when nothing sets a policy), setup leaves its profile alone, since the
+/// profile would fail on every start, and says how to turn it on. PowerShell 7 still gets
+/// the line. The fixture's policy keys are `HKCU\<f.test_key>\<label>`.
+#[test]
+fn setup_leaves_windows_powershell_alone_where_it_cant_run_scripts() {
+    let f = Fixture::new();
+    let r = f.pyenv(&["setup"]);
+    assert_eq!(r.code, 0, "{}{}", r.stdout, r.stderr);
+    assert!(!profile(&f, "WindowsPowerShell").exists());
+    assert!(std::fs::read_to_string(profile(&f, "PowerShell"))
+        .unwrap()
+        .contains("pyenv init - pwsh"));
+    assert!(
+        r.stderr.contains("execution policy Restricted")
+            && r.stderr
+                .contains("Set-ExecutionPolicy -Scope CurrentUser RemoteSigned")
+            && r.stderr.contains("pyenv init --install pwsh"),
+        "{}",
+        r.stderr
+    );
+    assert!(f.root.join(".rpyenv-setup").is_file(), "not a failure");
+}
+
+#[test]
+fn setup_writes_the_windows_powershell_profile_where_scripts_run() {
+    for (label, name, kind, value) in [
+        ("ps-user", "ExecutionPolicy", "REG_SZ", "RemoteSigned"),
+        ("ps-machine", "ExecutionPolicy", "REG_SZ", "Unrestricted"),
+        ("product", "ProductType", "REG_SZ", "ServerNT"),
+    ] {
+        let f = Fixture::new();
+        reg_set(&f, label, name, kind, value);
+        let r = f.pyenv(&["setup"]);
+        assert_eq!(r.code, 0, "{}{}", r.stdout, r.stderr);
+        assert!(
+            std::fs::read_to_string(profile(&f, "WindowsPowerShell"))
+                .is_ok_and(|t| t.contains("pyenv init - pwsh")),
+            "{label} {value}: {}",
+            r.stderr
+        );
+        assert!(!r.stderr.contains("execution policy"), "{}", r.stderr);
+    }
+}
+
+/// Group Policy wins over the user's own setting, and the hint doesn't suggest a
+/// `Set-ExecutionPolicy` that Group Policy would override.
+#[test]
+fn a_group_policy_that_blocks_scripts_wins_and_is_named() {
+    let f = Fixture::new();
+    reg_set(&f, "ps-user", "ExecutionPolicy", "REG_SZ", "RemoteSigned");
+    reg_set(&f, "gpo-machine", "EnableScripts", "REG_DWORD", "1");
+    reg_set(&f, "gpo-machine", "ExecutionPolicy", "REG_SZ", "AllSigned");
+    let r = f.pyenv(&["setup"]);
+    assert_eq!(r.code, 0, "{}{}", r.stdout, r.stderr);
+    assert!(!profile(&f, "WindowsPowerShell").exists());
+    assert!(
+        r.stderr
+            .contains("execution policy AllSigned, set by Group Policy")
+            && !r.stderr.contains("Set-ExecutionPolicy"),
+        "{}",
+        r.stderr
+    );
+}
+
+/// Sandbox S1, the MSI's "allow scripts" checkbox: `--allow-scripts` sets the CurrentUser
+/// policy to RemoteSigned where Windows PowerShell blocks local scripts and neither Group
+/// Policy nor the user chose that, so its profile gets the line; `--undo` puts it back.
+#[test]
+fn allow_scripts_sets_current_user_remotesigned_where_scripts_are_blocked() {
+    // Client Windows' default (an explicit LocalMachine policy is an administrator's
+    // choice, left alone below).
+    for seed in [None::<(&str, &str)>, Some(("ps-machine", "Undefined"))] {
+        let f = Fixture::new();
+        if let Some((label, value)) = seed {
+            reg_set(&f, label, "ExecutionPolicy", "REG_SZ", value);
+        }
+        let r = f.pyenv(&["setup", "--allow-scripts"]);
+        assert_eq!(r.code, 0, "{seed:?}: {}{}", r.stdout, r.stderr);
+        assert_eq!(
+            reg_get(&f, "ps-user", "ExecutionPolicy"),
+            "REG_SZ RemoteSigned",
+            "{seed:?}"
+        );
+        assert!(
+            std::fs::read_to_string(profile(&f, "WindowsPowerShell"))
+                .is_ok_and(|t| t.contains("pyenv init - pwsh")),
+            "{seed:?}: {}",
+            r.stderr
+        );
+        assert!(
+            r.stdout.contains("RemoteSigned") && r.stdout.contains("pyenv setup --undo"),
+            "{}",
+            r.stdout
+        );
+        assert!(!r.stderr.contains("can't run scripts"), "{}", r.stderr);
+
+        let u = f.pyenv(&["setup", "--undo"]);
+        assert_eq!(u.code, 0, "{}{}", u.stdout, u.stderr);
+        assert_eq!(reg_get(&f, "ps-user", "ExecutionPolicy"), "", "{seed:?}");
+        assert!(!profile(&f, "WindowsPowerShell").exists());
+        assert!(!f.root.join(".rpyenv-allowed-scripts").exists());
+    }
+    assert!(Fixture::new()
+        .pyenv(&["setup", "--help"])
+        .stdout
+        .contains("--allow-scripts"));
+}
+
+/// The user's own CurrentUser policy and Group Policy are left alone, and where scripts
+/// already run nothing is written.
+#[test]
+fn allow_scripts_leaves_chosen_policies_alone() {
+    let f = Fixture::new();
+    reg_set(&f, "ps-user", "ExecutionPolicy", "REG_SZ", "AllSigned");
+    let r = f.pyenv(&["setup", "--allow-scripts"]);
+    assert_eq!(r.code, 0, "{}{}", r.stdout, r.stderr);
+    assert_eq!(
+        reg_get(&f, "ps-user", "ExecutionPolicy"),
+        "REG_SZ AllSigned"
+    );
+    assert!(!profile(&f, "WindowsPowerShell").exists());
+    assert!(
+        r.stderr.contains("your own execution policy") && r.stderr.contains("AllSigned"),
+        "{}",
+        r.stderr
+    );
+
+    // An administrator's LocalMachine policy (final review design note, user's ruling).
+    let f = Fixture::new();
+    reg_set(&f, "ps-machine", "ExecutionPolicy", "REG_SZ", "AllSigned");
+    let r = f.pyenv(&["setup", "--allow-scripts"]);
+    assert_eq!(r.code, 0, "{}{}", r.stdout, r.stderr);
+    assert_eq!(reg_get(&f, "ps-user", "ExecutionPolicy"), "");
+    assert!(!profile(&f, "WindowsPowerShell").exists());
+    assert!(
+        r.stderr.contains("this computer's execution policy") && r.stderr.contains("AllSigned"),
+        "{}",
+        r.stderr
+    );
+    assert!(!f.root.join(".rpyenv-allowed-scripts").exists());
+
+    let f = Fixture::new();
+    reg_set(&f, "gpo-machine", "EnableScripts", "REG_DWORD", "0");
+    let r = f.pyenv(&["setup", "--allow-scripts"]);
+    assert_eq!(r.code, 0, "{}{}", r.stdout, r.stderr);
+    assert_eq!(reg_get(&f, "ps-user", "ExecutionPolicy"), "");
+    assert!(r.stderr.contains("set by Group Policy"), "{}", r.stderr);
+
+    let f = Fixture::new();
+    reg_set(
+        &f,
+        "ps-machine",
+        "ExecutionPolicy",
+        "REG_SZ",
+        "RemoteSigned",
+    );
+    let r = f.pyenv(&["setup", "--allow-scripts"]);
+    assert_eq!(r.code, 0, "{}{}", r.stdout, r.stderr);
+    assert_eq!(reg_get(&f, "ps-user", "ExecutionPolicy"), "");
+    assert!(!f.root.join(".rpyenv-allowed-scripts").exists());
+}
+
+/// Undo restores only what setup changed: a policy the user set since, or one setup never
+/// set, stays.
+#[test]
+fn undo_keeps_an_execution_policy_setup_did_not_set() {
+    let f = Fixture::new();
+    assert_eq!(f.pyenv(&["setup", "--allow-scripts"]).code, 0);
+    reg_set(&f, "ps-user", "ExecutionPolicy", "REG_SZ", "Unrestricted");
+    let r = f.pyenv(&["setup", "--undo"]);
+    assert_eq!(r.code, 0, "{}{}", r.stdout, r.stderr);
+    assert_eq!(
+        reg_get(&f, "ps-user", "ExecutionPolicy"),
+        "REG_SZ Unrestricted"
+    );
+    assert!(!f.root.join(".rpyenv-allowed-scripts").exists());
+
+    let f = Fixture::new();
+    assert_eq!(f.pyenv(&["setup"]).code, 0);
+    reg_set(&f, "ps-user", "ExecutionPolicy", "REG_SZ", "RemoteSigned");
+    assert_eq!(f.pyenv(&["setup", "--undo"]).code, 0);
+    assert_eq!(
+        reg_get(&f, "ps-user", "ExecutionPolicy"),
+        "REG_SZ RemoteSigned"
+    );
+}
+
 /// Review focus 1 and 2: a REG_EXPAND_SZ value keeps its type, the entry isn't duplicated,
 /// and a second run changes nothing.
 #[test]
@@ -297,4 +492,108 @@ fn a_failed_first_run_is_not_repeated_on_every_command() {
     assert!(run().contains("set up for this user"));
     let second = run();
     assert!(second.is_empty(), "{second}");
+}
+
+/// M6b final review I1: a shims entry that was on the Path before setup (pyenv-win's
+/// installer puts it there) stays after undo, so pyenv-win keeps working once rpyenv is
+/// uninstalled.
+#[test]
+fn setup_undo_keeps_a_shims_entry_that_was_there_before() {
+    let f = Fixture::new();
+    let before = format!(
+        r"{};{};C:\Tools",
+        f.root.join("bin").display(),
+        f.root.join("shims").display()
+    );
+    reg_set(&f, "user", "Path", "REG_EXPAND_SZ", &before);
+    assert_eq!(f.pyenv(&["setup"]).code, 0);
+    let r = f.pyenv(&["setup", "--undo"]);
+    assert_eq!(r.code, 0, "{}{}", r.stdout, r.stderr);
+    let after = reg_get(&f, "user", "Path");
+    assert!(
+        after.contains(&f.root.join("shims").display().to_string()),
+        "{after}"
+    );
+}
+
+/// M6b final review I2: the uninstall's `migrate --restore` from Program Files doesn't set
+/// up the uninstalling user (the first run), which would then be half undone.
+#[test]
+fn migrate_restore_from_program_files_is_not_a_first_run() {
+    let f = Fixture::new();
+    let pf_bin = all_users_bin(&f);
+    let out = f
+        .command(&pf_bin.join("pyenv.exe"), &f.work, &[])
+        .args(["migrate", "--restore"])
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!err.contains("set up for this user"), "{err}");
+    assert!(!f.root.join(".rpyenv-setup").exists());
+}
+
+/// M6b design §5: `setup --undo` takes back what setup added for this user, keeps the
+/// rest of the Path and PYENV_ROOT's data, and is safe to run twice.
+#[test]
+fn setup_undo_takes_back_the_path_entry_the_profile_line_and_the_marker() {
+    let f = Fixture::new();
+    reg_set(&f, "user", "Path", "REG_EXPAND_SZ", r"C:\Tools");
+    assert_eq!(f.pyenv(&["setup"]).code, 0);
+    let r = f.pyenv(&["setup", "--undo"]);
+    assert_eq!(r.code, 0, "{}{}", r.stdout, r.stderr);
+    assert_eq!(reg_get(&f, "user", "Path"), r"REG_EXPAND_SZ C:\Tools");
+    for sub in ["WindowsPowerShell", "PowerShell"] {
+        let p = f
+            .base
+            .join("Documents")
+            .join(sub)
+            .join("Microsoft.PowerShell_profile.ps1");
+        assert!(
+            !std::fs::read_to_string(&p)
+                .unwrap_or_default()
+                .contains("pyenv init"),
+            "{}",
+            p.display()
+        );
+    }
+    assert!(!f.root.join(".rpyenv-setup").exists());
+    assert!(f.root.join("versions").is_dir(), "PYENV_ROOT's data stays");
+    let again = f.pyenv(&["setup", "--undo"]);
+    assert_eq!(again.code, 0, "{}{}", again.stdout, again.stderr);
+}
+
+/// Any spelling of the shims entry setup added goes; other entries keep their order and
+/// the value keeps its type.
+#[test]
+fn setup_undo_keeps_other_path_entries_in_order() {
+    let f = Fixture::new();
+    reg_set(&f, "user", "Path", "REG_SZ", r"C:\A;C:\B");
+    assert_eq!(f.pyenv(&["setup"]).code, 0);
+    // Moved and respelled since, by hand.
+    let spelled = format!("{}\\", f.root.join("shims").display()).to_uppercase();
+    reg_set(
+        &f,
+        "user",
+        "Path",
+        "REG_SZ",
+        &format!(r"C:\A;{spelled};C:\B"),
+    );
+    let r = f.pyenv(&["setup", "--undo"]);
+    assert_eq!(r.code, 0, "{}{}", r.stdout, r.stderr);
+    assert_eq!(reg_get(&f, "user", "Path"), r"REG_SZ C:\A;C:\B");
+}
+
+/// M6a I5 applies to undo too: a Path it can't read is left as it is, and undo fails.
+#[test]
+fn setup_undo_leaves_an_unreadable_path_alone_and_fails() {
+    let f = Fixture::new();
+    reg_set(&f, "user", "Path", "REG_DWORD", "1");
+    let r = f.pyenv(&["setup", "--undo"]);
+    assert_eq!(r.code, 1, "{}{}", r.stdout, r.stderr);
+    assert!(
+        r.stderr.contains("cannot read your user PATH"),
+        "{}",
+        r.stderr
+    );
+    assert!(reg_type(&f, "user", "Path").contains("REG_DWORD"));
 }

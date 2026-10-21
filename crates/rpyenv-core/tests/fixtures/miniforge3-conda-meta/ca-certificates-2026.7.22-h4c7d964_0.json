@@ -1,0 +1,1 @@
+{"name": "ca-certificates", "version": "2026.7.22", "files": ["Library/ssl/cacert.pem", "Library/ssl/cert.pem"]}

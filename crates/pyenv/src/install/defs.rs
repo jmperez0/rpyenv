@@ -32,9 +32,17 @@ pub enum Fetch {
         url: String,
         fragment: Option<String>,
     },
+    /// `install_script`: a file that is run, not unpacked (conda installers, M7b).
+    Script {
+        url: String,
+        fragment: Option<String>,
+    },
     Git {
         url: String,
         reference: String,
+        /// From a `<ref>:<sha1>` reference (pyenv 2.8.9): the checkout must be this commit,
+        /// or this annotated tag when the ref names one.
+        sha1: Option<String>,
     },
 }
 
@@ -448,9 +456,13 @@ fn run(
             continue;
         }
         match first.as_str() {
-            "prefer_openssl3" | "prefer_openssl11" | "prefer_openssl3_to_4" => {}
+            // Homebrew/MacPorts formula choices: macOS only.
+            "prefer_openssl3"
+            | "prefer_openssl11"
+            | "prefer_openssl3_to_4"
+            | "require_openssl3" => {}
             "require_gcc" => def.require_gcc = true,
-            "install_package" | "install_git" => {
+            "install_package" | "install_git" | "install_script" => {
                 let git = first == "install_git";
                 let fixed = if git { 4 } else { 3 };
                 if w.len() < fixed {
@@ -471,15 +483,23 @@ fn run(
                     rest
                 };
                 let fetch = if git {
+                    // `:` cannot occur in a ref name, so the first one splits (fetch_git).
+                    let (reference, sha1) = match w[3].split_once(':') {
+                        Some((r, s)) => (r, Some(s).filter(|s| !s.is_empty())),
+                        None => (w[3].as_str(), None),
+                    };
                     Fetch::Git {
                         url: w[2].clone(),
-                        reference: w[3].clone(),
+                        reference: reference.to_string(),
+                        sha1: sha1.map(str::to_string),
                     }
                 } else {
                     let (u, f) = super::checksum::split_url(&w[2]);
-                    Fetch::Tarball {
-                        url: u.to_string(),
-                        fragment: f.map(str::to_string),
+                    let (url, fragment) = (u.to_string(), f.map(str::to_string));
+                    if first == "install_script" {
+                        Fetch::Script { url, fragment }
+                    } else {
+                        Fetch::Tarball { url, fragment }
                     }
                 };
                 if !super::is_plain_name(&w[1]) {
@@ -502,4 +522,26 @@ fn run(
         return Err(format!("{}: `if` without `fi`", found.name));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The embedded archive must not record checkout times or build-host owners: they made two
+    // builds of one commit differ (v0.1.0 against its dry run: all 486 mtimes).
+    #[test]
+    fn the_embedded_patches_carry_no_checkout_metadata() {
+        let mut ar = tar::Archive::new(flate2::read::GzDecoder::new(PATCHES));
+        let mut n = 0;
+        for e in ar.entries().unwrap() {
+            let e = e.unwrap();
+            let h = e.header();
+            let path = e.path().unwrap().into_owned();
+            assert_eq!(h.mtime().unwrap(), tar::DETERMINISTIC_TIMESTAMP, "{path:?}");
+            assert_eq!((h.uid().unwrap(), h.gid().unwrap()), (0, 0), "{path:?}");
+            n += 1;
+        }
+        assert!(n > 400, "{n} entries");
+    }
 }

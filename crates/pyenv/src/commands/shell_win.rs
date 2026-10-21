@@ -142,6 +142,24 @@ pub(crate) fn pyenv_shell_var() -> Option<String> {
     std::env::var("PYENV_SHELL").ok().filter(|s| !s.is_empty())
 }
 
+/// How to enable integration in the shell `name`. Windows PowerShell 5.1 can't load the
+/// profile line while its execution policy blocks scripts, and the MSI's setup said so only
+/// in its log, so the policy is named here (Sandbox S1).
+pub(crate) fn enable_hint(name: &str) -> String {
+    #[cfg(windows)]
+    if name.eq_ignore_ascii_case("powershell") {
+        let p = rpyenv_core::winenv::windows_powershell_policy();
+        if p.blocks_local_scripts() {
+            return if p.by_group_policy {
+                format!("pyenv: Windows PowerShell can't run scripts here (execution policy {}, set by Group Policy), so integration can't be enabled in it", p.name)
+            } else {
+                format!("pyenv: Windows PowerShell can't run scripts here (execution policy {}); to enable integration, run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`, then `pyenv init --install pwsh`, and open a new terminal", p.name)
+            };
+        }
+    }
+    format!("pyenv: to enable it, see `pyenv init {name}`.")
+}
+
 /// `pyenv shell` without integration (spec §7 "Without integration", Decision 1).
 pub fn shell(ctx: &Ctx, args: &[&str]) -> Output {
     let action = match args.first() {
@@ -164,7 +182,7 @@ pub fn shell(ctx: &Ctx, args: &[&str]) -> Output {
                 o.err("pyenv: cmd has no shell integration, so nothing was changed: run the command above.");
             } else {
                 o.err("pyenv: shell integration is not enabled in this shell, so nothing was changed: run the command above.");
-                o.err(format!("pyenv: to enable it, see `pyenv init {name}`."));
+                o.err(enable_hint(&name));
             }
         }
         None => {

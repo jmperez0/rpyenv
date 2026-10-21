@@ -22,9 +22,9 @@ jobs:
           EVENT: ${{ github.event_name }}
         run: |
           if [ "$EVENT" = "pull_request" ]; then
-            echo 'versions=["3.10.11","3.12.10"]' >> "$GITHUB_OUTPUT"
+            echo 'versions=["3.10.11","3.12.10","pypy"]' >> "$GITHUB_OUTPUT"
           else
-            echo 'versions=["2.7.18","3.4.4","3.5.2","3.10.11","3.12.5","3.12.10","3.13.0t","3.14.0"]' >> "$GITHUB_OUTPUT"
+            echo 'versions=["2.7.18","3.4.4","3.5.2","3.10.11","3.12.5","3.12.10","3.13.0t","3.14.0","pypy"]' >> "$GITHUB_OUTPUT"
           fi
 
   install:
@@ -60,6 +60,11 @@ jobs:
           $pyenv = 'target\release\pyenv.exe'
           & $pyenv update
           if ($LASTEXITCODE) { exit 1 }
+          if ($env:VERSION -eq 'pypy') {
+            # M7a design §8: the newest pypy3.11 code pyenv update listed.
+            $env:VERSION = (& $pyenv install --list | Select-String '^pypy3\.11-v' | Select-Object -Last 1).Line.Trim()
+            if (-not $env:VERSION) { Write-Error 'no pypy3.11 code listed'; exit 1 }
+          }
           $start = Get-Date
           & $pyenv install $env:VERSION
           $code = $LASTEXITCODE
@@ -68,3 +73,51 @@ jobs:
           if ($code) { exit $code }
           python ci/check_install_win.py $root $env:VERSION
           if ($LASTEXITCODE) { exit 1 }
+
+  # Real installs of the three conda kinds (M7c design §4; plan M7c Task 10). Each name is checked on its own
+  # runner by ci/check_conda_win.py. Runs wherever this file does: every PR (no path filter, so edits to
+  # winconda.rs, conda.rs, condacatalog.rs, windows.tsv and the script all trigger it), nightly and on demand.
+  conda:
+    runs-on: windows-2025
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        kind: [miniforge3, miniconda3, miniforge3-latest]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, 2026-10-02
+        with:
+          toolchain: "1.96"
+      - run: cargo build --release -p pyenv -p pyenv-shim -p pyenv-shimw
+      - name: Install and check
+        shell: pwsh
+        env:
+          KIND: ${{ matrix.kind }}
+        run: |
+          # The release binary reads <exe dir>\..\share\conda\windows.tsv = target\share\conda\windows.tsv.
+          New-Item -ItemType Directory -Force target\share\conda | Out-Null
+          Copy-Item crates\pyenv\conda\windows.tsv target\share\conda\windows.tsv
+          $root = Join-Path $env:RUNNER_TEMP 'root'
+          New-Item -ItemType Directory -Force $root | Out-Null
+          $env:PYENV_ROOT = $root; $env:PYENV = $root; $env:PYENV_HOME = $root
+          $env:HOME = Join-Path $env:RUNNER_TEMP 'home'
+          New-Item -ItemType Directory -Force $env:HOME | Out-Null
+          $pyenv = (Resolve-Path 'target\release\pyenv.exe').Path
+          # --ignore: an update failure (e.g. GitHub's shared API limit) must not fail the check; the shipped
+          # table is there anyway (M7c rulings R3, D9).
+          & $pyenv update --ignore
+          "update exit $LASTEXITCODE; .conda_versions.tsv written: $(Test-Path (Join-Path $root '.conda_versions.tsv'))"
+          if ($env:KIND -eq 'miniforge3-latest') {
+            $name = $env:KIND
+          } else {
+            $name = (& $pyenv latest -k $env:KIND | Select-Object -Last 1)
+            if ($LASTEXITCODE -or -not $name) { Write-Error "no installable $env:KIND name"; exit 1 }
+            $name = $name.Trim()
+          }
+          $start = Get-Date
+          python ci/check_conda_win.py $name
+          $code = $LASTEXITCODE
+          $secs = [int]((Get-Date) - $start).TotalSeconds
+          "| name | seconds | exit |`n|---|---|---|`n| $name | $secs | $code |" >> $env:GITHUB_STEP_SUMMARY
+          if ($code) { exit 1 }

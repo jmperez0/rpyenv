@@ -116,6 +116,11 @@ pub fn uninstall(ctx: &Ctx, args: &[&str]) -> Output {
                 return out.with_code(1);
             }
             drop(lock);
+            // The shared Tcl/Tk script folders no remaining version names (M8 design §6.3).
+            #[cfg(unix)]
+            if ctx.flavor == rpyenv_core::flavor::Flavor::Pyenv {
+                crate::install::record::prune_scripts(&ctx.root);
+            }
             // Printed as each version goes, as upstream does inside its loop: a later
             // argument's error then follows this version's line.
             let r = crate::commands::rehash::rehash(ctx, &[]);

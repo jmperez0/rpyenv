@@ -211,12 +211,21 @@ fn disable_shared_drops_shared_and_the_rpath() {
 fn a_missing_optional_module_warns_and_a_missing_ssl_fails_and_rolls_back() {
     let b = build(
         "standard verify_py312",
-        &[("FAKE_PY_MISSING", "bz2")],
+        &[("FAKE_PY_MISSING", "bz2"), ("RPYENV_SKIP_PREFLIGHT", "1")],
         opts(),
         false,
         false,
     );
     assert_eq!(b.result, Ok(()));
+    // Task 5: the stdlib check turns the missing module into a warning under P1.
+    let said = b.said.join(
+        "
+",
+    );
+    assert!(
+        said.contains("was built without: bz2 (import bz2 failed; needs bzip2)"),
+        "{said}"
+    );
     let b = build(
         "standard verify_py312 ensurepip",
         &[("FAKE_PY_MISSING", "bz2 ssl")],

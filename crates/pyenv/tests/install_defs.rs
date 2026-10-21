@@ -21,11 +21,18 @@ fn every_vendored_definition_parses() {
     // Mechanical: every vendored definition, counted from the folder itself so a sync
     // keeps the check, and a construct the interpreter misses fails here, by name.
     let root = Path::new("/nonexistent-root");
-    let names = defs::names(root, &no_env);
+    // CPython definitions only, permanently: the interpreter never parses the vendored PyPy
+    // definitions; the PyPy table (install/pypy.rs) covers them (ruling R5b).
+    let is_cpython = |n: &str| n.starts_with(|c: char| c.is_ascii_digit());
+    let names: Vec<_> = defs::names(root, &no_env)
+        .into_iter()
+        .filter(|n| is_cpython(n))
+        .collect();
     let share = Path::new(env!("CARGO_MANIFEST_DIR")).join("python-build/share");
     let files = std::fs::read_dir(&share)
         .unwrap()
         .filter(|e| e.as_ref().unwrap().file_type().unwrap().is_file())
+        .filter(|e| is_cpython(&e.as_ref().unwrap().file_name().to_string_lossy()))
         .count();
     assert_eq!(names.len(), files);
     let mut failures = Vec::new();
@@ -154,9 +161,56 @@ fn dev_definitions_clone_with_git() {
         py.fetch,
         Fetch::Git {
             url: "https://github.com/python/cpython".into(),
-            reference: "3.14".into()
+            reference: "3.14".into(),
+            sha1: None
         }
     );
+}
+
+fn parse_text(text: &str) -> Result<defs::Definition, String> {
+    let f = Found {
+        name: "3.99.0".into(),
+        text: text.into(),
+        origin: Origin::Path("/x".into()),
+    };
+    defs::parse(&f, &no_env, &|_| None)
+}
+
+/// pyenv 2.8.9: `<ref>:<sha1>` has the checkout verified; `:` cannot occur in a ref name, so
+/// the first one splits. An empty SHA-1 checks nothing, as upstream's `[[ -n $git_sha ]]`.
+#[test]
+fn a_git_reference_splits_off_its_sha1_at_the_first_colon() {
+    for (reference, want_ref, want_sha) in [
+        ("v1:abc123", "v1", Some("abc123")),
+        ("v1:a:b", "v1", Some("a:b")),
+        ("v1:", "v1", None),
+        ("v1", "v1", None),
+    ] {
+        let d = parse_text(&format!(
+            "install_git \"Python-3.99.0\" \"https://example.invalid/x.git\" \"{reference}\" standard\n"
+        ))
+        .unwrap();
+        assert_eq!(
+            d.packages[0].fetch,
+            Fetch::Git {
+                url: "https://example.invalid/x.git".into(),
+                reference: want_ref.into(),
+                sha1: want_sha.map(str::to_string)
+            },
+            "{reference}"
+        );
+    }
+}
+
+/// pyenv 2.8.9's `require_openssl3` only picks Homebrew/MacPorts formulae (macOS).
+#[test]
+fn require_openssl3_is_accepted_and_does_nothing() {
+    let d = parse_text(
+        "require_openssl3\ninstall_package \"Python-3.99.0\" \"https://example.invalid/x.tgz\"\n",
+    )
+    .unwrap();
+    assert_eq!(d.packages.len(), 1);
+    assert!(d.vars.is_empty());
 }
 
 #[test]

@@ -248,6 +248,20 @@ fn powershell_value_with_a_typographic_quote_cannot_inject() {
 fn powershell_without_the_profile_line_prints_the_command_and_the_setup() {
     let f = Fixture::new();
     f.version("3.7.7");
+    // pyenv-win's own pyenv.ps1 needs scripts to run.
+    let seeded = std::process::Command::new("reg")
+        .args([
+            "add",
+            &format!("HKCU\\{}\\ps-user", f.test_key),
+            "/v",
+            "ExecutionPolicy",
+            "/d",
+            "RemoteSigned",
+            "/f",
+        ])
+        .output()
+        .unwrap();
+    assert!(seeded.status.success());
     winshell::install_pyenv(&f);
     let mut c = host(&f, &winshell::powershell(), &[], &[]);
     c.args([
@@ -263,6 +277,47 @@ fn powershell_without_the_profile_line_prints_the_command_and_the_setup() {
     );
     assert!(
         err.contains("to enable it, see `pyenv init powershell`."),
+        "{err}"
+    );
+}
+
+/// Sandbox S1: the MSI runs setup hidden, so its hint about Windows PowerShell's execution
+/// policy is read here, when the missing integration matters. The fixture's policy keys
+/// are `HKCU\<f.test_key>\<label>`; nothing set is client Windows' default, Restricted.
+#[test]
+fn windows_powershell_without_integration_names_a_policy_that_blocks_scripts() {
+    let f = Fixture::new();
+    f.version("3.7.7");
+    let ps51 = [("PYENV_SHELL", "powershell")];
+    let (_, err, code) = run(&f, &["shell", "3.7.7"], &ps51);
+    assert_eq!(code, 1);
+    assert!(
+        err.contains("pyenv: Windows PowerShell can't run scripts here (execution policy Restricted); to enable integration, run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`, then `pyenv init --install pwsh`")
+            && !err.contains("see `pyenv init"),
+        "{err}"
+    );
+    // PowerShell 7 isn't Windows PowerShell's policy.
+    let (_, err, _) = run(&f, &["shell", "3.7.7"], &[("PYENV_SHELL", "pwsh")]);
+    assert!(
+        err.contains("to enable it, see `pyenv init pwsh`."),
+        "{err}"
+    );
+    let out = std::process::Command::new("reg")
+        .args([
+            "add",
+            &format!("HKCU\\{}\\ps-user", f.test_key),
+            "/v",
+            "ExecutionPolicy",
+            "/d",
+            "RemoteSigned",
+            "/f",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let (_, err, _) = run(&f, &["shell", "3.7.7"], &ps51);
+    assert!(
+        err.contains("to enable it, see `pyenv init powershell`.") && !err.contains("policy"),
         "{err}"
     );
 }

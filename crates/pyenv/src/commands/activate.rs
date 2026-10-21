@@ -482,7 +482,7 @@ fn without_integration(ctx: &Ctx, code: impl Fn(Sh) -> Output) -> Output {
                 o.err("pyenv: cmd has no shell integration, so nothing was changed: run the commands above.");
             } else {
                 o.err("pyenv: shell integration is not enabled in this shell, so nothing was changed: run the commands above.");
-                o.err(format!("pyenv: to enable it, see `pyenv init {name}`."));
+                o.err(crate::commands::shell_win::enable_hint(&name));
             }
         }
         None => {

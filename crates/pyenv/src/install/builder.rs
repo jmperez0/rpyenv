@@ -34,6 +34,9 @@ pub struct Job<'a> {
     /// gets exactly this, minus the variables python-build unsets; lookups read it too.
     pub env: &'a [(OsString, OsString)],
     pub fetcher: &'a Fetcher,
+    /// The build store's libraries for this version (M8 design §6.3), when the build route
+    /// supplied any.
+    pub store: Option<&'a super::store::Linked>,
 }
 
 type R<T> = Result<T, InstallError>;
@@ -142,6 +145,23 @@ fn os_information(env: &[(OsString, OsString)]) -> String {
         .unwrap_or_default()
 }
 
+/// The `-I` flag that lets CPython's configure find `panel.h` where the system keeps it only
+/// under `ncursesw/` (openSUSE Tumbleweed; Debian, Fedora and Arch also have it at the top):
+/// without it `curses.panel` is silently not built. `minor`: the CPython 3 minor of the
+/// definition's `verify_py3*` step (`stdlib::minor_of_step`), `None` for anything else; the flag
+/// is only for CPython 3 on Linux. The build and the check before it both ask here, so they
+/// cannot decide differently. `exists` tells whether a path exists.
+pub(crate) fn panel_include(
+    minor: Option<u32>,
+    exists: &dyn Fn(&str) -> bool,
+) -> Option<&'static str> {
+    if !(cfg!(target_os = "linux") && minor.is_some()) {
+        return None;
+    }
+    (!exists("/usr/include/panel.h") && exists("/usr/include/ncursesw/panel.h"))
+        .then_some("-I/usr/include/ncursesw")
+}
+
 /// The configure, make and install commands python-build composes (reference
 /// "Environment python-build sets up" and "Build steps").
 struct Plan {
@@ -160,7 +180,8 @@ struct Plan {
 }
 
 impl Plan {
-    fn new(job: &Job, prefix: PathBuf) -> Result<Plan, String> {
+    /// `exists`: whether a path exists (injected for `panel_include`).
+    fn new(job: &Job, prefix: PathBuf, exists: &dyn Fn(&str) -> bool) -> Result<Plan, String> {
         let env = job.env;
         let var = |k: &str| -> String {
             job.definition
@@ -223,6 +244,22 @@ impl Plan {
         let ldflags = join(&[&format!("-L{p}/lib"), &rpath, &user_ld]);
         let libs = join(&[&format!("-L{p}/lib"), &rpath, &var("LIBS")]);
         let cppflags = join(&[&format!("-I{p}/include"), &var("CPPFLAGS")]);
+        // The store's flags come after every flag of the user's, `PYTHON_` variants included
+        // (plan ruling P8): the compiler and linker take the first match.
+        let store = job.store;
+        let store_ld = store.map(|s| s.ldflags.join(" ")).unwrap_or_default();
+        let mut store_cpp = store.map(|s| s.cppflags.join(" ")).unwrap_or_default();
+        // Linux, CPython 3 (the definition has a `verify_py3*` step, as the check uses): configure
+        // looks for `panel.h` with the flags it is given only.
+        let minor = job
+            .definition
+            .packages
+            .iter()
+            .flat_map(|p| p.steps.iter())
+            .find_map(|s| super::stdlib::minor_of_step(s));
+        if let Some(flag) = panel_include(minor, exists) {
+            store_cpp = join(&[&store_cpp, flag]);
+        }
         let py_cflags = if job.opts.debug {
             format!("-O0 {}", var("PYTHON_CFLAGS"))
         } else {
@@ -239,12 +276,37 @@ impl Plan {
         }
         configure_env.push((
             "CPPFLAGS".into(),
-            join(&[&cppflags, &var("PYTHON_CPPFLAGS")]),
+            join(&[&cppflags, &var("PYTHON_CPPFLAGS"), &store_cpp]),
         ));
-        configure_env.push(("LDFLAGS".into(), join(&[&ldflags, &var("PYTHON_LDFLAGS")])));
+        configure_env.push((
+            "LDFLAGS".into(),
+            join(&[&ldflags, &var("PYTHON_LDFLAGS"), &store_ld]),
+        ));
         let mut child_env = env.to_vec();
+        let cppflags = join(&[&cppflags, &store_cpp]);
+        let ldflags = join(&[&ldflags, &store_ld]);
         for (k, v) in [("CPPFLAGS", cppflags), ("LDFLAGS", ldflags), ("LIBS", libs)] {
             child_env.push((k.into(), v.into()));
+        }
+        if let Some(s) = store {
+            if !s.pkg_config_path.is_empty() {
+                let mut v: Vec<String> = s
+                    .pkg_config_path
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect();
+                v.extend(get(env, "PKG_CONFIG_PATH").filter(|x| !x.is_empty()));
+                child_env.push(("PKG_CONFIG_PATH".into(), v.join(":").into()));
+            }
+            if let Some(bin) = &s.path {
+                let path = get(env, "PATH").unwrap_or_default();
+                child_env.push(("PATH".into(), format!("{}:{path}", bin.display()).into()));
+            }
+            for (k, v) in &s.configure_env {
+                if var(k).is_empty() {
+                    configure_env.push((k.clone(), v.clone()));
+                }
+            }
         }
         let configure_cmd = get(env, "PYTHON_CONFIGURE")
             .filter(|v| !v.is_empty())
@@ -252,6 +314,10 @@ impl Plan {
         let mut configure = words(&configure_cmd);
         configure.push(format!("--prefix={p}"));
         configure.extend(array);
+        // Before the user's options, which win (ruling P8).
+        if let Some(s) = store {
+            configure.extend(s.configure.iter().cloned());
+        }
         configure.extend(words(&conf_opts));
         configure.extend(words(&py_conf_opts));
         let make_opts = match (get(env, "MAKEOPTS"), get(env, "MAKE_OPTS")) {
@@ -289,7 +355,7 @@ impl Plan {
 }
 
 /// The variables python-build unsets before building (reference step 7).
-const UNSET: [&str; 4] = [
+pub(crate) const UNSET: [&str; 4] = [
     "PIP_REQUIRE_VENV",
     "PIP_REQUIRE_VIRTUALENV",
     "PYTHONHOME",
@@ -322,7 +388,7 @@ fn sigint(status: &ExitStatus) -> bool {
     status.signal() == Some(2)
 }
 
-fn logged(log: &BuildLog, cmd: &mut Command) -> R<()> {
+pub(crate) fn logged(log: &BuildLog, cmd: &mut Command) -> R<()> {
     if interrupted() {
         return Err(InstallError::Interrupted);
     }
@@ -369,7 +435,7 @@ pub fn patch_files(found: &Found, package: &str) -> Vec<(String, Vec<u8>)> {
 
 /// `apply_patch`: `patch -p0|-p1 --force -i <tmp>` in the package directory, output to the log,
 /// the temporary file removed afterwards (plan Decision 5).
-fn apply_patch(
+pub(crate) fn apply_patch(
     log: &BuildLog,
     dir: &Path,
     tmp: &Path,
@@ -444,11 +510,24 @@ fn colorize(word: &str) -> String {
     }
 }
 
-fn verify(job: &Job, plan: &Plan, step: &str, python: &Path, say: &mut dyn FnMut(&str)) -> R<()> {
+fn verify(
+    job: &Job,
+    plan: &Plan,
+    pkg: &Package,
+    step: &str,
+    python: &Path,
+    say: &mut dyn FnMut(&str),
+) -> R<()> {
     let (xy, checks) = verify_plan(step)
         .ok_or_else(|| InstallError::Message(format!("rpyenv cannot run build step `{step}'")))?;
     symlink_version_suffix(&plan.prefix, plan);
-    let exe = plan.prefix.join("bin").join(format!("python{xy}"));
+    // python-build checks PYTHON_BIN: `bin/python<X.Y>` for a CPython name, `bin/python` for a
+    // name it gets no X.Y from (PyPy, M7a design §4.3).
+    let exe = if plan.xy.is_some() {
+        plan.prefix.join("bin").join(format!("python{xy}"))
+    } else {
+        python.to_path_buf()
+    };
     if std::fs::metadata(&exe)
         .map(|m| m.permissions().mode() & 0o111 == 0)
         .unwrap_or(true)
@@ -504,6 +583,366 @@ fn verify(job: &Job, plan: &Plan, step: &str, python: &Path, say: &mut dyn FnMut
             c.module,
             c.lib
         ));
+    }
+    // M8 design §4.4 is for CPython built from source (ruling R14): PyPy's and conda's
+    // `verify_py*` steps keep upstream's checks only.
+    let from_source = pkg.steps.iter().any(|s| s == "standard");
+    if let Some(minor) = super::stdlib::minor_of_step(step).filter(|_| from_source) {
+        stdlib_check(job, plan, minor, python, say)?;
+    }
+    Ok(())
+}
+
+/// The §4.4 CA check. On a failure it prints the file and the directory the built Python
+/// looked in: `SSL_CERT_FILE` and `SSL_CERT_DIR` when set, else its OpenSSL's defaults.
+const CA_CHECK: &str = "import os, ssl
+p = ssl.get_default_verify_paths()
+ok = (p.cafile and os.path.isfile(p.cafile)) or (p.capath and os.path.isdir(p.capath) and os.listdir(p.capath))
+if not ok:
+    print(os.environ.get(p.openssl_cafile_env, p.openssl_cafile))
+    print(os.environ.get(p.openssl_capath_env, p.openssl_capath))
+raise SystemExit(0 if ok else 1)
+";
+
+/// What §4.4 also checks when the build route supplied Tcl and Tk (final review I1).
+pub(crate) struct StoreTcl<'a> {
+    /// `<root>/cache/deps`: Tcl's library must not lie under it.
+    pub cache: &'a Path,
+    /// Whether a path exists (the filesystem, or a fake in tests).
+    pub exists: &'a dyn Fn(&Path) -> bool,
+    /// Makes a throwaway virtual environment from the built interpreter and starts Tcl in it:
+    /// `Ok(false)` when Tcl doesn't start, `Err(why)` when the check itself couldn't run.
+    pub in_venv: &'a dyn Fn() -> Result<bool, String>,
+}
+
+/// M8 design §4.4: every module of the table imports, CA certificates exist, Tcl runs.
+/// `run(args)` runs the built interpreter: its success and its stdout.
+pub(crate) fn stdlib_failures(
+    run: &dyn Fn(&[&str]) -> (bool, String),
+    minor: u32,
+    store_tcl: Option<&StoreTcl>,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    for m in super::stdlib::modules(minor) {
+        for i in m.imports {
+            let code = format!("import {i}");
+            if !run(&["-c", &code]).0 {
+                out.push(format!("{} (import {i} failed; needs {})", m.name, m.lib));
+                break;
+            }
+        }
+    }
+    let (ok, looked) = run(&["-c", CA_CHECK]);
+    if !ok {
+        // Name where Python looked (final review M3): a custom OpenSSL may look elsewhere than
+        // the system's ca-certificates.
+        let mut paths = looked.lines().map(str::trim).filter(|l| !l.is_empty());
+        let place = match (paths.next(), paths.next()) {
+            (Some(file), Some(dir)) => format!("no CA file {file} and no certificates in {dir}"),
+            _ => "no CA file or directory".to_string(),
+        };
+        out.push(format!(
+            "ssl certificates ({place}; needs {}, or set SSL_CERT_FILE or SSL_CERT_DIR)",
+            super::stdlib::CA_KEY
+        ));
+    }
+    let (tcl_ok, tcl_out) = run(&[
+        "-c",
+        "import tkinter; print(tkinter.Tcl().eval('info library'))",
+    ]);
+    if !tcl_ok {
+        out.push("tkinter (Tcl doesn't start; needs tk)".into());
+    } else if let Some(s) = store_tcl {
+        // M8 design §4.4: a store-built Tcl reads its library from outside the build cache
+        // (deleting the cache must not break it), and starts in a venv too (§6.3).
+        let lib = tcl_out.trim();
+        if Path::new(lib).starts_with(s.cache) {
+            out.push(format!(
+                "tkinter (Tcl's library {lib} is in the build cache; needs tk)"
+            ));
+        } else if !(s.exists)(Path::new(lib)) {
+            out.push(format!(
+                "tkinter (Tcl's library {lib} doesn't exist; needs tk)"
+            ));
+        }
+        match (s.in_venv)() {
+            Ok(true) => {}
+            Ok(false) => {
+                out.push("tkinter (Tcl doesn't start in a virtual environment; needs tk)".into())
+            }
+            Err(why) => out.push(format!(
+                "tkinter (could not check Tcl in a virtual environment: {why})"
+            )),
+        }
+    }
+    out
+}
+
+/// Makes a new folder under `base` (mode 0700) named by the first of `names` that doesn't exist
+/// yet. `create_dir` fails on an existing path, so a folder someone else made, or a link, is
+/// never used.
+pub(crate) fn private_dir(
+    base: &Path,
+    names: &mut dyn Iterator<Item = String>,
+) -> Result<PathBuf, String> {
+    use std::os::unix::fs::DirBuilderExt;
+    let mut tried = 0;
+    for n in names {
+        let path = base.join(n);
+        match std::fs::DirBuilder::new().mode(0o700).create(&path) {
+            Ok(()) => return Ok(path),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => tried += 1,
+            Err(e) => return Err(format!("cannot create {}: {e}", path.display())),
+        }
+    }
+    Err(format!(
+        "{tried} folder names under {} were taken already",
+        base.display()
+    ))
+}
+
+/// Runs the §4.4 check on the built interpreter and decides what a failure means: an error
+/// (strict), a warning (RPYENV_SKIP_PREFLIGHT=1, ruling P1) or the `[c]` summary.
+fn stdlib_check(
+    job: &Job,
+    plan: &Plan,
+    minor: u32,
+    python: &Path,
+    say: &mut dyn FnMut(&str),
+) -> R<()> {
+    let sigint_seen = std::cell::Cell::new(false);
+    let run = |args: &[&str]| -> (bool, String) {
+        if interrupted() {
+            return (true, String::new());
+        }
+        let out = command(python, &plan.env)
+            .args(args)
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output();
+        if out.as_ref().is_ok_and(|o| sigint(&o.status)) {
+            sigint_seen.set(true);
+        }
+        match out {
+            Ok(o) => (
+                o.status.success(),
+                String::from_utf8_lossy(&o.stdout).into_owned(),
+            ),
+            Err(_) => (false, String::new()),
+        }
+    };
+    // A throwaway venv from the built interpreter, where Tcl must start as well (§4.4).
+    let in_venv = || -> Result<bool, String> {
+        if interrupted() {
+            return Ok(true);
+        }
+        let tmp = get(job.env, "TMPDIR")
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| "/tmp".into());
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0);
+        let mut names = (0..5u32).map(|i| {
+            format!(
+                "rpyenv-tcl-venv.{}.{:x}",
+                std::process::id(),
+                nanos.wrapping_add(i)
+            )
+        });
+        let venv = private_dir(Path::new(&tmp), &mut names)?;
+        let quiet = |c: &mut Command| -> bool {
+            let st = c
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+            if st.as_ref().is_ok_and(sigint) {
+                sigint_seen.set(true);
+            }
+            st.is_ok_and(|s| s.success())
+        };
+        let ok = quiet(
+            command(python, &plan.env)
+                .args(["-m", "venv", "--without-pip"])
+                .arg(&venv),
+        ) && quiet(
+            command(venv.join("bin").join("python"), &plan.env)
+                .args(["-c", "import tkinter; tkinter.Tcl()"]),
+        );
+        let _ = std::fs::remove_dir_all(&venv);
+        Ok(ok)
+    };
+    // These checks apply only when the store supplied Tcl/Tk (its script folders).
+    let exists = |p: &Path| p.exists();
+    let cache = job
+        .store
+        .filter(|s| !s.scripts.is_empty())
+        .and_then(|s| s.entries.iter().find(|e| e.key == "tcl"))
+        .and_then(|e| e.dir.parent());
+    let store_tcl = cache.map(|cache| StoreTcl {
+        cache,
+        exists: &exists,
+        in_venv: &in_venv,
+    });
+    let fails = stdlib_failures(&run, minor, store_tcl.as_ref());
+    if interrupted() || sigint_seen.get() {
+        return Err(InstallError::Interrupted);
+    }
+    if fails.is_empty() {
+        return Ok(());
+    }
+    let name = plan
+        .prefix
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    // RPYENV_SKIP_PREFLIGHT=1 always gives P1's warning, the `[c]` summary included (review M7).
+    let skip = get(job.env, "RPYENV_SKIP_PREFLIGHT").as_deref() == Some("1");
+    // `continue`: the prompt's `[c]`, chosen by the user (rpyenv sets it; a user's is dropped).
+    let mode = get(job.env, "RPYENV_DEPS_MODE");
+    if !skip && mode.as_deref() == Some("continue") {
+        // The `[c]` summary (M8 design §5.1); the build counts as installed. Root is read
+        // the way `pyenv install` reads it: `id -u` on the build's PATH.
+        let root = command("id", job.env)
+            .arg("-u")
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "0");
+        let os_path = if cfg!(debug_assertions) {
+            get(job.env, "RPYENV_TEST_OS_RELEASE")
+        } else {
+            None
+        }
+        .unwrap_or_else(|| "/etc/os-release".into());
+        let os = std::fs::read_to_string(os_path).ok();
+        say(&continue_summary(&name, &fails, minor, os.as_deref(), root));
+        return Ok(());
+    }
+    let lead = if skip { "pyenv: warning: " } else { "pyenv: " };
+    say(&format!(
+        "{lead}{name} was built without: {}",
+        fails.join(", ")
+    ));
+    if skip {
+        return Ok(());
+    }
+    say("Install the missing libraries (pyenv install asks how), or set RPYENV_SKIP_PREFLIGHT=1 to keep such a build.");
+    Err(InstallError::Failed)
+}
+
+/// The summary after `[c]` (M8 design §5.1): what the build lacks and the command that adds it.
+fn continue_summary(
+    name: &str,
+    fails: &[String],
+    minor: u32,
+    os_release: Option<&str>,
+    root: bool,
+) -> String {
+    use super::{deps, preflight, stdlib};
+    let mut names: Vec<&str> = Vec::new();
+    let mut libs: Vec<preflight::Dep> = Vec::new();
+    for f in fails {
+        let n = f.split(" (").next().unwrap_or(f);
+        if !names.contains(&n) {
+            names.push(n);
+        }
+        let lib = if n == "ssl certificates" {
+            Some(("ssl certificates", stdlib::CA_KEY))
+        } else {
+            stdlib::modules(minor)
+                .into_iter()
+                .find(|m| m.name == n)
+                .map(|m| (m.name, m.lib))
+        };
+        if let Some((dn, lib)) = lib {
+            if !libs.iter().any(|d| d.lib == lib) {
+                // No probe result here: on Fedora 42+ an older CPython's Tk is the Tk 8
+                // package (`deps::packages`), as the check before the build says.
+                let tk9 = lib == "tk" && minor <= 12 && os_release.is_some_and(deps::fedora_tk9);
+                libs.push(preflight::Dep {
+                    name: dn,
+                    required: false,
+                    missing: if tk9 {
+                        preflight::Missing::TooNew {
+                            found: "9".into(),
+                            need: "8.5 or 8.6",
+                        }
+                    } else {
+                        preflight::Missing::Certificates
+                    },
+                    lib,
+                });
+            }
+        }
+    }
+    let list = names.join(", ");
+    let add = os_release
+        .and_then(deps::Manager::from_os_release)
+        .map(|m| {
+            let pkgs = deps::packages(m, &libs);
+            deps::install_argv(m, &pkgs, !root, false).join(" ")
+        })
+        .unwrap_or_else(|| format!("install the development packages for {list}"));
+    // RHEL-family systems: the `dnf install` above needs CRB first (ruling R15).
+    let crb = os_release
+        .and_then(|os| deps::crb_line(os, root))
+        .map(|l| format!("\n  {l}"))
+        .unwrap_or_default();
+    format!(
+        "pyenv: {name} was built without: {list}
+  Add them: {add}, then pyenv install -f {name}{crb}"
+    )
+}
+
+/// `cp -fR src/. dst`: directories, regular files with their modes, and links as links.
+pub(crate) fn copy_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for e in std::fs::read_dir(src)? {
+        let e = e?;
+        let (from, to) = (e.path(), dst.join(e.file_name()));
+        let t = e.file_type()?;
+        if t.is_symlink() {
+            std::os::unix::fs::symlink(std::fs::read_link(&from)?, &to)?;
+        } else if t.is_dir() {
+            copy_tree(&from, &to)?;
+            std::fs::set_permissions(&to, std::fs::metadata(&from)?.permissions())?;
+        } else {
+            std::fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
+}
+
+/// The links `build_package_pypy` adds: for each regular, executable, non-link file in `bin/`,
+/// in name order, `libpypy*` gets `lib/<name>` → `../bin/<name>` and `pypy*` becomes the target
+/// of `bin/python` (the last one wins, as with `ln -fs` in a glob loop).
+fn link_pypy(prefix: &Path) -> std::io::Result<()> {
+    let (bin, lib) = (prefix.join("bin"), prefix.join("lib"));
+    std::fs::create_dir_all(&bin)?;
+    std::fs::create_dir_all(&lib)?;
+    let mut names: Vec<String> = std::fs::read_dir(&bin)?
+        .filter_map(Result::ok)
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    let replace = |at: &Path, target: &str| -> std::io::Result<()> {
+        if at.symlink_metadata().is_ok_and(|m| !m.is_dir()) {
+            std::fs::remove_file(at)?;
+        }
+        std::os::unix::fs::symlink(target, at)
+    };
+    for n in names {
+        let m = std::fs::symlink_metadata(bin.join(&n))?;
+        if !m.file_type().is_file() || m.permissions().mode() & 0o111 == 0 {
+            continue;
+        }
+        if n.starts_with("libpypy") {
+            replace(&lib.join(&n), &format!("../bin/{n}"))?;
+        } else if n.starts_with("pypy") {
+            replace(&bin.join("python"), &n)?;
+        }
     }
     Ok(())
 }
@@ -562,7 +1001,7 @@ pub fn run(job: &Job, txn: &mut Txn, say: &mut dyn FnMut(&str)) -> R<()> {
         .filter(|v| !v.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| tmp.join(format!("python-build.{seed}")));
-    let plan = Plan::new(job, prefix).map_err(|m| {
+    let plan = Plan::new(job, prefix, &|p| Path::new(p).exists()).map_err(|m| {
         say(&m);
         InstallError::Failed
     })?;
@@ -588,6 +1027,17 @@ pub fn run(job: &Job, txn: &mut Txn, say: &mut dyn FnMut(&str)) -> R<()> {
     let result = packages(job, txn, &plan, &build_path, &tmp, &log, say);
     match &result {
         Ok(()) => {
+            if let Some(s) = job.store {
+                let file = plan.prefix.join(super::record::FILE);
+                if let Err(e) =
+                    std::fs::write(&file, super::record::text(&job.found.name, &s.entries))
+                {
+                    say(&format!(
+                        "pyenv: warning: cannot write {}: {e}",
+                        file.display()
+                    ));
+                }
+            }
             if !job.opts.keep {
                 let _ = std::fs::remove_dir_all(&build_path);
             }
@@ -708,7 +1158,23 @@ fn fetch_package(
             }
             Ok(dir)
         }
-        Fetch::Git { url, reference } => {
+        Fetch::Script { url, fragment } => {
+            let sha =
+                sha256_of_fragment(url, fragment.as_deref()).map_err(InstallError::Message)?;
+            let req = FetchRequest {
+                file_name: format!("{}.sh", pkg.name),
+                url: url.clone(),
+                check: Check::Sha256(sha),
+                dest_dir: build_path.to_path_buf(),
+            };
+            let mut w: &BuildLog = log;
+            Ok(job.fetcher.fetch(&req, &mut w, say)?)
+        }
+        Fetch::Git {
+            url,
+            reference,
+            sha1,
+        } => {
             let dir = build_path.join(&pkg.name);
             let git = command("git", &plan.env)
                 .arg("--version")
@@ -752,9 +1218,49 @@ fn fetch_package(
                     ]),
                 )?;
             }
+            if let Some(want) = sha1 {
+                verify_checkout(&dir, reference, want, &plan.env, say)?;
+            }
             Ok(dir)
         }
     }
+}
+
+/// pyenv 2.8.9's `fetch_git` check of a `<ref>:<sha1>` reference: the checkout's commit must
+/// be `want`, or, when HEAD is exactly the annotated tag `reference`, the tag object may be.
+fn verify_checkout(
+    dir: &Path,
+    reference: &str,
+    want: &str,
+    env: &[(OsString, OsString)],
+    say: &mut dyn FnMut(&str),
+) -> R<()> {
+    if interrupted() {
+        return Err(InstallError::Interrupted);
+    }
+    let git = |args: &[&str]| {
+        command("git", env)
+            .current_dir(dir)
+            .args(args)
+            .stderr(Stdio::null())
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim_end().to_string())
+    };
+    let tag = git(&["describe", "--exact-match"])
+        .filter(|d| d.lines().any(|l| l == reference))
+        .and_then(|_| git(&["rev-parse", reference]));
+    let commit = git(&["rev-parse", "HEAD"]).unwrap_or_default();
+    if commit == want || tag.as_deref() == Some(want) {
+        return Ok(());
+    }
+    let mut msg = format!("error: ref `{reference}' SHA-1 mismatch: expected {want}, got {commit}");
+    if let Some(t) = tag {
+        msg.push_str(&format!("(commit) and {t}(tag)"));
+    }
+    say(&msg);
+    Err(InstallError::Failed)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -815,9 +1321,99 @@ fn run_step(
                     ))
                 })?;
             }
+            // Tcl and Tk find their script folders beside the executable (M8 design §6.3).
+            if staging {
+                if let Some(s) = job.store {
+                    for d in &s.scripts {
+                        let to = plan
+                            .prefix
+                            .join("lib")
+                            .join(d.file_name().unwrap_or_default());
+                        copy_tree(d, &to).map_err(|e| {
+                            InstallError::Message(format!(
+                                "pyenv: cannot copy {} into {}: {e}",
+                                d.display(),
+                                to.display()
+                            ))
+                        })?;
+                    }
+                }
+            }
             Ok(())
         }
-        s if s.starts_with("verify_py") => verify(job, plan, s, python, say),
+        // python-build's `build_package_pypy` (M7a design §4.3): the binary tree is copied as it
+        // is, then `bin/python` and the `lib/libpypy*` links are added, and the whole is placed.
+        "pypy" => {
+            let staged = txn.stage_dir().join("pypy");
+            copy_tree(src, &staged)
+                .and_then(|_| link_pypy(&staged))
+                .map_err(|e| {
+                    InstallError::Message(format!(
+                        "pyenv: cannot copy {} into {}: {e}",
+                        src.display(),
+                        staged.display()
+                    ))
+                })?;
+            if interrupted() {
+                return Err(InstallError::Interrupted);
+            }
+            txn.place(&staged).map_err(|e| {
+                InstallError::Message(format!(
+                    "pyenv: cannot move the build into {}: {e}",
+                    plan.prefix.display()
+                ))
+            })
+        }
+        // python-build's `build_package_anaconda` and `build_package_miniconda` (M7b design §4.3):
+        // the installer writes straight into the final folder, which `place_empty` created with
+        // the marker; `-f` lets it use the existing folder.
+        "anaconda" | "miniconda" => {
+            if !txn.placed() {
+                txn.place_empty().map_err(|e| {
+                    InstallError::Message(format!(
+                        "pyenv: cannot create {}: {e}",
+                        plan.prefix.display()
+                    ))
+                })?;
+            }
+            let vars = &job.definition.vars;
+            let mut c = command("bash", &plan.env);
+            c.arg(src).args(["-f", "-b", "-p"]).arg(&plan.prefix);
+            // Not the caller's active conda env or Python settings (conda follows
+            // CONDA_PREFIX), then the definition's own variables.
+            super::conda::clean_env(&mut c, vars);
+            logged(log, &mut c)?;
+            if step == "miniconda" {
+                // Upstream's workaround for pyenv issue #2070: pip, without upgrading conda.
+                let conda = plan.prefix.join("bin").join("conda");
+                let mut ver = command(&conda, &plan.env);
+                super::conda::clean_env(&mut ver, &[]);
+                let out = ver.arg("--version").stdin(Stdio::null()).output();
+                if interrupted() {
+                    return Err(InstallError::Interrupted);
+                }
+                let v = out
+                    .ok()
+                    .and_then(|o| {
+                        String::from_utf8_lossy(&o.stdout)
+                            .split_whitespace()
+                            .nth(1)
+                            .map(str::to_string)
+                    })
+                    .ok_or_else(|| {
+                        InstallError::Message(format!(
+                            "pyenv: {} --version gave no version",
+                            conda.display()
+                        ))
+                    })?;
+                let mut c = command(&conda, &plan.env);
+                c.args(["install", "--yes", "pip", &format!("conda={v}")]);
+                super::conda::clean_env(&mut c, vars);
+                logged(log, &mut c)?;
+            }
+            Ok(())
+        }
+        s if s.starts_with("verify_py") => verify(job, plan, pkg, s, python, say),
         "ensurepip" | "ensurepip_lt21" => {
             let isolation = if step == "ensurepip" { "-I" } else { "-s" };
             let mut c = command(python, &plan.env);
@@ -861,5 +1457,379 @@ fn run_step(
         other => Err(InstallError::Message(format!(
             "rpyenv cannot run build step `{other}'"
         ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stdlib_failures_name_each_missing_import_and_the_certificates() {
+        let fails = |args: &[&str]| -> (bool, String) {
+            let ok = !(args[1] == "import _uuid" || args[1].contains("get_default_verify_paths"));
+            (ok, String::new())
+        };
+        let f = stdlib_failures(&fails, 12, None);
+        assert!(
+            f.contains(&"uuid (import _uuid failed; needs libuuid)".to_string()),
+            "{f:?}"
+        );
+        assert!(
+            f.contains(
+                &"ssl certificates (no CA file or directory; needs ca-certificates, or set SSL_CERT_FILE or SSL_CERT_DIR)".to_string()
+            ),
+            "{f:?}"
+        );
+        assert!(stdlib_failures(&|_| (true, String::new()), 12, None).is_empty());
+    }
+
+    /// Final review M3: a failed CA check names the file and directory the built Python looked
+    /// in (a custom OpenSSL's, here) and the variables that point it elsewhere.
+    #[test]
+    fn a_missing_ca_names_where_python_looked() {
+        let run = |args: &[&str]| -> (bool, String) {
+            if args[1].contains("get_default_verify_paths") {
+                (
+                    false,
+                    "/opt/openssl/ssl/cert.pem\n/opt/openssl/ssl/certs\n".into(),
+                )
+            } else {
+                (true, String::new())
+            }
+        };
+        assert_eq!(
+            stdlib_failures(&run, 13, None),
+            ["ssl certificates (no CA file /opt/openssl/ssl/cert.pem and no certificates in /opt/openssl/ssl/certs; needs ca-certificates, or set SSL_CERT_FILE or SSL_CERT_DIR)"]
+        );
+        // The script prints both places and honors the variables, as Python's own lookup does.
+        for want in [
+            "p.openssl_cafile_env, p.openssl_cafile",
+            "p.openssl_capath_env, p.openssl_capath",
+        ] {
+            assert!(CA_CHECK.contains(want), "{want}");
+        }
+    }
+
+    #[test]
+    fn panel_h_only_under_ncursesw_adds_the_include_flag() {
+        let only = |paths: &'static [&'static str]| move |p: &str| paths.contains(&p);
+        // Tumbleweed: only the ncursesw folder has it.
+        assert_eq!(
+            panel_include(Some(12), &only(&["/usr/include/ncursesw/panel.h"])),
+            Some("-I/usr/include/ncursesw")
+        );
+        // Debian, Fedora, Arch: the top-level header is there, and no flag is needed.
+        assert_eq!(
+            panel_include(
+                Some(12),
+                &only(&["/usr/include/panel.h", "/usr/include/ncursesw/panel.h"])
+            ),
+            None
+        );
+        // No ncurses development files at all.
+        assert_eq!(panel_include(Some(12), &only(&[])), None);
+        // Not CPython 3 (no `verify_py3*` step): never, wherever the header is.
+        assert_eq!(
+            panel_include(None, &only(&["/usr/include/ncursesw/panel.h"])),
+            None
+        );
+    }
+
+    /// A plan for 3.12.99 with the user's flags and a store; `verify`: the definition has a
+    /// `verify_py312` step (a CPython 3 source build); `exists`: which files the system has.
+    fn store_plan(verify: bool, exists: &dyn Fn(&str) -> bool) -> Plan {
+        let found = Found {
+            name: "3.12.99".into(),
+            text: String::new(),
+            origin: Origin::Builtin,
+        };
+        let mut definition = Definition::default();
+        if verify {
+            definition.packages.push(Package {
+                name: "Python-3.12.99".into(),
+                fetch: Fetch::Tarball {
+                    url: "http://x/y.tgz".into(),
+                    fragment: None,
+                },
+                steps: vec!["standard".into(), "verify_py312".into()],
+                condition: None,
+            });
+        }
+        let env: Vec<(OsString, OsString)> = [
+            ("CPPFLAGS", "-I/user/cpp"),
+            ("PYTHON_CPPFLAGS", "-I/user/pycpp"),
+            ("LDFLAGS", "-L/user/ld"),
+            ("PYTHON_LDFLAGS", "-L/user/pyld"),
+            ("CONFIGURE_OPTS", "--user-conf"),
+            ("PYTHON_CONFIGURE_OPTS", "--user-pyconf"),
+            ("PKG_CONFIG_PATH", "/user/pc"),
+            ("PATH", "/usr/bin"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.into(), v.into()))
+        .collect();
+        let store = super::super::store::Linked {
+            entries: Vec::new(),
+            cppflags: vec!["-I/store/inc".into()],
+            ldflags: vec!["-L/store/lib".into()],
+            pkg_config_path: vec![PathBuf::from("/store/pc")],
+            path: Some(PathBuf::from("/store/bin")),
+            configure: vec!["--with-openssl=/store/ssl".into()],
+            configure_env: Vec::new(),
+            scripts: Vec::new(),
+        };
+        let fetcher = Fetcher::from_env(&|_| None, None);
+        let job = Job {
+            found: &found,
+            definition: &definition,
+            prefix: PathBuf::from("/r/versions/3.12.99"),
+            opts: Options {
+                keep: false,
+                verbose: false,
+                debug: false,
+                stdin_patch: None,
+            },
+            env: &env,
+            fetcher: &fetcher,
+            store: Some(&store),
+        };
+        Plan::new(&job, job.prefix.clone(), exists).unwrap()
+    }
+
+    /// Plan ruling P8: every flag of the user's, `PYTHON_CPPFLAGS` and `PYTHON_LDFLAGS`
+    /// included, comes before the store's (the compiler and linker take the first match); the
+    /// store's configure arguments come before the user's options; the store's pkg-config
+    /// folders and pkgconf's `bin/` come first.
+    #[test]
+    fn the_users_flags_come_before_the_stores() {
+        let plan = store_plan(false, &|_| false);
+        let conf = |k: &str| {
+            plan.configure_env
+                .iter()
+                .rev()
+                .find(|(n, _)| n == k)
+                .map(|(_, v)| v.clone())
+                .unwrap_or_default()
+        };
+        let p = "/r/versions/3.12.99";
+        assert_eq!(
+            conf("CPPFLAGS"),
+            format!("-I{p}/include -I/user/cpp -I/user/pycpp -I/store/inc")
+        );
+        assert_eq!(
+            conf("LDFLAGS"),
+            format!("-L{p}/lib -Wl,-rpath,{p}/lib -L/user/ld -L/user/pyld -L/store/lib")
+        );
+        // The children's environment has no `PYTHON_` variants; the store still comes last.
+        assert_eq!(
+            get(&plan.env, "CPPFLAGS").unwrap(),
+            format!("-I{p}/include -I/user/cpp -I/store/inc")
+        );
+        assert_eq!(
+            get(&plan.env, "LDFLAGS").unwrap(),
+            format!("-L{p}/lib -Wl,-rpath,{p}/lib -L/user/ld -L/store/lib")
+        );
+        let at = |a: &str| plan.configure.iter().position(|x| x == a).unwrap();
+        assert!(
+            at("--with-openssl=/store/ssl") < at("--user-conf"),
+            "{:?}",
+            plan.configure
+        );
+        assert!(
+            at("--user-conf") < at("--user-pyconf"),
+            "{:?}",
+            plan.configure
+        );
+        assert_eq!(
+            get(&plan.env, "PKG_CONFIG_PATH").unwrap(),
+            "/store/pc:/user/pc"
+        );
+        assert_eq!(get(&plan.env, "PATH").unwrap(), "/store/bin:/usr/bin");
+    }
+
+    // allowlist D-129
+    #[test]
+    fn panel_h_only_under_ncursesw_puts_the_include_flag_after_the_stores() {
+        let only_under = |p: &str| p == "/usr/include/ncursesw/panel.h";
+        let plan = store_plan(true, &only_under);
+        let conf = plan
+            .configure_env
+            .iter()
+            .rev()
+            .find(|(n, _)| n == "CPPFLAGS")
+            .map(|(_, v)| v.clone())
+            .unwrap();
+        let p = "/r/versions/3.12.99";
+        assert_eq!(
+            conf,
+            format!("-I{p}/include -I/user/cpp -I/user/pycpp -I/store/inc -I/usr/include/ncursesw")
+        );
+        assert_eq!(
+            get(&plan.env, "CPPFLAGS").unwrap(),
+            format!("-I{p}/include -I/user/cpp -I/store/inc -I/usr/include/ncursesw")
+        );
+        // Not a CPython 3 build, or a system with the top-level header: no flag.
+        let other = store_plan(false, &only_under);
+        assert!(!get(&other.env, "CPPFLAGS").unwrap().contains("ncursesw"));
+        let top = store_plan(true, &|_: &str| true);
+        assert!(!get(&top.env, "CPPFLAGS").unwrap().contains("ncursesw"));
+    }
+
+    /// M8 design §4.4's last clause (final review I1): when the build route supplied Tcl/Tk,
+    /// Tcl's `info library` exists outside the build cache, and Tcl starts in a venv.
+    #[test]
+    fn a_store_built_tcl_must_read_its_library_outside_the_cache_and_start_in_a_venv() {
+        let says = |lib: &'static str| {
+            move |args: &[&str]| -> (bool, String) {
+                if args[1].contains("tkinter.Tcl") {
+                    (true, format!("{lib}\n"))
+                } else {
+                    (true, String::new())
+                }
+            }
+        };
+        let cache = Path::new("/r/cache/deps");
+        let real = [
+            "/r/.rpyenv/tcltk/tcl-8.6.18/tcl8.6",
+            "/r/versions/3.12.15/lib/tcl8.6",
+        ];
+        let exists = |p: &Path| real.iter().any(|r| p == Path::new(r));
+        let venv_ok = || Ok(true);
+        let venv_fails = || Ok(false);
+        let good = StoreTcl {
+            cache,
+            exists: &exists,
+            in_venv: &venv_ok,
+        };
+        for lib in real {
+            let f = stdlib_failures(&says(lib), 12, Some(&good));
+            assert!(f.is_empty(), "{lib}: {f:?}");
+        }
+        assert_eq!(
+            stdlib_failures(&says("/r/cache/deps/tcl-8.6.18-abc/lib/tcl8.6"), 12, Some(&good)),
+            ["tkinter (Tcl's library /r/cache/deps/tcl-8.6.18-abc/lib/tcl8.6 is in the build cache; needs tk)"]
+        );
+        assert_eq!(
+            stdlib_failures(&says("/r/.rpyenv/tcltk/gone/tcl8.6"), 12, Some(&good)),
+            ["tkinter (Tcl's library /r/.rpyenv/tcltk/gone/tcl8.6 doesn't exist; needs tk)"]
+        );
+        let no_venv = StoreTcl {
+            cache,
+            exists: &exists,
+            in_venv: &venv_fails,
+        };
+        assert_eq!(
+            stdlib_failures(&says(real[0]), 12, Some(&no_venv)),
+            ["tkinter (Tcl doesn't start in a virtual environment; needs tk)"]
+        );
+        let venv_cannot = || Err("no private folder".to_string());
+        let cannot = StoreTcl {
+            cache,
+            exists: &exists,
+            in_venv: &venv_cannot,
+        };
+        assert_eq!(
+            stdlib_failures(&says(real[0]), 12, Some(&cannot)),
+            ["tkinter (could not check Tcl in a virtual environment: no private folder)"]
+        );
+        // Without the store, neither where Tcl's library is nor venvs are checked.
+        assert!(stdlib_failures(&says("/usr/share/tcltk/tcl8.6"), 12, None).is_empty());
+    }
+
+    /// H3: the throwaway venv folder is always a new one (mode 0700); a folder or a link that
+    /// exists at a candidate name is skipped, never used.
+    #[test]
+    fn the_throwaway_folder_is_never_one_that_already_exists() {
+        use std::os::unix::fs::PermissionsExt;
+        let t = tempfile::tempdir().unwrap();
+        let first = t.path().join("a");
+        std::fs::create_dir(&first).unwrap();
+        std::fs::write(first.join("planted"), "x").unwrap();
+        std::os::unix::fs::symlink(&first, t.path().join("b")).unwrap();
+        let mut names = ["a", "b", "c"].into_iter().map(String::from);
+        let got = private_dir(t.path(), &mut names).unwrap();
+        assert_eq!(got, t.path().join("c"));
+        assert_eq!(
+            std::fs::metadata(&got).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert!(
+            first.join("planted").is_file(),
+            "the pre-made folder is untouched"
+        );
+        let mut taken = ["a", "b"].into_iter().map(String::from);
+        let e = private_dir(t.path(), &mut taken).unwrap_err();
+        assert!(
+            e.contains("2 folder names") && e.contains("taken already"),
+            "{e}"
+        );
+        let mut missing = ["x"].into_iter().map(String::from);
+        let e = private_dir(&t.path().join("nope"), &mut missing).unwrap_err();
+        assert!(e.starts_with("cannot create "), "{e}");
+    }
+
+    #[test]
+    fn the_continue_summary_names_what_is_lacking_and_the_command() {
+        let os = "ID=debian
+VERSION_ID=\"12\"
+";
+        let fails = vec![
+            "tkinter (import tkinter failed; needs tk)".to_string(),
+            "uuid (import _uuid failed; needs libuuid)".to_string(),
+        ];
+        assert_eq!(
+            continue_summary("3.12.14", &fails, 12, Some(os), false),
+            "pyenv: 3.12.14 was built without: tkinter, uuid
+  Add them: sudo apt-get install tk-dev uuid-dev, then pyenv install -f 3.12.14"
+        );
+        let root = continue_summary("3.12.14", &fails, 12, Some(os), true);
+        assert!(
+            root.contains(
+                "
+  Add them: apt-get install tk-dev uuid-dev, then"
+            ),
+            "{root}"
+        );
+        let none = continue_summary("3.12.14", &fails, 12, None, false);
+        assert!(
+            none.contains("Add them: install the development packages for tkinter, uuid, then"),
+            "{none}"
+        );
+    }
+
+    /// Fedora 42+ ships Tk 9 as tk-devel: CPython 3.12 and older need tk8-devel, 3.13 and
+    /// newer keep tk-devel; Fedora 41 has no tk8-devel (measured with dnf repoquery).
+    #[test]
+    fn the_continue_summary_names_tk8_devel_for_old_cpython_on_new_fedora() {
+        let fails = vec!["tkinter (import tkinter failed; needs tk)".to_string()];
+        let f44 = "ID=fedora\nVERSION_ID=44\n";
+        assert!(continue_summary("3.12.14", &fails, 12, Some(f44), false)
+            .contains("Add them: sudo dnf install tk8-devel, then"),);
+        assert!(continue_summary("3.13.16", &fails, 13, Some(f44), false)
+            .contains("Add them: sudo dnf install tk-devel, then"),);
+        let f41 = "ID=fedora\nVERSION_ID=41\n";
+        assert!(continue_summary("3.12.14", &fails, 12, Some(f41), false)
+            .contains("Add them: sudo dnf install tk-devel, then"),);
+    }
+
+    /// Rocky, Alma and RHEL: the summary's dnf command needs CRB, so the line is there too.
+    #[test]
+    fn the_continue_summary_names_crb_on_the_rhel_family() {
+        let fails = vec!["uuid (import _uuid failed; needs libuuid)".to_string()];
+        let rocky = "ID=\"rocky\"\nID_LIKE=\"rhel centos fedora\"\nVERSION_ID=\"9.4\"\n";
+        let s = continue_summary("3.12.14", &fails, 12, Some(rocky), false);
+        assert!(
+            s.contains("\n  Some packages live in the CRB repository; enable it first: sudo dnf install dnf-plugins-core && sudo dnf config-manager --set-enabled crb"),
+            "{s}"
+        );
+        let fedora = continue_summary(
+            "3.12.14",
+            &fails,
+            12,
+            Some("ID=fedora\nVERSION_ID=44\n"),
+            false,
+        );
+        assert!(!fedora.contains("CRB"), "{fedora}");
     }
 }

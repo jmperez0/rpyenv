@@ -48,3 +48,28 @@ pub fn sha256(bytes: &[u8]) -> String {
         .map(|b| format!("{b:02x}"))
         .collect()
 }
+
+/// PyPy's `versions.json` listing `files` (file names) under `base`.
+pub fn pypy_versions_json(files: &[&str], base: &str) -> Vec<u8> {
+    let entries: Vec<String> = files
+        .iter()
+        .map(|f| format!("{{\"filename\":\"{f}\",\"arch\":\"x64\",\"platform\":\"win64\",\"download_url\":\"{base}/{f}\"}}"))
+        .collect();
+    format!(
+        "[{{\"pypy_version\":\"7.3.99\",\"files\":[{}]}}]",
+        entries.join(",")
+    )
+    .into_bytes()
+}
+
+/// pypy.org's checksum page: `(file, sha256)` pairs plus `filler` unrelated entries (the
+/// parser wants at least 500).
+pub fn checksums_page(pairs: &[(&str, &str)], filler: usize) -> Vec<u8> {
+    let mut lines: Vec<String> = pairs.iter().map(|(f, h)| format!("{h}  {f}")).collect();
+    lines.extend((0..filler).map(|i| format!("{i:064x}  pypy0.0-v0.0.{i}-filler.tar.bz2")));
+    format!(
+        "<html><body><p>pypy sha256:</p><pre>{}</pre></body></html>",
+        lines.join("\n")
+    )
+    .into_bytes()
+}

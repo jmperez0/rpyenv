@@ -1,0 +1,30 @@
+# M8 design §6.1: the libraries the build route compiles. One row per library: key, version,
+# source URL and SHA-256, separated by tabs. ci/deps_catalog.py moves rows to new upstream
+# releases weekly; a definition's own pin wins for openssl and readline (catalog::resolve).
+# Hashes: computed from a download on 2026-10-17; openssl and readline also match
+# python-build's pins, cacert matches curl's published .sha256.
+# X11 rows (M8c): computed from a download on 2026-10-19.
+pkgconf	3.0.10	https://distfiles.ariadne.space/pkgconf/pkgconf-3.0.10.tar.xz	9371b2f6372da574d4c6dc96fe9b1463037bcf6afcb6671c1555afde7b17e2de
+zlib	1.3.2	https://github.com/madler/zlib/releases/download/v1.3.2/zlib-1.3.2.tar.gz	bb329a0a2cd0274d05519d61c667c062e06990d72e125ee2dfa8de64f0119d16
+bzip2	1.0.8	https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz	ab5a03176ee106d3f0fa90e381da478ddae405918153cca248e682cd0c4a2269
+xz	5.8.4	https://github.com/tukaani-project/xz/releases/download/v5.8.4/xz-5.8.4.tar.gz	0014c7886930454fe8bd4228665b51af55eeae560ea135c9c4cd33f55b2591d9
+ncurses	6.6	https://ftp.gnu.org/gnu/ncurses/ncurses-6.6.tar.gz	355b4cbbed880b0381a04c46617b7656e362585d52e9cf84a67e2009b749ff11
+readline	8.3	https://ftp.gnu.org/gnu/readline/readline-8.3.tar.gz	fe5383204467828cd495ee8d1d3c037a7eba1389c22bc6a041f627976f9061cc
+gdbm	1.26	https://ftp.gnu.org/gnu/gdbm/gdbm-1.26.tar.gz	6a24504a14de4a744103dcb936be976df6fbe88ccff26065e54c1c47946f4a5e
+sqlite	3.54.1	https://sqlite.org/2026/sqlite-autoconf-3540100.tar.gz	926ef8d3eab93fbf6e06011901273eec076b25594a4e1cdadd50c987f4f6d64e
+libffi	3.8.0	https://github.com/libffi/libffi/releases/download/v3.8.0/libffi-3.8.0.tar.gz	7da3e2d9a171eb0a038f592ecad3ff2bb2550f3496d87b3b29ad0cf4430c0db4
+xorgproto	2026.1	https://www.x.org/releases/individual/proto/xorgproto-2026.1.tar.xz	f9bfe4a9ed8c8ab9d2a3b0d49797f046052dadd06b7a8b45dbffaffb137e8290
+libXau	1.0.12	https://www.x.org/releases/individual/lib/libXau-1.0.12.tar.xz	74d0e4dfa3d39ad8939e99bda37f5967aba528211076828464d2777d477fc0fb
+xcb-proto	1.17.0	https://xorg.freedesktop.org/archive/individual/xcb/xcb-proto-1.17.0.tar.xz	2c1bacd2110f4799f74de6ebb714b94cf6f80fb112316b1219480fd22562148c
+libxcb	1.17.0	https://xorg.freedesktop.org/archive/individual/xcb/libxcb-1.17.0.tar.xz	599ebf9996710fea71622e6e184f3a8ad5b43d0e5fa8c4e407123c88a59a6d55
+xtrans	1.6.0	https://www.x.org/releases/individual/lib/xtrans-1.6.0.tar.xz	faafea166bf2451a173d9d593352940ec6404145c5d1da5c213423ce4d359e92
+libX11	1.8.14	https://www.x.org/releases/individual/lib/libX11-1.8.14.tar.xz	bbc78c46217174655c2b32b138ad119f3ac15f50808b4d0b3a2677a4b1afc950
+tcl	8.6.18	https://downloads.sourceforge.net/project/tcl/Tcl/8.6.18/tcl8.6.18-src.tar.gz	14f9af32b1767ff718477a8f974ad03c34341097e6b43f4ce54644ee974e268e
+tk	8.6.18	https://downloads.sourceforge.net/project/tcl/Tcl/8.6.18/tk8.6.18-src.tar.gz	95cd528a80f5e4bdb557af9b14a7197d6860793a3894e25e7c9fad2ed05d4c3c
+libuuid	2.42.4	https://mirrors.edge.kernel.org/pub/linux/utils/util-linux/v2.42/util-linux-2.42.4.tar.xz	fbd62a100ab7bb8746ba0661255c3c48185b1e9021507c624da01fbc696330ec
+libxcrypt	4.5.2	https://github.com/besser82/libxcrypt/releases/download/v4.5.2/libxcrypt-4.5.2.tar.xz	71513a31c01a428bccd5367a32fd95f115d6dac50fb5b60c779d5c7942aec071
+libtirpc	1.3.8	https://downloads.sourceforge.net/project/libtirpc/libtirpc/1.3.8/libtirpc-1.3.8.tar.bz2	8839959bfcc7a0f4c609d8e4f53f1c67ae33de23775ec35beb39ff15adf11920
+libnsl	2.0.1	https://github.com/thkukuk/libnsl/releases/download/v2.0.1/libnsl-2.0.1.tar.xz	5c9e470b232a7acd3433491ac5221b4832f0c71318618dc6aa04dd05ffcd8fd9
+zstd	1.5.7	https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz	eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3
+openssl	3.6.5	https://github.com/openssl/openssl/releases/download/openssl-3.6.5/openssl-3.6.5.tar.gz	a2157c2830efdec3788939b00c9b0638306d3f0bbb76dc4832ee503bb397df98
+cacert	2026-10-20	https://curl.se/ca/cacert-2026-10-20.pem	796f1389bfea13c0ed78f663b765baaff54a508e5483786bd6ece73c5e3e3cbe
