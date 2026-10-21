@@ -9,6 +9,8 @@ name: sync-python-build
 #     and the conda table (ci/conda_tables.py) from the vendored conda definitions
 #     (a failure in either is reported in the pull request and fails the run, but doesn't stop
 #     the CPython sync);
+#   - rebuilds the python-build-standalone table (ci/prebuilt_table.py) from the vendored
+#     definitions and the attested releases (same failure handling);
 #   - moves the build catalog (crates/pyenv/deps/catalog.tsv) to new upstream library releases (ci/deps_catalog.py);
 #   - regenerates the Linux parity goldens against the new pyenv;
 #   - runs cargo test, the differential cases and the upstream bats suite, and puts each
@@ -111,6 +113,23 @@ jobs:
           # fails (M7c design §4.2 steps 5-6). A changed hash alone keeps the pinned row, so the
           # table can be unchanged and no PR opened; the last step still fails.
           echo "conda_win_attention=$win" >> "$GITHUB_OUTPUT"
+      # M8d: the prebuilt table (crates/pyenv/prebuilt/linux.tsv), after the vendored copy is
+      # updated so a new definition gets its rows in the same pull request. `gh` needs a token
+      # for `api` and `attestation verify`. The script exits 1 before writing anything when a
+      # row can't be built or verified; a failure leaves the table as it was.
+      - name: Rebuild the prebuilt table
+        id: prebuilt
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -o pipefail
+          log="$RUNNER_TEMP/prebuilt.log"
+          if ! python3 ci/prebuilt_table.py --share crates/pyenv/python-build/share --write --workdir "$RUNNER_TEMP/prebuilt" 2>&1 | tee "$log"; then
+            git checkout -- crates/pyenv/prebuilt
+            git clean -fdq -- crates/pyenv/prebuilt
+            exit 1
+          fi
       # M8 design §6.1: the build catalog follows upstream library releases. Like the tables
       # above, a failure leaves crates/pyenv/deps as it was and fails the run at the end.
       - name: Check the build catalog
@@ -127,8 +146,8 @@ jobs:
       - name: Anything to propose?
         id: update
         run: |
-          if [ -z "$(git status --porcelain crates/pyenv/python-build crates/pyenv/pypy crates/pyenv/conda crates/pyenv/deps)" ]; then
-            echo "up to date with $TAG, pypy.org, the conda definitions and the build catalog's sources"
+          if [ -z "$(git status --porcelain crates/pyenv/python-build crates/pyenv/pypy crates/pyenv/conda crates/pyenv/prebuilt crates/pyenv/deps)" ]; then
+            echo "up to date with $TAG, pypy.org, the conda definitions, the python-build-standalone releases and the build catalog's sources"
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
@@ -146,6 +165,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PYPY: ${{ steps.pypy.outcome }}
           CONDA: ${{ steps.conda.outcome }}
+          PREBUILT: ${{ steps.prebuilt.outcome }}
           CATALOG: ${{ steps.catalog.outcome }}
           CONDA_WIN: ${{ steps.conda.outputs.conda_win_attention }}
         run: |
@@ -170,6 +190,7 @@ jobs:
           : > "$r"
           table "PyPy tables (ci/pypy_tables.py)" "$PYPY" crates/pyenv/pypy/ "$RUNNER_TEMP/pypy.log"
           table "conda table (ci/conda_tables.py)" "$CONDA" crates/pyenv/conda/ "$RUNNER_TEMP/conda.log"
+          table "prebuilt table (ci/prebuilt_table.py)" "$PREBUILT" crates/pyenv/prebuilt/ "$RUNNER_TEMP/prebuilt.log"
           table "build catalog (ci/deps_catalog.py)" "$CATALOG" crates/pyenv/deps/ "$RUNNER_TEMP/catalog.log"
           if [ "$CONDA_WIN" = "1" ]; then
             { echo "- **Windows conda table (crates/pyenv/conda/windows.tsv)**: needs attention"
@@ -201,6 +222,7 @@ jobs:
           PYTHON_BUILD: ${{ steps.update.outputs.python_build }}
           PYPY: ${{ steps.pypy.outcome }}
           CONDA: ${{ steps.conda.outcome }}
+          PREBUILT: ${{ steps.prebuilt.outcome }}
           CATALOG: ${{ steps.catalog.outcome }}
           CONDA_WIN: ${{ steps.conda.outputs.conda_win_attention }}
         run: |
@@ -208,11 +230,11 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -b "$branch"
-          git add crates/pyenv/python-build crates/pyenv/pypy crates/pyenv/conda crates/pyenv/deps parity/golden
+          git add crates/pyenv/python-build crates/pyenv/pypy crates/pyenv/conda crates/pyenv/prebuilt crates/pyenv/deps parity/golden
           if [ "$PYTHON_BUILD" = "true" ]; then
             title="Sync python-build definitions with pyenv $TAG"
           else
-            title="Update the PyPy, conda and build-catalog tables"
+            title="Update the PyPy, conda, prebuilt and build-catalog tables"
           fi
           git commit -m "$title"
           git push -f origin "$branch"
@@ -231,8 +253,13 @@ jobs:
               else
                 echo "The conda table (\`crates/pyenv/conda/\`) could NOT be rebuilt (see the checks below) and is unchanged: a conda version new in this sync is refused as \"not available\" until a later run rebuilds it."
               fi
+              if [ "$PREBUILT" = "success" ]; then
+                echo "The prebuilt table in \`crates/pyenv/prebuilt/\` was rebuilt by ci/prebuilt_table.py from the vendored definitions and the attested python-build-standalone releases; review its diff."
+              else
+                echo "The prebuilt table (\`crates/pyenv/prebuilt/\`) could NOT be rebuilt (see the checks below) and is unchanged: a version new in this sync has no prebuilt build until a later run rebuilds it."
+              fi
             else
-              echo "Automated: only the PyPy or conda tables (\`crates/pyenv/pypy/\`, \`crates/pyenv/conda/\`) changed, rebuilt by ci/pypy_tables.py and ci/conda_tables.py from the vendored definitions and pypy.org's pages; the checks below say which rebuild succeeded. Review their diff."
+              echo "Automated: only the PyPy, conda or prebuilt tables (\`crates/pyenv/pypy/\`, \`crates/pyenv/conda/\`, \`crates/pyenv/prebuilt/\`) changed, rebuilt by ci/pypy_tables.py, ci/conda_tables.py and ci/prebuilt_table.py from the vendored definitions, pypy.org's pages and the python-build-standalone releases; the checks below say which rebuild succeeded. Review their diff."
               echo "crates/pyenv/python-build and the parity pin are unchanged (still pyenv $OLD_SHA)."
             fi
             if [ "$CONDA_WIN" = "1" ]; then
@@ -268,15 +295,17 @@ jobs:
       # A table step's failure, let through above so the CPython sync could still open its
       # pull request, still fails the run (a scheduled run's failure notifies the owner).
       - name: Fail when a table couldn't be rebuilt
-        if: steps.pypy.outcome == 'failure' || steps.conda.outcome == 'failure' || steps.catalog.outcome == 'failure' || steps.conda.outputs.conda_win_attention == '1'
+        if: steps.pypy.outcome == 'failure' || steps.conda.outcome == 'failure' || steps.prebuilt.outcome == 'failure' || steps.catalog.outcome == 'failure' || steps.conda.outputs.conda_win_attention == '1'
         env:
           PYPY: ${{ steps.pypy.outcome }}
           CONDA: ${{ steps.conda.outcome }}
+          PREBUILT: ${{ steps.prebuilt.outcome }}
           CATALOG: ${{ steps.catalog.outcome }}
           CONDA_WIN: ${{ steps.conda.outputs.conda_win_attention }}
         run: |
           [ "$CONDA_WIN" != "1" ] || echo "::error::Windows conda table: a hash changed or a row stopped installing; see the PR body, or the step 'Rebuild the conda table' when no PR was opened"
           [ "$PYPY" = "success" ] || echo "::error::ci/pypy_tables.py failed; crates/pyenv/pypy was left unchanged. The step 'Rebuild the PyPy tables' has the log."
           [ "$CONDA" = "success" ] || echo "::error::ci/conda_tables.py failed; crates/pyenv/conda was left unchanged. The step 'Rebuild the conda table' has the log."
+          [ "$PREBUILT" = "success" ] || echo "::error::ci/prebuilt_table.py failed; crates/pyenv/prebuilt was left unchanged. The step 'Rebuild the prebuilt table' has the log."
           [ "$CATALOG" = "success" ] || echo "::error::ci/deps_catalog.py failed; crates/pyenv/deps was left unchanged. The step 'Check the build catalog' has the log."
           exit 1
