@@ -278,6 +278,10 @@ pypy2.7-8.0.0	linux64	ok pypy2.7-v8.0.0-linux64 https://downloads.python.org/pyp
 pypy2.7-8.0.0	linux-aarch64	ok pypy2.7-v8.0.0-aarch64 https://downloads.python.org/pypy/pypy2.7-v8.0.0-aarch64.tar.gz#9ece5a6f575514ed38dde663e7f54e59de01c35b2df6d1ef83e25490d6b7c7b8 pypy verify_py27 ensurepip_lt21
 pypy2.7-8.0.0-src	linux64	unsupported source build
 pypy2.7-8.0.0-src	linux-aarch64	unsupported source build
+pypy2.7-8.0.1	linux64	ok pypy2.7-v8.0.1-linux64 https://downloads.python.org/pypy/pypy2.7-v8.0.1-linux64.tar.gz#78674cdf95eb4cb1dd5a9b68a70200387111cb29467f8a472ab7cf07a251653c pypy verify_py27 ensurepip_lt21
+pypy2.7-8.0.1	linux-aarch64	ok pypy2.7-v8.0.1-aarch64 https://downloads.python.org/pypy/pypy2.7-v8.0.1-aarch64.tar.gz#abd5bd601fc5af143a80d02c52b5f098f0096f9b0793140353e5e3d439676b85 pypy verify_py27 ensurepip_lt21
+pypy2.7-8.0.1-src	linux64	unsupported source build
+pypy2.7-8.0.1-src	linux-aarch64	unsupported source build
 pypy3-2.3.1	linux64	unsupported third-party build
 pypy3-2.3.1	linux-aarch64	no-binary
 pypy3-2.3.1-src	linux64	unsupported source build
@@ -346,10 +350,18 @@ pypy3.11-8.0.0	linux64	ok pypy3.11-v8.0.0-linux64 https://downloads.python.org/p
 pypy3.11-8.0.0	linux-aarch64	ok pypy3.11-v8.0.0-aarch64 https://downloads.python.org/pypy/pypy3.11-v8.0.0-aarch64.tar.gz#37faf1a0b00131748910ad21844a9b1b3fedd630c89b01ec98cdb1b5466ffca5 pypy verify_py311 ensurepip
 pypy3.11-8.0.0-src	linux64	unsupported source build
 pypy3.11-8.0.0-src	linux-aarch64	unsupported source build
+pypy3.11-8.0.1	linux64	ok pypy3.11-v8.0.1-linux64 https://downloads.python.org/pypy/pypy3.11-v8.0.1-linux64.tar.gz#706965bcf372752ba69dafd59d860e51bc2fadbb0f8a47cec3426125d7058ceb pypy verify_py311 ensurepip
+pypy3.11-8.0.1	linux-aarch64	ok pypy3.11-v8.0.1-aarch64 https://downloads.python.org/pypy/pypy3.11-v8.0.1-aarch64.tar.gz#5b568e1515dee46df58c9844dba95921c69dfd9f38ebf9e0f091caad5e10cd0c pypy verify_py311 ensurepip
+pypy3.11-8.0.1-src	linux64	unsupported source build
+pypy3.11-8.0.1-src	linux-aarch64	unsupported source build
 pypy3.12-8.0.0	linux64	ok pypy3.12-v8.0.0-linux64 https://downloads.python.org/pypy/pypy3.12-v8.0.0-linux64.tar.gz#a1b4851459c2b3dffccab71cb08989534fab0839deddd34f0e6bf18add256fd7 pypy verify_py312 ensurepip
 pypy3.12-8.0.0	linux-aarch64	ok pypy3.12-v8.0.0-aarch64 https://downloads.python.org/pypy/pypy3.12-v8.0.0-aarch64.tar.gz#72de008683246b0c18aeb8e163dc5d022d3f19b001e8cc5c258010968f10e336 pypy verify_py312 ensurepip
 pypy3.12-8.0.0-src	linux64	unsupported source build
 pypy3.12-8.0.0-src	linux-aarch64	unsupported source build
+pypy3.12-8.0.1	linux64	ok pypy3.12-v8.0.1-linux64 https://downloads.python.org/pypy/pypy3.12-v8.0.1-linux64.tar.gz#aeed27797777296d9c94e53bdfa608804696dbd4ff9f2213003cce064ee46ef8 pypy verify_py312 ensurepip
+pypy3.12-8.0.1	linux-aarch64	ok pypy3.12-v8.0.1-aarch64 https://downloads.python.org/pypy/pypy3.12-v8.0.1-aarch64.tar.gz#4dd9611f782f0974ffd25b521120b4297049daec05a3cec5698dbc6022c74fb9 pypy verify_py312 ensurepip
+pypy3.12-8.0.1-src	linux64	unsupported source build
+pypy3.12-8.0.1-src	linux-aarch64	unsupported source build
 pypy3.3-5.2-alpha1	linux64	unsupported third-party build
 pypy3.3-5.2-alpha1	linux-aarch64	no-binary
 pypy3.3-5.2-alpha1-src	linux64	unsupported source build
