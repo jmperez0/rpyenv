@@ -268,7 +268,7 @@ CASES = (
     Case("commands --sh", ("commands", "--sh"), os="Linux", allow=("D-103",)),
     Case("help shell", ("help", "shell"), os="Linux"),
     Case("help --usage init", ("help", "--usage", "init"), os="Linux"),
-    Case("help sh-rehash", ("help", "sh-rehash"), os="Linux"),
+    Case("help sh-rehash", ("help", "sh-rehash"), os="Linux", allow=("D-130",)),
     # M3: shell integration (Windows). pyenv-win has no init or completions (D-91), and
     # its `shell` sets the variable through pyenv.bat, which rpyenv can't (D-89).
     Case("init help for pwsh on Windows", ("init", "pwsh"), os="Windows", allow=("D-91",)),
