@@ -26,6 +26,7 @@ arch=$(uname -m)
 v=$(awk -F'\t' -v a="$arch" '$1 !~ /^#/ && $2 == a && $1 ~ /^3\.13\.[0-9]+$/ { print $1 }' "$table" | sort -V | tail -1)
 [ -n "$v" ] || { echo "::error::no 3.13.* row for $arch in $table"; exit 1; }
 release=$(awk -F'\t' -v a="$arch" -v v="$v" '$1 == v && $2 == a { print $3 }' "$table")
+openssl=$(awk -F'\t' -v a="$arch" -v v="$v" '$1 == v && $2 == a { print $5 }' "$table")
 echo "== prebuilt $v ($arch, release $release)"
 
 # 2. The install.
@@ -76,7 +77,7 @@ shopt -s nullglob
 sysconfig_files=("$p"/lib/python3.*/_sysconfigdata_*.py)
 shopt -u nullglob
 no_build_prefix "${sysconfig_files[@]}"
-want="prebuilt $release $arch"
+want="prebuilt $release $arch $openssl"
 # The record has comment and "definition" lines too; the route's own line is the last one.
 grep -qxF "$want" "$p/.rpyenv-deps" || { echo "::error::.rpyenv-deps has no line '$want':"; cat "$p/.rpyenv-deps"; exit 1; }
 echo ".rpyenv-deps has: $want"
