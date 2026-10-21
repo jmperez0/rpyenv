@@ -20,6 +20,8 @@ pub mod log;
 pub mod msi;
 pub mod openpgp;
 #[cfg(unix)]
+pub mod prebuilt;
+#[cfg(unix)]
 pub mod preflight;
 pub mod pypy;
 #[cfg(unix)]
