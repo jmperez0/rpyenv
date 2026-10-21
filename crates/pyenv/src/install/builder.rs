@@ -848,8 +848,14 @@ fn stdlib_check(
             "pyenv: {name} (a prebuilt build) doesn't work here without: {}",
             fails.join(", ")
         ));
+        // An alias is installed again as `<definition>:<name>`, as the record's line says.
+        let again = if name == job.found.name {
+            name.clone()
+        } else {
+            format!("{}:{name}", job.found.name)
+        };
         say(&format!(
-            "Fix the system (certificates: the ca-certificates package; crypt on Fedora: libxcrypt-compat), install it from source instead (pyenv install --deps=build {name}), or set RPYENV_SKIP_PREFLIGHT=1 to keep it."
+            "Fix the system (certificates: the ca-certificates package; crypt on Fedora: libxcrypt-compat), install it from source instead (pyenv install --deps=build {again}), or set RPYENV_SKIP_PREFLIGHT=1 to keep it."
         ));
         return Err(InstallError::Failed);
     }

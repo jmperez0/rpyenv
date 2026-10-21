@@ -306,6 +306,7 @@ fn download_cache(env: &[(OsString, OsString)], root: &Path) -> Option<PathBuf> 
 /// M8 design §7: the prebuilt build `found` may use here, or why it can't (for `--deps=prebuilt`).
 /// The reason is never shown at the prompt: there `[s]` is simply left out.
 fn prebuilt_row(
+    get: &dyn Fn(&str) -> Option<String>,
     found: &Found,
     prefix: &Path,
     debug: bool,
@@ -318,6 +319,19 @@ fn prebuilt_row(
             std::env::consts::ARCH
         ));
     };
+    // The builds are linked against glibc (final review A2). Debug builds: the loader to look
+    // for instead, so a test can stand in for a system without glibc.
+    let loader = if cfg!(debug_assertions) {
+        get("RPYENV_TEST_GLIBC_LOADER").filter(|v| !v.is_empty())
+    } else {
+        None
+    }
+    .unwrap_or_else(|| prebuilt::glibc_loader(arch).to_string());
+    if !Path::new(&loader).exists() {
+        return Err(format!(
+            "pyenv: no prebuilt builds for this system: python-build-standalone's builds need glibc ({loader} not found)"
+        ));
+    }
     if found.origin != Origin::Builtin {
         return Err(format!(
             "pyenv: --deps=prebuilt installs only rpyenv's built-in definitions, not {name}"
@@ -329,7 +343,9 @@ fn prebuilt_row(
     if patch {
         return Err("pyenv: --deps=prebuilt can't apply a patch (-p)".into());
     }
-    if !store::plain_path(prefix) {
+    // The builder writes the absolute prefix into the build's settings (final review C2).
+    let prefix = std::path::absolute(prefix).unwrap_or_else(|_| prefix.to_path_buf());
+    if !store::plain_path(&prefix) {
         return Err(format!(
             "pyenv: --deps=prebuilt needs a version folder without spaces, colons or shell characters ({})",
             prefix.display()
@@ -378,6 +394,8 @@ fn resolve_deps(
         },
         None => None,
     };
+    // `install()` decides the prebuilt route before calling this (final review C5).
+    debug_assert!(chosen != Some(Route::Prebuilt));
     let os_path = if cfg!(debug_assertions) {
         get("RPYENV_TEST_OS_RELEASE")
     } else {
@@ -980,7 +998,7 @@ pub fn install(ctx: &Ctx, args: &[&str]) -> Output {
             .or_else(|| env("RPYENV_BUILD_DEPS").filter(|v| !v.is_empty()));
         let wants_prebuilt = from_source3 && given.as_deref() == Some("prebuilt");
         let row = if from_source3 {
-            prebuilt_row(&found, &prefix, f.debug, f.patch)
+            prebuilt_row(&job_get, &found, &prefix, f.debug, f.patch)
         } else {
             Err(String::new())
         };
