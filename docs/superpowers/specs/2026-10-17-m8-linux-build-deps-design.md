@@ -38,6 +38,11 @@ python.org's builds.
 | D12 | Parity | Upstream pyenv has none of this. Each user-visible difference gets an allowlist entry. |
 | D13 | Scripts that set nothing (user, after a side-agent note) | **Phased.** Until M8b ships, a run with no terminal and neither `--deps` nor `RPYENV_BUILD_DEPS` keeps today's rule: the compiler, `make`, `patch`, `awk`, OpenSSL and zlib stop the build (`awk` added after the first real runs: Tumbleweed's base image has no `awk`, and CPython's configure needs it); every other missing library only warns, and the build goes on. The run ends with a summary naming what is missing, the command that adds it, and the notice that a later release makes this stop the build. **M8c** makes the script default strict (`system`), because from then on, for CPython 3.7 and later, a script without root can usually answer with `--deps=build` (not without Perl for OpenSSL and libxcrypt, nor for a definition fetched with git on a machine without X11 headers; `RPYENV_SKIP_PREFLIGHT=1` keeps the old behaviour) (moved from M8b by the user on 2026-10-17: M8b can't build X11, so a script without root on a machine without X11 headers could not pass). Chosen over strict everywhere (breaks today's Dockerfiles on upgrade, while a script without root could only fail), lenient for good (scripts never get every module), a policy per pyenv root (Dockerfiles make fresh roots), automatic installs as root (installs packages nobody approved) and splitting libraries by weight (still breaks on the newly checked gdbm, uuid and crypt). Done in M8c (2026-10-20). |
 | D14 | Python for xcb's code generator (user, 2026-10-19) | A minimal CPython built from the tarball being installed, used from its build tree and removed afterwards (measured on 3.7.17, 3.8.20, 3.12.15 and 3.14.8: libxcb's generated C is byte-identical). Chosen over the system's `python3` first (two paths), requiring `python3` (fails in minimal containers), pregenerated C published by rpyenv (modified sources), a pinned bootstrap CPython (an extra download; kept as the fallback had 3.7/3.8 failed) and others. |
+| D15 | Prebuilt: where trust comes from (user, 2026-10-21) | A table built into rpyenv (`crates/pyenv/prebuilt/linux.tsv`), like the PyPy and conda tables. The weekly sync downloads each new asset, checks its SHA-256 against the release's, and runs `gh attestation verify` (repository and signing workflow pinned) before it writes the row; `pyenv install` checks only the SHA-256 against the table. Chosen over `gh` at install time (needs `gh` logged in), both (a check that runs only on some machines) and Sigstore verification in Rust (a large dependency). The table lags a new build by up to a week, as the vendored definitions already do. |
+| D16 | Prebuilt: which builds (user, 2026-10-21) | Only releases with attestations (20250311 and later), and for each version, arch and variant the newest release that built it. Measured: no release before 20250311 has attestations; the 2022 to 2024 builds bundle outdated OpenSSL (3.10.4 of 20220528 has 1.1.1o, unsupported since 2023-09), the 2022 one doesn't start on Fedora 44 (needs `libcrypt.so.1`), and Tcl doesn't start in their virtual environments. The user first chose every published build, then this, after the measurements. |
+| D17 | Prebuilt: dbm.gnu and nis (user, 2026-10-21) | python-build-standalone ships neither (gdbm is GPL; nis is not built). §4.4 skips exactly these two for a prebuilt build, and the prompt and messages say so. |
+| D18 | Prebuilt: compiler settings (user, 2026-10-21) | After unpacking, rpyenv rewrites the build's compiler settings (`clang` to `cc`, `clang++` to `c++`, `/install` to the version's folder) in `_sysconfigdata_*.py`, `bin/python3.X-config` and `config-3.X-*/Makefile`, as uv does. Measured: without it, pip can't build a C extension on a system with gcc only ("No such file or directory: 'clang'"); with it, the extension built and imported. |
+| D19 | Prebuilt: what the user is told (user, 2026-10-21) | The build's date (its release tag) and its bundled OpenSSL version, on the `[s]` line and when it installs. The bundled OpenSSL can't be swapped: `_ssl` and `_hashlib` are built into the interpreter with OpenSSL linked statically (measured on 3.8.20, 3.9.25 and 3.13.16). |
 
 ## 3. Parts
 
@@ -237,12 +242,24 @@ without spaces, Perl's core modules for OpenSSL and libxcrypt.
 
 Downloads a python-build-standalone build of the requested version instead of compiling.
 
-- **Checks:** the SHA-256 the release publishes and its GitHub attestation.
-- **The same check after install as §4.4.**
-- **It is never the default** (D8), and the prompt says it is a third-party build.
-- **Tk 9:** these builds ship Tk 9.0 (measured below); the route says so, because some
-  older Tk programs behave differently under Tk 9.
-- **Coverage:** only versions the project publishes; for others, `s` is left out.
+- **Checks:** the SHA-256 the release publishes and its GitHub attestation, both by the weekly
+  sync before a row enters rpyenv's table (D15); `pyenv install` checks the SHA-256 against the
+  table.
+- **The same check after install as §4.4**, without `dbm.gnu` and `nis` (D17), and with Tcl
+  started in a virtual environment as well.
+- **It is never the default** (D8), and the prompt says it is a third-party build, its date and
+  its bundled OpenSSL version (D19).
+- **Tk 9:** builds from 2026 ship Tk 9.0 (measured below); the route says so, because some
+  older Tk programs behave differently under Tk 9. The table records each build's Tk.
+- **Coverage:** rpyenv's built-in CPython definitions that an attested release built for this
+  machine's architecture (x86_64 or aarch64, glibc), free-threaded (`t`) ones included (D16);
+  for others, `s` is left out.
+- **Compiler settings** are rewritten for the system's compiler (D18).
+- **`--deps=prebuilt`** always installs the prebuilt build (it doesn't depend on what is
+  missing), and fails when the table has none for this version. `-g` and `-p` can't be used
+  with it.
+- **The record:** `versions/<v>/.rpyenv-deps` names the release; when rpyenv's table later
+  offers a newer build of that version, `pyenv install` says so, as §6.3 does for libraries.
 
 **Measured, 2026-10-17:** release `20261013`, CPython 3.13.16 for Linux x86_64
 (`install_only` tarball; SHA-256 matched the published digest). Method: `readelf -d`
