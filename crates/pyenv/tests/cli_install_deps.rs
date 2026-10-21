@@ -616,8 +616,9 @@ fn eof_at_the_prompt_builds_nothing() {
     // prompts; resolve_deps maps `Reply::Interrupted` to 130 without running anything.
 }
 
+/// M8 design §7: the prebuilt route installs only rpyenv's built-in definitions.
 #[test]
-fn the_prebuilt_route_says_it_comes_later() {
+fn the_prebuilt_route_refuses_a_plugin_definition() {
     let f = Fixture::new();
     plugin_def(&f);
     stubs(&f, 0);
@@ -632,8 +633,9 @@ fn the_prebuilt_route_says_it_comes_later() {
     );
     assert_eq!(r.code, 1, "{}", r.stderr);
     assert!(
-        r.stderr
-            .contains("pyenv: the prebuilt route comes in a later rpyenv release\n"),
+        r.stderr.contains(
+            "pyenv: --deps=prebuilt installs only rpyenv's built-in definitions, not 3.12.99\n"
+        ),
         "{}",
         r.stderr
     );

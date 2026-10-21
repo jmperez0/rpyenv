@@ -29,6 +29,15 @@ pub fn text(definition: &str, entries: &[Entry]) -> String {
     s
 }
 
+/// The record of a prebuilt build (M8 design §7): the definition, then
+/// `prebuilt <release> <arch>`, which `parse` doesn't take as a library.
+pub fn prebuilt_text(definition: &str, row: &super::prebuilt::Row) -> String {
+    format!(
+        "# The python-build-standalone build rpyenv installed (M8 design §7).\ndefinition {definition}\nprebuilt {} {}\n",
+        row.release, row.arch
+    )
+}
+
 /// The record in `text`, or `None` when it has no `definition` line (or one that is not a
 /// plain name).
 pub fn parse(text: &str) -> Option<Record> {
@@ -200,6 +209,26 @@ mod tests {
             parse("openssl 3.6.5 catalog\n").is_none(),
             "no definition line"
         );
+    }
+
+    #[test]
+    fn the_prebuilt_record_names_the_definition_release_and_arch_and_no_library() {
+        let row = crate::install::prebuilt::Row {
+            name: "3.13.16".into(),
+            arch: "x86_64".into(),
+            release: "20261020".into(),
+            sha256: "0".repeat(64),
+            openssl: "3.5.9".into(),
+            tk: "9.0".into(),
+        };
+        let t = prebuilt_text("3.13.16", &row);
+        assert_eq!(
+            t,
+            "# The python-build-standalone build rpyenv installed (M8 design §7).\ndefinition 3.13.16\nprebuilt 20261020 x86_64\n"
+        );
+        let r = parse(&t).unwrap();
+        assert_eq!(r.definition, "3.13.16");
+        assert!(r.libs.is_empty(), "{:?}", r.libs);
     }
 
     #[test]
