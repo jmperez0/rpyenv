@@ -153,7 +153,8 @@ these two and requires every other standard-library module, CA certificates, and
 virtual environment. Builds from 2026 ship Tk 9.0, under which some older Tk programs behave
 differently; rpyenv prints a line when the build has Tk 9. The check after the install runs
 `import tkinter` and `tkinter.Tcl()` on every install, so a build that needs X11 libraries the
-system lacks fails there instead of being installed. What was measured: on one build (3.13.16
+system lacks fails there instead of being installed (with `RPYENV_SKIP_PREFLIGHT=1` it is kept,
+with a warning). What was measured: on one build (3.13.16
 for x86_64, release 20261013), `readelf -d` shows that Tk links no X11 library of the system;
 and 3.13.16 for x86_64 (release 20261020) installed in an `ubuntu:24.04` container, which
 has no X11 libraries, failed the check only for the missing CA certificates, so `tkinter` and
