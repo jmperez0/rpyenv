@@ -259,6 +259,7 @@ fn prebuilt_record() -> String {
     format!("definition {DEF}\nprebuilt {RELEASE} {}\n", arch())
 }
 
+// allowlist D-131
 #[test]
 fn deps_prebuilt_installs_the_tables_build_without_a_compiler() {
     let f = Fixture::plain();
@@ -344,6 +345,7 @@ fn a_prebuilt_download_with_the_wrong_hash_leaves_nothing() {
     );
 }
 
+// allowlist D-131
 #[test]
 fn deps_prebuilt_without_a_row_refuses_before_downloading() {
     let f = Fixture::plain();
@@ -369,6 +371,7 @@ fn deps_prebuilt_without_a_row_refuses_before_downloading() {
     assert!(left_in_versions(&f).is_empty());
 }
 
+// allowlist D-131
 #[test]
 fn deps_prebuilt_refuses_debug_and_patch() {
     let f = Fixture::plain();
@@ -396,6 +399,7 @@ fn deps_prebuilt_refuses_debug_and_patch() {
 }
 
 /// Review Focus 1.
+// allowlist D-131
 #[test]
 fn deps_prebuilt_refuses_a_root_with_a_space() {
     // `Fixture::new` puts a space (and a non-ASCII letter) in every path.
@@ -517,6 +521,7 @@ fn an_alias_installs_under_its_name_and_records_the_definition() {
     );
 }
 
+// allowlist D-132
 #[test]
 fn the_prompt_offers_s_and_s_installs_the_prebuilt_build() {
     let f = Fixture::plain();
@@ -621,6 +626,7 @@ fn a_tk_9_build_says_so() {
 
 /// Ruling R1: the route is for CPython 3 built from source. A PyPy definition ignores
 /// RPYENV_BUILD_DEPS=prebuilt, as it ignores the other routes.
+// allowlist D-131
 #[test]
 fn rpyenv_build_deps_prebuilt_leaves_a_pypy_install_alone() {
     use common::fakepypy::tarball_bz2;
@@ -676,6 +682,7 @@ fn a_users_deps_mode_does_not_keep_a_failing_prebuilt_build() {
 
 /// An installed prebuilt version whose recorded release is older than the table's is named by
 /// any `pyenv install`, even one that then fails.
+// allowlist D-133
 #[test]
 fn install_says_when_the_table_has_a_newer_build_of_an_installed_prebuilt_version() {
     let f = Fixture::plain();

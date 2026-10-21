@@ -53,7 +53,7 @@ M8 ships in four parts. Each has its own plan and pull request and is useful on 
 | **M8a** detect and install | The complete detection (§4); the prompt and the `system` and `install` routes (§5); the check after the build (§4.4) | M2's pre-flight check |
 | **M8b** build from source | The catalog, the store and static builds of every library except X11 (§6); scripts stay lenient (D13) | M8a |
 | **M8c** X11 from source | The X11 client libraries in the catalog, for the no-root case (§6.4); scripts become strict (D13) | M8b |
-| **M8d** prebuilt CPython | The `prebuilt` route (§7) | M8a |
+| **M8d** prebuilt CPython | The `prebuilt` route (§7); done in M8d (2026-10-21) | M8a |
 | later | Alpine/musl | M8b |
 
 ## 4. Detection (M8a)
@@ -260,6 +260,21 @@ Downloads a python-build-standalone build of the requested version instead of co
   with it.
 - **The record:** `versions/<v>/.rpyenv-deps` names the release; when rpyenv's table later
   offers a newer build of that version, `pyenv install` says so, as §6.3 does for libraries.
+
+**Measured in M8d, 2026-10-21.**
+
+- **The table:** 130 rows, 65 for x86_64 and 65 for aarch64, from 23 releases between
+  20250317 and 20261020. Method: counting the lines of `crates/pyenv/prebuilt/linux.tsv`
+  that do not start with `#`, and their second and third columns (`sort | uniq -c`). The
+  `ci/prebuilt_table.py` wrote it; on the refresh after the rebase onto pyenv 2.8.10 it added
+  the four rows of 3.16.0a1 and 3.16.0a1t (release 20261020, OpenSSL 3.5.9, Tk 9.0).
+- **The check script:** `ci/check_prebuilt.sh` ran locally (WSL, with podman for the must-fail
+  case) and exited 0 in 21 to 23 s, the must-fail run included. That run installs a real
+  prebuilt 3.13 and checks it; the must-fail run installs in an image without
+  `ca-certificates` and must (and did) fail with nothing left in `versions/`.
+- **Not measured yet:** the time of the CI job (`install-linux.yml`) on GitHub's runners, on
+  x86_64 and aarch64. The first run of the pull request will give it; this section does not
+  guess.
 
 **Measured, 2026-10-17:** release `20261013`, CPython 3.13.16 for Linux x86_64
 (`install_only` tarball; SHA-256 matched the published digest). Method: `readelf -d`

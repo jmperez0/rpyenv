@@ -70,7 +70,7 @@ even at a terminal. The flag wins over the variable.
 | `system` | Stops with the list of what is missing |
 | `install` | Installs the packages, then builds. Without a terminal it adds `-y` and uses `sudo -n` |
 | `build` | Builds the missing libraries from source, then Python. Stops before building anything when one of them can't be built here |
-| `prebuilt` | Says it comes in a later release |
+| `prebuilt` | Installs a python-build-standalone build instead of compiling (see Prebuilt builds). Never the default |
 
 **Scripts that set neither.** Without a terminal, `--deps` or `RPYENV_BUILD_DEPS`,
 rpyenv treats the run as `--deps=system`: anything missing stops the build, and the report names the
@@ -126,6 +126,43 @@ and links it into Python statically. Nothing is installed on the system.
 - **Updates:** each version built this way lists its libraries in `versions/<v>/.rpyenv-deps`.
   When an rpyenv upgrade pins a newer version of one of them, `pyenv install` prints one line
   per affected Python version, with the command that rebuilds it.
+
+### Prebuilt builds
+
+`pyenv install --deps=prebuilt <version>`, `RPYENV_BUILD_DEPS=prebuilt`, or `s` at the prompt
+downloads a CPython build made by the python-build-standalone project instead of compiling.
+It needs no compiler and no root. rpyenv never chooses it for you. The prompt offers `s` only
+when rpyenv has a build of that version for your machine (x86_64 or aarch64, glibc), and says
+it is a third-party build, its date and its bundled OpenSSL and Tk versions.
+
+**Trust.** python-build-standalone is not part of CPython. Before a build enters rpyenv's table,
+a weekly job checks its SHA-256 against the one the release publishes and checks the release's
+GitHub attestation; `pyenv install` then checks the download against the SHA-256 in the table.
+Only releases from 2025-03-11 on, the first with attestations, are used.
+
+**Which versions.** CPython 3 versions that rpyenv knows as built-in definitions and for which
+the table has a build, free-threaded ones (`3.13.12t`) included. `PyPy`, conda and CPython 2
+ignore the option. It refuses `-g`, `-p`, a definition file of your own, a version folder
+whose path has a space, colon or shell character, and a version with no build in the table.
+
+**What the build lacks.** It has no `dbm.gnu` and no `nis`; the check after the install skips
+these two and requires every other standard-library module, CA certificates, and Tcl in a
+virtual environment. Builds from 2026 ship Tk 9.0, under which some older Tk programs behave
+differently; rpyenv prints a line when the build has Tk 9. `import tkinter` needs no X11
+packages (showing a window still needs a display).
+
+**Compiler settings.** The builds were made with `clang` in `/install`. After unpacking,
+rpyenv rewrites `_sysconfigdata_*.py`, `python3.*-config` and the `Makefile` so that `clang`
+becomes `cc`, `clang++` becomes `c++`, and `/install` becomes the version's folder; a C
+extension built with `pip` then uses the system's compiler.
+
+**Newer builds.** rpyenv records the build in `versions/<name>/.rpyenv-deps`. When a later
+rpyenv has a newer build of that version in its table, any `pyenv install` prints a line
+naming both dates. To reinstall:
+
+```
+pyenv install -f --deps=prebuilt 3.13.5
+```
 
 ## PyPy
 
