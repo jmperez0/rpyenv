@@ -584,11 +584,12 @@ fn verify(
             c.lib
         ));
     }
-    // M8 design §4.4 is for CPython built from source (ruling R14): PyPy's and conda's
-    // `verify_py*` steps keep upstream's checks only.
+    // M8 design §4.4 is for CPython built from source (ruling R14) and for a prebuilt build
+    // (§7): PyPy's and conda's `verify_py*` steps keep upstream's checks only.
     let from_source = pkg.steps.iter().any(|s| s == "standard");
-    if let Some(minor) = super::stdlib::minor_of_step(step).filter(|_| from_source) {
-        stdlib_check(job, plan, minor, python, say)?;
+    let prebuilt = pkg.steps.iter().any(|s| s == "prebuilt");
+    if let Some(minor) = super::stdlib::minor_of_step(step).filter(|_| from_source || prebuilt) {
+        stdlib_check(job, plan, minor, python, prebuilt, say)?;
     }
     Ok(())
 }
@@ -607,7 +608,8 @@ raise SystemExit(0 if ok else 1)
 /// What §4.4 also checks when the build route supplied Tcl and Tk (final review I1).
 pub(crate) struct StoreTcl<'a> {
     /// `<root>/cache/deps`: Tcl's library must not lie under it.
-    pub cache: &'a Path,
+    /// `None` (a prebuilt build): only the venv check runs.
+    pub cache: Option<&'a Path>,
     /// Whether a path exists (the filesystem, or a fake in tests).
     pub exists: &'a dyn Fn(&Path) -> bool,
     /// Makes a throwaway virtual environment from the built interpreter and starts Tcl in it:
@@ -621,10 +623,14 @@ pub(crate) fn stdlib_failures(
     run: &dyn Fn(&[&str]) -> (bool, String),
     minor: u32,
     store_tcl: Option<&StoreTcl>,
+    skip: &[&str],
 ) -> Vec<String> {
     let mut out = Vec::new();
     for m in super::stdlib::modules(minor) {
         for i in m.imports {
+            if skip.contains(i) {
+                continue;
+            }
             let code = format!("import {i}");
             if !run(&["-c", &code]).0 {
                 out.push(format!("{} (import {i} failed; needs {})", m.name, m.lib));
@@ -656,14 +662,16 @@ pub(crate) fn stdlib_failures(
         // M8 design §4.4: a store-built Tcl reads its library from outside the build cache
         // (deleting the cache must not break it), and starts in a venv too (§6.3).
         let lib = tcl_out.trim();
-        if Path::new(lib).starts_with(s.cache) {
-            out.push(format!(
-                "tkinter (Tcl's library {lib} is in the build cache; needs tk)"
-            ));
-        } else if !(s.exists)(Path::new(lib)) {
-            out.push(format!(
-                "tkinter (Tcl's library {lib} doesn't exist; needs tk)"
-            ));
+        if let Some(cache) = s.cache {
+            if Path::new(lib).starts_with(cache) {
+                out.push(format!(
+                    "tkinter (Tcl's library {lib} is in the build cache; needs tk)"
+                ));
+            } else if !(s.exists)(Path::new(lib)) {
+                out.push(format!(
+                    "tkinter (Tcl's library {lib} doesn't exist; needs tk)"
+                ));
+            }
         }
         match (s.in_venv)() {
             Ok(true) => {}
@@ -708,6 +716,7 @@ fn stdlib_check(
     plan: &Plan,
     minor: u32,
     python: &Path,
+    prebuilt: bool,
     say: &mut dyn FnMut(&str),
 ) -> R<()> {
     let sigint_seen = std::cell::Cell::new(false);
@@ -780,12 +789,26 @@ fn stdlib_check(
         .filter(|s| !s.scripts.is_empty())
         .and_then(|s| s.entries.iter().find(|e| e.key == "tcl"))
         .and_then(|e| e.dir.parent());
-    let store_tcl = cache.map(|cache| StoreTcl {
-        cache,
-        exists: &exists,
-        in_venv: &in_venv,
-    });
-    let fails = stdlib_failures(&run, minor, store_tcl.as_ref());
+    let store_tcl = if prebuilt {
+        // Tcl must start in a venv (measured broken in 2024 builds); no cache to keep out of.
+        Some(StoreTcl {
+            cache: None,
+            exists: &exists,
+            in_venv: &in_venv,
+        })
+    } else {
+        cache.map(|cache| StoreTcl {
+            cache: Some(cache),
+            exists: &exists,
+            in_venv: &in_venv,
+        })
+    };
+    let skipped_imports: &[&str] = if prebuilt {
+        &super::prebuilt::SKIPPED_IMPORTS
+    } else {
+        &[]
+    };
+    let fails = stdlib_failures(&run, minor, store_tcl.as_ref(), skipped_imports);
     if interrupted() || sigint_seen.get() {
         return Err(InstallError::Interrupted);
     }
@@ -819,6 +842,16 @@ fn stdlib_check(
         let os = std::fs::read_to_string(os_path).ok();
         say(&continue_summary(&name, &fails, minor, os.as_deref(), root));
         return Ok(());
+    }
+    if prebuilt && !skip {
+        say(&format!(
+            "pyenv: {name} (a prebuilt build) doesn't work here without: {}",
+            fails.join(", ")
+        ));
+        say(&format!(
+            "Fix the system (certificates: the ca-certificates package; crypt on Fedora: libxcrypt-compat), install it from source instead (pyenv install --deps=build {name}), or set RPYENV_SKIP_PREFLIGHT=1 to keep it."
+        ));
+        return Err(InstallError::Failed);
     }
     let lead = if skip { "pyenv: warning: " } else { "pyenv: " };
     say(&format!(
@@ -1364,6 +1397,29 @@ fn run_step(
                 ))
             })
         }
+        // M8 design §7: a python-build-standalone build is copied as it is, its compiler
+        // settings are rewritten for this system and this folder (D18), then the whole is placed.
+        "prebuilt" => {
+            let staged = txn.stage_dir().join("prebuilt");
+            copy_tree(src, &staged).map_err(|e| {
+                InstallError::Message(format!(
+                    "pyenv: cannot copy {} into {}: {e}",
+                    src.display(),
+                    staged.display()
+                ))
+            })?;
+            super::prebuilt::rewrite_build_settings(&staged, &plan.prefix)
+                .map_err(|m| InstallError::Message(format!("pyenv: {m}")))?;
+            if interrupted() {
+                return Err(InstallError::Interrupted);
+            }
+            txn.place(&staged).map_err(|e| {
+                InstallError::Message(format!(
+                    "pyenv: cannot move the build into {}: {e}",
+                    plan.prefix.display()
+                ))
+            })
+        }
         // python-build's `build_package_anaconda` and `build_package_miniconda` (M7b design §4.3):
         // the installer writes straight into the final folder, which `place_empty` created with
         // the marker; `-f` lets it use the existing folder.
@@ -1470,7 +1526,7 @@ mod tests {
             let ok = !(args[1] == "import _uuid" || args[1].contains("get_default_verify_paths"));
             (ok, String::new())
         };
-        let f = stdlib_failures(&fails, 12, None);
+        let f = stdlib_failures(&fails, 12, None, &[]);
         assert!(
             f.contains(&"uuid (import _uuid failed; needs libuuid)".to_string()),
             "{f:?}"
@@ -1481,7 +1537,7 @@ mod tests {
             ),
             "{f:?}"
         );
-        assert!(stdlib_failures(&|_| (true, String::new()), 12, None).is_empty());
+        assert!(stdlib_failures(&|_| (true, String::new()), 12, None, &[]).is_empty());
     }
 
     /// Final review M3: a failed CA check names the file and directory the built Python looked
@@ -1499,7 +1555,7 @@ mod tests {
             }
         };
         assert_eq!(
-            stdlib_failures(&run, 13, None),
+            stdlib_failures(&run, 13, None, &[]),
             ["ssl certificates (no CA file /opt/openssl/ssl/cert.pem and no certificates in /opt/openssl/ssl/certs; needs ca-certificates, or set SSL_CERT_FILE or SSL_CERT_DIR)"]
         );
         // The script prints both places and honors the variables, as Python's own lookup does.
@@ -1698,43 +1754,76 @@ mod tests {
         let venv_ok = || Ok(true);
         let venv_fails = || Ok(false);
         let good = StoreTcl {
-            cache,
+            cache: Some(cache),
             exists: &exists,
             in_venv: &venv_ok,
         };
         for lib in real {
-            let f = stdlib_failures(&says(lib), 12, Some(&good));
+            let f = stdlib_failures(&says(lib), 12, Some(&good), &[]);
             assert!(f.is_empty(), "{lib}: {f:?}");
         }
         assert_eq!(
-            stdlib_failures(&says("/r/cache/deps/tcl-8.6.18-abc/lib/tcl8.6"), 12, Some(&good)),
+            stdlib_failures(&says("/r/cache/deps/tcl-8.6.18-abc/lib/tcl8.6"), 12, Some(&good), &[]),
             ["tkinter (Tcl's library /r/cache/deps/tcl-8.6.18-abc/lib/tcl8.6 is in the build cache; needs tk)"]
         );
         assert_eq!(
-            stdlib_failures(&says("/r/.rpyenv/tcltk/gone/tcl8.6"), 12, Some(&good)),
+            stdlib_failures(&says("/r/.rpyenv/tcltk/gone/tcl8.6"), 12, Some(&good), &[]),
             ["tkinter (Tcl's library /r/.rpyenv/tcltk/gone/tcl8.6 doesn't exist; needs tk)"]
         );
         let no_venv = StoreTcl {
-            cache,
+            cache: Some(cache),
             exists: &exists,
             in_venv: &venv_fails,
         };
         assert_eq!(
-            stdlib_failures(&says(real[0]), 12, Some(&no_venv)),
+            stdlib_failures(&says(real[0]), 12, Some(&no_venv), &[]),
             ["tkinter (Tcl doesn't start in a virtual environment; needs tk)"]
         );
         let venv_cannot = || Err("no private folder".to_string());
         let cannot = StoreTcl {
-            cache,
+            cache: Some(cache),
             exists: &exists,
             in_venv: &venv_cannot,
         };
         assert_eq!(
-            stdlib_failures(&says(real[0]), 12, Some(&cannot)),
+            stdlib_failures(&says(real[0]), 12, Some(&cannot), &[]),
             ["tkinter (could not check Tcl in a virtual environment: no private folder)"]
         );
         // Without the store, neither where Tcl's library is nor venvs are checked.
-        assert!(stdlib_failures(&says("/usr/share/tcltk/tcl8.6"), 12, None).is_empty());
+        assert!(stdlib_failures(&says("/usr/share/tcltk/tcl8.6"), 12, None, &[]).is_empty());
+    }
+
+    #[test]
+    fn stdlib_failures_skips_the_given_imports_and_checks_tcl_in_a_venv_without_a_cache() {
+        let run = |args: &[&str]| -> (bool, String) {
+            let a = args[1];
+            (
+                !(a == "import dbm.gnu" || a == "import nis"),
+                "/v/lib/tcl9.0\n".into(),
+            )
+        };
+        let exists = |_: &Path| true;
+        let venv_ok = || Ok(false);
+        let t = StoreTcl {
+            cache: None,
+            exists: &exists,
+            in_venv: &venv_ok,
+        };
+        let f = stdlib_failures(
+            &run,
+            12,
+            Some(&t),
+            &crate::install::prebuilt::SKIPPED_IMPORTS,
+        );
+        assert_eq!(
+            f,
+            vec!["tkinter (Tcl doesn't start in a virtual environment; needs tk)".to_string()]
+        );
+        let f = stdlib_failures(&run, 12, None, &[]);
+        assert!(
+            f.iter().any(|l| l.starts_with("dbm ")) && f.iter().any(|l| l.starts_with("nis ")),
+            "{f:?}"
+        );
     }
 
     /// H3: the throwaway venv folder is always a new one (mode 0700); a folder or a link that
