@@ -14,8 +14,17 @@ pub struct Record {
     pub definition: String,
     /// (library, version, origin)
     pub libs: Vec<(String, String, Origin)>,
-    /// (release, arch) of a python-build-standalone build (`prebuilt <release> <arch>`).
-    pub prebuilt: Option<(String, String)>,
+    /// The python-build-standalone build, from `prebuilt <release> <arch> [<openssl>]`.
+    pub prebuilt: Option<Prebuilt>,
+}
+
+/// A prebuilt build's record line (M8 design §7).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Prebuilt {
+    pub release: String,
+    pub arch: String,
+    /// The bundled OpenSSL; records written before rpyenv stored it don't have it.
+    pub openssl: Option<String>,
 }
 
 /// The file's text: a comment, `definition <name>`, then `<library> <version> <origin>` per
@@ -32,11 +41,11 @@ pub fn text(definition: &str, entries: &[Entry]) -> String {
 }
 
 /// The record of a prebuilt build (M8 design §7): the definition, then
-/// `prebuilt <release> <arch>`, which `parse` doesn't take as a library.
+/// `prebuilt <release> <arch> <openssl>`, which `parse` doesn't take as a library.
 pub fn prebuilt_text(definition: &str, row: &super::prebuilt::Row) -> String {
     format!(
-        "# The python-build-standalone build rpyenv installed (M8 design §7).\ndefinition {definition}\nprebuilt {} {}\n",
-        row.release, row.arch
+        "# The python-build-standalone build rpyenv installed (M8 design §7).\ndefinition {definition}\nprebuilt {} {} {}\n",
+        row.release, row.arch, row.openssl
     )
 }
 
@@ -51,9 +60,21 @@ pub fn parse(text: &str) -> Option<Record> {
         match w.as_slice() {
             // The name is looked up as a path later, so it must be one plain name.
             ["definition", d] if super::is_plain_name(d) => definition = Some(d.to_string()),
-            ["prebuilt", release, arch] => {
-                prebuilt = Some((release.to_string(), arch.to_string()));
+            // Final review A1: only a well-formed line; the date is later sliced as 8 digits.
+            // The OpenSSL word is in records written since final review B1.
+            ["prebuilt", release, arch, rest @ ..]
+                if rest.len() <= 1
+                    && super::prebuilt::is_release(release)
+                    && super::prebuilt::is_arch(arch)
+                    && rest.iter().all(|o| super::prebuilt::is_openssl(o)) =>
+            {
+                prebuilt = Some(Prebuilt {
+                    release: release.to_string(),
+                    arch: arch.to_string(),
+                    openssl: rest.first().map(|o| o.to_string()),
+                });
             }
+            ["prebuilt", ..] => {}
             [k, v, o] if !k.starts_with('#') => {
                 if let Some(o) = Origin::from_word(o) {
                     libs.push((k.to_string(), v.to_string(), o));
@@ -69,35 +90,52 @@ pub fn parse(text: &str) -> Option<Record> {
     })
 }
 
-/// (release, OpenSSL version) of a prebuilt table row.
-pub type Build = (String, String);
-
 /// One line per installed version whose recorded libraries differ from what rpyenv would build
 /// today (M8 design §6.3, ruling P12), in name order. `now(library, definition, origin)`: that
 /// version, or `None` when unknown (the line then leaves the library out). A prebuilt version
-/// gets a line when `prebuilt_now(definition, arch)`, the table's (release, OpenSSL), is a later
-/// release than the one recorded.
+/// gets a line when the prebuilt table `table` has a later release of its definition for the
+/// recorded arch; otherwise when the table has a later patch of its minor (final review B1).
 pub fn stale_lines(
     versions: &Path,
     now: &dyn Fn(&str, &str, Origin) -> Option<String>,
-    prebuilt_now: &dyn Fn(&str, &str) -> Option<Build>,
+    table: &[super::prebuilt::Row],
 ) -> Vec<String> {
     let mut out = Vec::new();
     for (name, r) in records(versions) {
-        if let Some((release, arch)) = &r.prebuilt {
-            if let Some((newer, openssl)) = prebuilt_now(&r.definition, arch) {
-                if newer.as_str() > release.as_str() {
-                    let reinstall = if name == r.definition {
-                        name.clone()
-                    } else {
-                        format!("{}:{name}", r.definition)
-                    };
-                    out.push(format!(
-                        "pyenv: {name} is the python-build-standalone build of {}; rpyenv now offers the one of {} (OpenSSL {openssl}). To reinstall it: pyenv install -f --deps=prebuilt {reinstall}",
-                        super::prebuilt::date(release),
-                        super::prebuilt::date(&newer)
-                    ));
-                }
+        if let Some(Prebuilt {
+            release,
+            arch,
+            openssl: was,
+        }) = &r.prebuilt
+        {
+            let own = super::prebuilt::find(table, &r.definition, arch)
+                .filter(|row| row.release.as_str() > release.as_str());
+            if let Some(row) = own {
+                let reinstall = if name == r.definition {
+                    name.clone()
+                } else {
+                    format!("{}:{name}", r.definition)
+                };
+                out.push(format!(
+                    "pyenv: {name} is the python-build-standalone build of {}; rpyenv now offers the one of {} (OpenSSL {}). To reinstall it: pyenv install -f --deps=prebuilt {reinstall}",
+                    super::prebuilt::date(release),
+                    super::prebuilt::date(&row.release),
+                    row.openssl
+                ));
+            } else if let Some(row) = super::prebuilt::newer_patch(table, &r.definition, arch) {
+                // One line per version: the own row's newer build above wins (final review B1).
+                let was = was
+                    .as_ref()
+                    .map(|o| format!(" (OpenSSL {o})"))
+                    .unwrap_or_default();
+                out.push(format!(
+                    "pyenv: {name} is the python-build-standalone build of {}{was}; rpyenv offers {}, built {} (OpenSSL {}): pyenv install --deps=prebuilt {}",
+                    super::prebuilt::date(release),
+                    row.name,
+                    super::prebuilt::date(&row.release),
+                    row.openssl,
+                    row.name
+                ));
             }
         }
         let (mut was, mut is) = (Vec::new(), Vec::new());
@@ -253,11 +291,19 @@ mod tests {
         let t = prebuilt_text("3.13.16", &row);
         assert_eq!(
             t,
-            "# The python-build-standalone build rpyenv installed (M8 design §7).\ndefinition 3.13.16\nprebuilt 20261020 x86_64\n"
+            "# The python-build-standalone build rpyenv installed (M8 design §7).\ndefinition 3.13.16\nprebuilt 20261020 x86_64 3.5.9\n"
         );
         let r = parse(&t).unwrap();
         assert_eq!(r.definition, "3.13.16");
         assert!(r.libs.is_empty(), "{:?}", r.libs);
+        assert_eq!(
+            r.prebuilt,
+            Some(Prebuilt {
+                release: "20261020".into(),
+                arch: "x86_64".into(),
+                openssl: Some("3.5.9".into())
+            })
+        );
     }
 
     #[test]
@@ -271,21 +317,167 @@ mod tests {
         )
         .unwrap();
         let none = |_: &str, _: &str, _: Origin| None;
-        let newer = |d: &str, a: &str| {
-            (d == "3.13.16" && a == "x86_64")
-                .then(|| ("20261105".to_string(), "3.5.10".to_string()))
-        };
+        let newer = [
+            table_row("3.13.16", "x86_64", "20261105", "3.5.10"),
+            table_row("3.13.16", "aarch64", "20261201", "3.5.11"),
+        ];
         assert_eq!(
             stale_lines(v, &none, &newer),
             vec!["pyenv: mine is the python-build-standalone build of 2026-10-20; rpyenv now offers the one of 2026-11-05 (OpenSSL 3.5.10). To reinstall it: pyenv install -f --deps=prebuilt 3.13.16:mine".to_string()]
         );
-        let same = |_: &str, _: &str| Some(("20261020".to_string(), "3.5.9".to_string()));
+        let same = [table_row("3.13.16", "x86_64", "20261020", "3.5.9")];
         assert!(stale_lines(v, &none, &same).is_empty());
-        let gone = |_: &str, _: &str| None;
-        assert!(stale_lines(v, &none, &gone).is_empty());
+        assert!(stale_lines(v, &none, &[]).is_empty());
         let r = parse("definition 3.13.16\nprebuilt 20261020 x86_64\n").unwrap();
-        assert_eq!(r.prebuilt, Some(("20261020".into(), "x86_64".into())));
+        assert_eq!(
+            r.prebuilt,
+            Some(Prebuilt {
+                release: "20261020".into(),
+                arch: "x86_64".into(),
+                openssl: None
+            })
+        );
         assert!(r.libs.is_empty());
+    }
+
+    /// Final review A1: a malformed `prebuilt` line is ignored; the definition still counts.
+    #[test]
+    fn a_malformed_prebuilt_line_is_ignored() {
+        for bad in [
+            "prebuilt 123é567 x86_64",
+            "prebuilt 2026102 x86_64",
+            "prebuilt 202610201 x86_64",
+            "prebuilt 20261020 arm",
+            "prebuilt 20261020",
+            "prebuilt 20261020 x86_64 3.5/9",
+            "prebuilt 20261020 x86_64 3.5.9 extra",
+        ] {
+            let r = parse(&format!("definition 3.13.16\n{bad}\n")).unwrap();
+            assert_eq!(r.definition, "3.13.16", "{bad}");
+            assert_eq!(r.prebuilt, None, "{bad}");
+        }
+        let r = parse("definition 3.13.16\nprebuilt 20261020 aarch64 3.5.9\n").unwrap();
+        assert_eq!(
+            r.prebuilt,
+            Some(Prebuilt {
+                release: "20261020".into(),
+                arch: "aarch64".into(),
+                openssl: Some("3.5.9".into())
+            })
+        );
+    }
+
+    /// Final review A1: such a record makes no line and no panic.
+    #[test]
+    fn stale_lines_skip_a_record_with_a_malformed_prebuilt_line() {
+        let d = tempfile::tempdir().unwrap();
+        let v = d.path();
+        for (name, line) in [
+            ("a", "prebuilt 123é567 x86_64"),
+            ("b", "prebuilt 2026102 x86_64"),
+            ("c", "prebuilt 20261020 arm"),
+        ] {
+            std::fs::create_dir_all(v.join(name)).unwrap();
+            std::fs::write(
+                v.join(name).join(FILE),
+                format!("definition 3.13.16\n{line}\n"),
+            )
+            .unwrap();
+        }
+        let table = [
+            table_row("3.13.16", "x86_64", "20261105", "3.5.10"),
+            table_row("3.13.16", "arm", "20261105", "3.5.10"),
+            table_row("3.13.17", "x86_64", "20261105", "3.5.10"),
+        ];
+        assert!(stale_lines(v, &|_, _, _| None, &table).is_empty());
+    }
+
+    /// Final review B1: an older patch is told about the table's newest patch of its minor.
+    // allowlist D-133
+    #[test]
+    fn a_prebuilt_record_of_an_older_patch_names_the_newest_patch_of_its_minor() {
+        let d = tempfile::tempdir().unwrap();
+        let v = d.path();
+        let put = |name: &str, body: &str| {
+            std::fs::create_dir_all(v.join(name)).unwrap();
+            std::fs::write(v.join(name).join(FILE), body).unwrap();
+        };
+        put(
+            "3.12.10",
+            "definition 3.12.10\nprebuilt 20250612 x86_64 3.5.0\n",
+        );
+        // The newest patch of its minor: nothing to say.
+        put(
+            "3.12.13",
+            "definition 3.12.13\nprebuilt 20261020 x86_64 3.5.9\n",
+        );
+        // `t` stays `t`; an alias's folder name leads the line.
+        put(
+            "ft",
+            "definition 3.12.10t\nprebuilt 20250612 x86_64 3.5.0\n",
+        );
+        // The table's newer patch is for the other arch only.
+        put(
+            "arm",
+            "definition 3.12.10\nprebuilt 20250612 aarch64 3.5.0\n",
+        );
+        // A record written before the OpenSSL word: the line leaves it out.
+        put("old", "definition 3.12.11\nprebuilt 20250701 x86_64\n");
+        let table = [
+            table_row("3.12.10", "x86_64", "20250612", "3.5.0"),
+            table_row("3.12.10", "aarch64", "20250612", "3.5.0"),
+            table_row("3.12.10t", "x86_64", "20250612", "3.5.0"),
+            table_row("3.12.11", "x86_64", "20250701", "3.5.1"),
+            table_row("3.12.13", "x86_64", "20261020", "3.5.9"),
+            table_row("3.12.13t", "x86_64", "20261020", "3.5.9"),
+            table_row("3.12.14rc1", "x86_64", "20261020", "3.5.9"),
+        ];
+        assert_eq!(
+            stale_lines(v, &|_, _, _| None, &table),
+            [
+                "pyenv: 3.12.10 is the python-build-standalone build of 2025-06-12 (OpenSSL 3.5.0); rpyenv offers 3.12.13, built 2026-10-20 (OpenSSL 3.5.9): pyenv install --deps=prebuilt 3.12.13",
+                "pyenv: ft is the python-build-standalone build of 2025-06-12 (OpenSSL 3.5.0); rpyenv offers 3.12.13t, built 2026-10-20 (OpenSSL 3.5.9): pyenv install --deps=prebuilt 3.12.13t",
+                "pyenv: old is the python-build-standalone build of 2025-07-01; rpyenv offers 3.12.13, built 2026-10-20 (OpenSSL 3.5.9): pyenv install --deps=prebuilt 3.12.13",
+            ]
+        );
+    }
+
+    /// Final review B1: when the version's own row has a newer release, that line alone is said.
+    #[test]
+    fn a_newer_build_of_the_same_version_wins_over_a_newer_patch() {
+        let d = tempfile::tempdir().unwrap();
+        let v = d.path();
+        std::fs::create_dir_all(v.join("3.12.10")).unwrap();
+        std::fs::write(
+            v.join("3.12.10").join(FILE),
+            "definition 3.12.10\nprebuilt 20250101 x86_64 3.4.1\n",
+        )
+        .unwrap();
+        let table = [
+            table_row("3.12.10", "x86_64", "20250612", "3.5.0"),
+            table_row("3.12.13", "x86_64", "20261020", "3.5.9"),
+        ];
+        assert_eq!(
+            stale_lines(v, &|_, _, _| None, &table),
+            ["pyenv: 3.12.10 is the python-build-standalone build of 2025-01-01; rpyenv now offers the one of 2025-06-12 (OpenSSL 3.5.0). To reinstall it: pyenv install -f --deps=prebuilt 3.12.10"]
+        );
+    }
+
+    /// A row of the prebuilt table.
+    fn table_row(
+        name: &str,
+        arch: &str,
+        release: &str,
+        openssl: &str,
+    ) -> crate::install::prebuilt::Row {
+        crate::install::prebuilt::Row {
+            name: name.into(),
+            arch: arch.into(),
+            release: release.into(),
+            sha256: "0".repeat(64),
+            openssl: openssl.into(),
+            tk: "9.0".into(),
+        }
     }
 
     #[test]
@@ -326,7 +518,7 @@ sqlite 3.54.0 catalog
             }
         };
         assert_eq!(
-            stale_lines(v, &now, &|_, _| None),
+            stale_lines(v, &now, &[]),
             [
                 "pyenv: 3.12.15 was built with openssl 3.6.4, sqlite 3.54.0; rpyenv now builds openssl 3.6.5, sqlite 3.54.1. To rebuild it: pyenv install -f --deps=build 3.12.15",
                 "pyenv: mine was built with sqlite 3.54.0; rpyenv now builds sqlite 3.54.1. To rebuild it: pyenv install -f --deps=build 3.14.8:mine",

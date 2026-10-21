@@ -763,14 +763,13 @@ pub fn install(ctx: &Ctx, args: &[&str]) -> Output {
     crate::install::record::heal_scripts(&ctx.root);
     // The prebuilt builds' newer releases in the table (D19); said even when the catalog can't be read.
     let prebuilt_rows = prebuilt::table().unwrap_or_default();
-    let prebuilt_now = |d: &str, a: &str| {
-        prebuilt::find(&prebuilt_rows, d, a).map(|r| (r.release.clone(), r.openssl.clone()))
-    };
     let catalog_rows = catalog::table(&env);
     if catalog_rows.is_err() {
-        for l in
-            crate::install::record::stale_lines(&ctx.versions_dir(), &|_, _, _| None, &prebuilt_now)
-        {
+        for l in crate::install::record::stale_lines(
+            &ctx.versions_dir(),
+            &|_, _, _| None,
+            &prebuilt_rows,
+        ) {
             say(&l);
         }
     }
@@ -790,7 +789,7 @@ pub fn install(ctx: &Ctx, args: &[&str]) -> Output {
                 .find(|r| r.key == lib)
                 .map(|r| r.version.clone())
         };
-        for l in crate::install::record::stale_lines(&ctx.versions_dir(), &now, &prebuilt_now) {
+        for l in crate::install::record::stale_lines(&ctx.versions_dir(), &now, &prebuilt_rows) {
             say(&l);
         }
         // The private OPENSSLDIR follows the system's certificates (D-127).

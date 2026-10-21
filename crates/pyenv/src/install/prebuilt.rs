@@ -37,6 +37,21 @@ fn is_version_name(s: &str) -> bool {
     digits(a) && digits(b) && digits(num) && pre_ok
 }
 
+/// A release tag: 8 ASCII digits (`YYYYMMDD`).
+pub fn is_release(s: &str) -> bool {
+    s.len() == 8 && s.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// One of the two arches the table holds.
+pub fn is_arch(s: &str) -> bool {
+    matches!(s, "x86_64" | "aarch64")
+}
+
+/// An OpenSSL version word: letters, digits and dots.
+pub fn is_openssl(s: &str) -> bool {
+    !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.')
+}
+
 pub fn parse(text: &str) -> Result<Vec<Row>, String> {
     text.lines()
         .filter(|l| !l.is_empty() && !l.starts_with('#'))
@@ -47,16 +62,12 @@ pub fn parse(text: &str) -> Result<Vec<Row>, String> {
                 return Err(bad());
             };
             let ok = is_version_name(name)
-                && matches!(*arch, "x86_64" | "aarch64")
-                && release.len() == 8
-                && release.bytes().all(|b| b.is_ascii_digit())
+                && is_arch(arch)
+                && is_release(release)
                 && *release >= FIRST_ATTESTED
                 && sha.len() == 64
                 && sha.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
-                && !openssl.is_empty()
-                && openssl
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b == b'.')
+                && is_openssl(openssl)
                 && matches!(*tk, "8.6" | "9.0");
             if !ok {
                 return Err(bad());
@@ -149,12 +160,55 @@ pub fn definition_text(row: &Row, verify_step: &str) -> String {
     )
 }
 
+/// `YYYY-MM-DD` of a release tag; anything that is not 8 ASCII digits comes back unchanged.
 pub fn date(release: &str) -> String {
-    if release.len() == 8 {
+    if is_release(release) {
         format!("{}-{}-{}", &release[..4], &release[4..6], &release[6..])
     } else {
         release.to_string()
     }
+}
+
+/// The order of a version name, and whether it is free-threaded: `[X, Y, Z, stage, N]` with
+/// stage 0, 1, 2 for `aN`, `bN`, `rcN` and 3 (N 0) for a final release.
+fn version_key(name: &str) -> Option<([u64; 5], bool)> {
+    if !is_version_name(name) {
+        return None;
+    }
+    let (core, ft) = match name.strip_suffix('t') {
+        Some(c) => (c, true),
+        None => (name, false),
+    };
+    let mut parts = core.splitn(3, '.');
+    let x = parts.next()?.parse().ok()?;
+    let y = parts.next()?.parse().ok()?;
+    let c = parts.next()?;
+    let end = c.find(|ch: char| !ch.is_ascii_digit()).unwrap_or(c.len());
+    let (z, pre) = c.split_at(end);
+    let (stage, n) = if pre.is_empty() {
+        (3, 0)
+    } else {
+        let (stage, rest) = [(0, "a"), (1, "b"), (2, "rc")]
+            .iter()
+            .find_map(|(st, p)| pre.strip_prefix(p).map(|r| (*st, r)))?;
+        (stage, rest.parse().ok()?)
+    };
+    Some(([x, y, z.parse().ok()?, stage, n], ft))
+}
+
+/// Final review B1: python-build-standalone rebuilds only the newest patch of each minor, so an
+/// older patch never gets a newer build. The table's highest version above `definition` with
+/// the same `X.Y` and variant (`t` or not) for `arch`, compared numerically; final releases
+/// only, unless `definition` is itself a prerelease (then later prereleases count too).
+pub fn newer_patch<'a>(rows: &'a [Row], definition: &str, arch: &str) -> Option<&'a Row> {
+    let (have, ft) = version_key(definition)?;
+    let pre_ok = have[3] < 3;
+    rows.iter()
+        .filter(|r| r.arch == arch)
+        .filter_map(|r| version_key(&r.name).map(|(k, t)| (k, t, r)))
+        .filter(|(k, t, _)| *t == ft && k[..2] == have[..2] && *k > have && (pre_ok || k[3] == 3))
+        .max_by_key(|(k, _, _)| *k)
+        .map(|(_, _, r)| r)
 }
 
 pub fn summary(row: &Row) -> String {
@@ -172,15 +226,18 @@ pub fn tk9_line(row: &Row) -> Option<&'static str> {
     )
 }
 
-/// `/install` at the start of a path: after a quote, a blank, `=`, `:`, or `-I`/`-L`, and
-/// followed by `/`, a quote, a blank or the end.
+/// `/install` at the start of a path: after a quote, a blank, `=`, `:`, `,`, `(`, `;`, or
+/// `-I`/`-L`, and followed by `/`, a quote, a blank or the end.
 fn install_at(b: &[u8], i: usize) -> bool {
     const P: &[u8] = b"/install";
     if !b[i..].starts_with(P) {
         return false;
     }
     let before_ok = i == 0
-        || matches!(b[i - 1], b'\'' | b'"' | b' ' | b'\t' | b'\n' | b'=' | b':')
+        || matches!(
+            b[i - 1],
+            b'\'' | b'"' | b' ' | b'\t' | b'\n' | b'=' | b':' | b',' | b'(' | b';'
+        )
         || (i >= 2 && b[i - 2] == b'-' && matches!(b[i - 1], b'I' | b'L'));
     let after = b.get(i + P.len()).copied();
     let after_ok = matches!(
@@ -391,6 +448,94 @@ mod tests {
             out,
             "CC=\t\tcc -pthread\nprefix=\t\t/r/v\nLIBPL=$(prefix)/lib\n"
         );
+    }
+
+    /// Final review A1: a date that is not 8 ASCII digits comes back unchanged (no panic on a
+    /// multi-byte letter).
+    #[test]
+    fn date_formats_only_eight_ascii_digits() {
+        assert_eq!(date("20261020"), "2026-10-20");
+        for odd in ["123é567", "2026102", "202610201", "2026102x", ""] {
+            assert_eq!(date(odd), odd);
+        }
+    }
+
+    /// Final review C3: `/install` after `,`, `(` or `;` is the build prefix too.
+    #[test]
+    fn rewrite_replaces_install_after_a_comma_a_parenthesis_or_a_semicolon() {
+        for (t, want) in [
+            ("-Wl,-rpath,/install/lib", "-Wl,-rpath,/r/v/lib"),
+            ("$(/install/bin/x)", "$(/r/v/bin/x)"),
+            ("a;/install/lib", "a;/r/v/lib"),
+            ("'X': '-Wl,-rpath,/install'", "'X': '-Wl,-rpath,/r/v'"),
+        ] {
+            assert_eq!(rewrite_text(t, "/r/v"), want, "{t}");
+        }
+        for same in [
+            "INSTALL=/usr/bin/install -c",
+            "./install",
+            "$(srcdir)/install-sh",
+            "/opt/install",
+        ] {
+            assert_eq!(rewrite_text(same, "/r/v"), same);
+        }
+    }
+
+    /// Final review B1: the newest later patch of the same minor and variant, for one arch.
+    #[test]
+    fn newer_patch_finds_a_later_patch_of_the_same_minor_and_variant() {
+        let mut rows = vec![
+            row("3.12.10", "x86_64", "8.6"),
+            row("3.12.12", "x86_64", "9.0"),
+            row("3.12.13", "x86_64", "9.0"),
+            row("3.12.14", "aarch64", "9.0"),
+            row("3.13.0", "x86_64", "9.0"),
+            row("3.12.13t", "x86_64", "9.0"),
+            row("3.12.14rc1", "x86_64", "9.0"),
+            row("3.16.0a1", "x86_64", "9.0"),
+            row("3.16.0a2", "x86_64", "9.0"),
+            row("3.16.0b1t", "x86_64", "9.0"),
+        ];
+        let name = |r: Option<&Row>| r.map(|r| r.name.clone());
+        // Numeric order (3.12.13 > 3.12.9), not text order; the other arch's 3.12.14 and
+        // the prerelease 3.12.14rc1 don't count; 3.13.0 is another minor.
+        assert_eq!(
+            name(newer_patch(&rows, "3.12.10", "x86_64")),
+            Some("3.12.13".into())
+        );
+        assert_eq!(
+            name(newer_patch(&rows, "3.12.9", "x86_64")),
+            Some("3.12.13".into())
+        );
+        // The newest patch itself has none.
+        assert_eq!(name(newer_patch(&rows, "3.12.13", "x86_64")), None);
+        // `t` stays `t`.
+        assert_eq!(
+            name(newer_patch(&rows, "3.12.10t", "x86_64")),
+            Some("3.12.13t".into())
+        );
+        assert_eq!(name(newer_patch(&rows, "3.12.13t", "x86_64")), None);
+        // Another arch: only its own rows.
+        assert_eq!(
+            name(newer_patch(&rows, "3.12.10", "aarch64")),
+            Some("3.12.14".into())
+        );
+        // An installed prerelease: later prereleases and finals count.
+        assert_eq!(
+            name(newer_patch(&rows, "3.16.0a1", "x86_64")),
+            Some("3.16.0a2".into())
+        );
+        assert_eq!(
+            name(newer_patch(&rows, "3.16.0a1t", "x86_64")),
+            Some("3.16.0b1t".into())
+        );
+        rows.push(row("3.16.0", "x86_64", "9.0"));
+        assert_eq!(
+            name(newer_patch(&rows, "3.16.0a2", "x86_64")),
+            Some("3.16.0".into())
+        );
+        // A name that is not a version has none.
+        assert_eq!(name(newer_patch(&rows, "mine", "x86_64")), None);
     }
 
     #[test]

@@ -256,7 +256,7 @@ fn record(f: &Fixture, name: &str) -> String {
 }
 
 fn prebuilt_record() -> String {
-    format!("definition {DEF}\nprebuilt {RELEASE} {}\n", arch())
+    format!("definition {DEF}\nprebuilt {RELEASE} {} 3.5.9\n", arch())
 }
 
 // allowlist D-131
@@ -707,6 +707,45 @@ fn install_says_when_the_table_has_a_newer_build_of_an_installed_prebuilt_versio
         r.stderr.contains(&line) || r.stdout.contains(&line),
         "{}\n{}",
         r.stdout,
+        r.stderr
+    );
+}
+
+/// Final review B1: an installed older patch, which python-build-standalone never rebuilds, is
+/// told about the table's newest patch of its minor (table only; one line).
+// allowlist D-133
+#[test]
+fn install_names_a_newer_patch_of_an_installed_prebuilt_minor() {
+    let f = Fixture::plain();
+    f.file(
+        &f.root.join("versions").join("3.13.5").join(".rpyenv-deps"),
+        &format!("definition 3.13.5\nprebuilt 20250612 {} 3.5.0\n", arch()),
+    );
+    let t = f.base.join("prebuilt.tsv");
+    let sha = "0".repeat(64);
+    f.file(
+        &t,
+        &format!(
+            "3.13.5\t{a}\t20250612\t{sha}\t3.5.0\t8.6\n{DEF}\t{a}\t{RELEASE}\t{sha}\t3.5.9\t9.0\n",
+            a = arch()
+        ),
+    );
+    let r = run_route(
+        &f,
+        "http://127.0.0.1:9",
+        &t.display().to_string(),
+        &["install", "no-such-definition-9.9.9"],
+        &[],
+    );
+    assert_ne!(r.code, 0, "{}", r.stderr);
+    let line = format!(
+        "pyenv: 3.13.5 is the python-build-standalone build of 2025-06-12 (OpenSSL 3.5.0); rpyenv offers {DEF}, built 2026-10-20 (OpenSSL 3.5.9): pyenv install --deps=prebuilt {DEF}\n"
+    );
+    assert!(r.stderr.contains(&line), "{}", r.stderr);
+    assert_eq!(
+        r.stderr.matches("python-build-standalone build of").count(),
+        1,
+        "{}",
         r.stderr
     );
 }
