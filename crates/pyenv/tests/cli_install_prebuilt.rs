@@ -673,3 +673,33 @@ fn a_users_deps_mode_does_not_keep_a_failing_prebuilt_build() {
         left_in_versions(&f)
     );
 }
+
+/// An installed prebuilt version whose recorded release is older than the table's is named by
+/// any `pyenv install`, even one that then fails.
+#[test]
+fn install_says_when_the_table_has_a_newer_build_of_an_installed_prebuilt_version() {
+    let f = Fixture::plain();
+    f.file(
+        &f.root.join("versions").join("mine").join(".rpyenv-deps"),
+        &format!("definition {DEF}\nprebuilt 20260101 {}\n", arch()),
+    );
+    let (s, sha) = serve_build(Reply::Body, tarball_gz(&[], true));
+    let t = table(&f, Some(&sha), "9.0");
+    let r = run_route(
+        &f,
+        &s.url(""),
+        &t,
+        &["install", "no-such-definition-9.9.9"],
+        &[],
+    );
+    assert_ne!(r.code, 0, "{}", r.stderr);
+    let line = format!(
+        "pyenv: mine is the python-build-standalone build of 2026-01-01; rpyenv now offers the one of 2026-10-20 (OpenSSL 3.5.9). To reinstall it: pyenv install -f --deps=prebuilt {DEF}:mine\n"
+    );
+    assert!(
+        r.stderr.contains(&line) || r.stdout.contains(&line),
+        "{}\n{}",
+        r.stdout,
+        r.stderr
+    );
+}
