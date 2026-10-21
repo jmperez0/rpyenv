@@ -7,6 +7,8 @@ pub mod fakebuild;
 #[cfg(unix)]
 pub mod fakeconda;
 #[cfg(unix)]
+pub mod fakepbs;
+#[cfg(unix)]
 pub mod fakepypy;
 pub mod server;
 pub mod winfake;
