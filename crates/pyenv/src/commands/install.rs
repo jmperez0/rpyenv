@@ -761,7 +761,20 @@ pub fn install(ctx: &Ctx, args: &[&str]) -> Output {
     // M8 design §6.3 and §6.5: once per run, before any version is installed.
     // The shared Tcl/Tk script folders venvs read (§6.3), when one was deleted.
     crate::install::record::heal_scripts(&ctx.root);
-    if let Ok(rows) = catalog::table(&env) {
+    // The prebuilt builds' newer releases in the table (D19); said even when the catalog can't be read.
+    let prebuilt_rows = prebuilt::table().unwrap_or_default();
+    let prebuilt_now = |d: &str, a: &str| {
+        prebuilt::find(&prebuilt_rows, d, a).map(|r| (r.release.clone(), r.openssl.clone()))
+    };
+    let catalog_rows = catalog::table(&env);
+    if catalog_rows.is_err() {
+        for l in
+            crate::install::record::stale_lines(&ctx.versions_dir(), &|_, _, _| None, &prebuilt_now)
+        {
+            say(&l);
+        }
+    }
+    if let Ok(rows) = catalog_rows {
         let now = |lib: &str, def: &str, origin: catalog::Origin| -> Option<String> {
             if origin == catalog::Origin::Definition {
                 // A definition that can't be found or read: unknown, not the catalog's version
@@ -777,7 +790,7 @@ pub fn install(ctx: &Ctx, args: &[&str]) -> Output {
                 .find(|r| r.key == lib)
                 .map(|r| r.version.clone())
         };
-        for l in crate::install::record::stale_lines(&ctx.versions_dir(), &now) {
+        for l in crate::install::record::stale_lines(&ctx.versions_dir(), &now, &prebuilt_now) {
             say(&l);
         }
         // The private OPENSSLDIR follows the system's certificates (D-127).

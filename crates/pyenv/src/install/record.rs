@@ -14,6 +14,8 @@ pub struct Record {
     pub definition: String,
     /// (library, version, origin)
     pub libs: Vec<(String, String, Origin)>,
+    /// (release, arch) of a python-build-standalone build (`prebuilt <release> <arch>`).
+    pub prebuilt: Option<(String, String)>,
 }
 
 /// The file's text: a comment, `definition <name>`, then `<library> <version> <origin>` per
@@ -43,11 +45,15 @@ pub fn prebuilt_text(definition: &str, row: &super::prebuilt::Row) -> String {
 pub fn parse(text: &str) -> Option<Record> {
     let mut definition = None;
     let mut libs = Vec::new();
+    let mut prebuilt = None;
     for l in text.lines() {
         let w: Vec<&str> = l.split_whitespace().collect();
         match w.as_slice() {
             // The name is looked up as a path later, so it must be one plain name.
             ["definition", d] if super::is_plain_name(d) => definition = Some(d.to_string()),
+            ["prebuilt", release, arch] => {
+                prebuilt = Some((release.to_string(), arch.to_string()));
+            }
             [k, v, o] if !k.starts_with('#') => {
                 if let Some(o) = Origin::from_word(o) {
                     libs.push((k.to_string(), v.to_string(), o));
@@ -59,18 +65,41 @@ pub fn parse(text: &str) -> Option<Record> {
     Some(Record {
         definition: definition?,
         libs,
+        prebuilt,
     })
 }
 
+/// (release, OpenSSL version) of a prebuilt table row.
+pub type Build = (String, String);
+
 /// One line per installed version whose recorded libraries differ from what rpyenv would build
 /// today (M8 design §6.3, ruling P12), in name order. `now(library, definition, origin)`: that
-/// version, or `None` when unknown (the line then leaves the library out).
+/// version, or `None` when unknown (the line then leaves the library out). A prebuilt version
+/// gets a line when `prebuilt_now(definition, arch)`, the table's (release, OpenSSL), is a later
+/// release than the one recorded.
 pub fn stale_lines(
     versions: &Path,
     now: &dyn Fn(&str, &str, Origin) -> Option<String>,
+    prebuilt_now: &dyn Fn(&str, &str) -> Option<Build>,
 ) -> Vec<String> {
     let mut out = Vec::new();
     for (name, r) in records(versions) {
+        if let Some((release, arch)) = &r.prebuilt {
+            if let Some((newer, openssl)) = prebuilt_now(&r.definition, arch) {
+                if newer.as_str() > release.as_str() {
+                    let reinstall = if name == r.definition {
+                        name.clone()
+                    } else {
+                        format!("{}:{name}", r.definition)
+                    };
+                    out.push(format!(
+                        "pyenv: {name} is the python-build-standalone build of {}; rpyenv now offers the one of {} (OpenSSL {openssl}). To reinstall it: pyenv install -f --deps=prebuilt {reinstall}",
+                        super::prebuilt::date(release),
+                        super::prebuilt::date(&newer)
+                    ));
+                }
+            }
+        }
         let (mut was, mut is) = (Vec::new(), Vec::new());
         for (lib, v, origin) in &r.libs {
             if let Some(cur) = now(lib, &r.definition, *origin) {
@@ -232,6 +261,34 @@ mod tests {
     }
 
     #[test]
+    fn a_prebuilt_record_names_a_newer_build_in_the_table() {
+        let d = tempfile::tempdir().unwrap();
+        let v = d.path();
+        std::fs::create_dir_all(v.join("mine")).unwrap();
+        std::fs::write(
+            v.join("mine").join(FILE),
+            "# c\ndefinition 3.13.16\nprebuilt 20261020 x86_64\n",
+        )
+        .unwrap();
+        let none = |_: &str, _: &str, _: Origin| None;
+        let newer = |d: &str, a: &str| {
+            (d == "3.13.16" && a == "x86_64")
+                .then(|| ("20261105".to_string(), "3.5.10".to_string()))
+        };
+        assert_eq!(
+            stale_lines(v, &none, &newer),
+            vec!["pyenv: mine is the python-build-standalone build of 2026-10-20; rpyenv now offers the one of 2026-11-05 (OpenSSL 3.5.10). To reinstall it: pyenv install -f --deps=prebuilt 3.13.16:mine".to_string()]
+        );
+        let same = |_: &str, _: &str| Some(("20261020".to_string(), "3.5.9".to_string()));
+        assert!(stale_lines(v, &none, &same).is_empty());
+        let gone = |_: &str, _: &str| None;
+        assert!(stale_lines(v, &none, &gone).is_empty());
+        let r = parse("definition 3.13.16\nprebuilt 20261020 x86_64\n").unwrap();
+        assert_eq!(r.prebuilt, Some(("20261020".into(), "x86_64".into())));
+        assert!(r.libs.is_empty());
+    }
+
+    #[test]
     fn stale_lines_name_each_changed_library_and_how_to_rebuild() {
         let tmp = tempfile::tempdir().unwrap();
         let v = tmp.path();
@@ -269,7 +326,7 @@ sqlite 3.54.0 catalog
             }
         };
         assert_eq!(
-            stale_lines(v, &now),
+            stale_lines(v, &now, &|_, _| None),
             [
                 "pyenv: 3.12.15 was built with openssl 3.6.4, sqlite 3.54.0; rpyenv now builds openssl 3.6.5, sqlite 3.54.1. To rebuild it: pyenv install -f --deps=build 3.12.15",
                 "pyenv: mine was built with sqlite 3.54.0; rpyenv now builds sqlite 3.54.1. To rebuild it: pyenv install -f --deps=build 3.14.8:mine",
