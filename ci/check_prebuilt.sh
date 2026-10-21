@@ -32,7 +32,14 @@ echo "== prebuilt $v ($arch, release $release)"
 root=$(mktemp -d)
 work=$(mktemp -d)
 trap 'rm -rf "$root" "$work"' EXIT
-export PYENV_ROOT="$root"
+# Nothing of the developer's home or pyenv settings may steer or be touched by this run
+# (pip's cache and config live under HOME).
+# The container engine keeps its images under the real HOME (rootless podman can't delete its
+# storage as a plain `rm`), so it runs with the HOME the script started with.
+real_home="$HOME"
+mkdir -p "$work/home" "$work/pyenv-home"
+for name in $(compgen -e | grep '^PYENV_' || true); do unset "$name"; done
+export HOME="$work/home" PYENV_HOME="$work/pyenv-home" PYENV_ROOT="$root"
 out="$work/install.log"
 start=$(date +%s)
 RPYENV_BUILD_DEPS=prebuilt "$bin/pyenv" install "$v" 2>&1 | tee "$out"
@@ -48,10 +55,27 @@ case "$cc" in
   cc*) echo "CC: $cc" ;;
   *) echo "::error::sysconfig CC is '$cc', want one that starts with cc"; exit 1 ;;
 esac
-# The build prefix is /install as a whole path: "/usr/bin/install" and "./install" don't count.
-if grep -nE "(^|[^A-Za-z0-9_.]|-[IL])/install([/\"' ]|$)" "$p"/lib/python3.*/_sysconfigdata_*.py; then
-  echo "::error::the sysconfig data still names /install"; exit 1
-fi
+# The build prefix is /install as a whole path: "/usr/bin/install", "./install", "/opt/install"
+# and "$(srcdir)/install-sh" don't count. Fails when no file matches or the file lacks "prefix"
+# (so the grep below has something to read), and when a leftover is found.
+no_build_prefix() { # <file>...
+  [ "$#" -gt 0 ] || { echo "::error::no lib/python3.*/_sysconfigdata_*.py in the install"; return 1; }
+  local f rc
+  for f in "$@"; do
+    [ -f "$f" ] && grep -q '"prefix"' "$f" || { echo "::error::$f is not a sysconfig data file ("prefix" missing)"; return 1; }
+    rc=0
+    grep -nE "(^|[^A-Za-z0-9_.]|-[IL])/install([/\"' ),]|$)" "$f" || rc=$?
+    case "$rc" in
+      0) echo "::error::$f still names /install"; return 1 ;;
+      1) ;;
+      *) echo "::error::grep failed on $f (status $rc)"; return 1 ;;
+    esac
+  done
+}
+shopt -s nullglob
+sysconfig_files=("$p"/lib/python3.*/_sysconfigdata_*.py)
+shopt -u nullglob
+no_build_prefix "${sysconfig_files[@]}"
 want="prebuilt $release $arch"
 # The record has comment and "definition" lines too; the route's own line is the last one.
 grep -qxF "$want" "$p/.rpyenv-deps" || { echo "::error::.rpyenv-deps has no line '$want':"; cat "$p/.rpyenv-deps"; exit 1; }
@@ -86,7 +110,7 @@ if [ "${PREBUILT_MUSTFAIL:-}" = 1 ]; then
   echo "== must fail: $image without ca-certificates ($engine)"
   rc=0
   # shellcheck disable=SC2086
-  $engine run --rm -e "V=$v" -v "$bin:/in:ro" "$image" bash -c '
+  HOME="$real_home" $engine run --rm -e "V=$v" -v "$bin:/in:ro" "$image" bash -c '
     set -u
     if [ -e /etc/ssl/certs/ca-certificates.crt ]; then echo "image has CA certificates"; exit 90; fi
     mkdir -p /r/root && cd /r

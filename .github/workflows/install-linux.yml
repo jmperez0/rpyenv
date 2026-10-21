@@ -20,6 +20,7 @@ on:
       - "ci/check_deps.sh"
       - "ci/check_prebuilt.sh"
       - "crates/pyenv/prebuilt/**"
+      - "ci/prebuilt_table.py"
       - ".github/workflows/install-linux.yml"
   schedule:
     - cron: "17 3 * * *"
