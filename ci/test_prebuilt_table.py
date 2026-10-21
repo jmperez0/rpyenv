@@ -1,4 +1,5 @@
 """Offline tests of ci/prebuilt_table.py (M8 design §7, D15, D16)."""
+import hashlib
 import io
 import os
 import sys
@@ -107,6 +108,32 @@ class Format(unittest.TestCase):
         body = [l.split("\t")[:2] for l in text.splitlines() if l and not l.startswith("#")]
         self.assertEqual(body, [["3.9.25", "x86_64"], ["3.13.16", "aarch64"], ["3.13.16", "x86_64"], ["3.13.16t", "x86_64"]])
         self.assertEqual(pt.parse_table(text), rows)
+
+
+class Main(unittest.TestCase):
+    def test_creates_a_missing_workdir(self):
+        # The weekly sync passes --workdir "$RUNNER_TEMP/prebuilt", which doesn't exist yet.
+        asset = "cpython-3.13.99+20261021-x86_64-unknown-linux-gnu-install_only.tar.gz"
+        data = b"tarball bytes"
+        sha = hashlib.sha256(data).hexdigest()
+        saved = (sys.argv, pt.list_releases, pt.published_sha, pt.attest, pt.inspect, pt.urllib.request.urlopen)
+        with tempfile.TemporaryDirectory() as d:
+            share = os.path.join(d, "share")
+            os.mkdir(share)
+            open(os.path.join(share, "3.13.99"), "w", encoding="utf-8").close()
+            work = os.path.join(d, "not", "yet")
+            sys.argv = ["prebuilt_table.py", "--share", share, "--workdir", work]
+            pt.list_releases = lambda: [("20261021", [asset], {})]
+            pt.published_sha = lambda *a: sha
+            pt.attest = lambda path: None
+            pt.inspect = lambda path: ("3.5.9", "9.0")
+            pt.urllib.request.urlopen = lambda url, timeout: io.BytesIO(data)
+            try:
+                self.assertEqual(pt.main(), 0)
+            finally:
+                (sys.argv, pt.list_releases, pt.published_sha, pt.attest, pt.inspect,
+                 pt.urllib.request.urlopen) = saved
+            self.assertEqual(os.listdir(work), [])
 
 
 if __name__ == "__main__":

@@ -195,6 +195,7 @@ def main():
         digests = {t: d for t, _, d in releases}
         rows, sums_cache, fresh = {}, {}, 0
         work = a.workdir or tempfile.mkdtemp(prefix="prebuilt-table.")
+        os.makedirs(work, exist_ok=True)
         for (name, arch), tag in sorted(chosen.items()):
             prev = old.get((name, arch))
             if prev and prev[0] == tag:
