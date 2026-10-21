@@ -143,13 +143,21 @@ Only releases from 2025-03-11 on, the first with attestations, are used.
 **Which versions.** CPython 3 versions that rpyenv knows as built-in definitions and for which
 the table has a build, free-threaded ones (`3.13.12t`) included. `PyPy`, conda and CPython 2
 ignore the option. It refuses `-g`, `-p`, a definition file of your own, a version folder
-whose path has a space, colon or shell character, and a version with no build in the table.
+whose path has a space, colon or shell character, a system without glibc (the builds need
+`/lib64/ld-linux-x86-64.so.2` or `/lib/ld-linux-aarch64.so.1`; Alpine and other musl systems,
+and NixOS without nix-ld, don't have it), and a version with no build in the table. On such a
+system the prompt has no `s`.
 
 **What the build lacks.** It has no `dbm.gnu` and no `nis`; the check after the install skips
 these two and requires every other standard-library module, CA certificates, and Tcl in a
 virtual environment. Builds from 2026 ship Tk 9.0, under which some older Tk programs behave
-differently; rpyenv prints a line when the build has Tk 9. `import tkinter` needs no X11
-packages (showing a window still needs a display).
+differently; rpyenv prints a line when the build has Tk 9. The check after the install runs
+`import tkinter` and `tkinter.Tcl()` on every install, so a build that needs X11 libraries the
+system lacks fails there instead of being installed. What was measured: on one build (3.13.16
+for x86_64, release 20261013), `readelf -d` shows that Tk links no X11 library of the system;
+and 3.13.16 for x86_64 (release 20261020) installed in an `ubuntu:24.04` container, which
+has no X11 libraries, failed the check only for the missing CA certificates, so `tkinter` and
+Tcl worked there. Other builds were not examined. Showing a window still needs a display.
 
 **Compiler settings.** The builds were made with `clang` in `/install`. After unpacking,
 rpyenv rewrites `_sysconfigdata_*.py`, `python3.*-config` and the `Makefile` so that `clang`
@@ -162,6 +170,16 @@ naming both dates. To reinstall:
 
 ```
 pyenv install -f --deps=prebuilt 3.13.5
+```
+
+python-build-standalone rebuilds only the newest patch of each minor version, so an older
+patch (for example 3.13.5 once 3.13.6 is out) never gets a newer build. When the table has a
+later patch of the same minor (and the same kind: free-threaded or not), the line names it
+instead, with its date and OpenSSL version, and the command that installs it next to the old
+one:
+
+```
+pyenv install --deps=prebuilt 3.13.6
 ```
 
 ## PyPy

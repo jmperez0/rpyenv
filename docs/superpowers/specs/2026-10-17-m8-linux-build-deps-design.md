@@ -249,17 +249,38 @@ Downloads a python-build-standalone build of the requested version instead of co
   started in a virtual environment as well.
 - **It is never the default** (D8), and the prompt says it is a third-party build, its date and
   its bundled OpenSSL version (D19).
-- **Tk 9:** builds from 2026 ship Tk 9.0 (measured below); the route says so, because some
-  older Tk programs behave differently under Tk 9. The table records each build's Tk.
+- **Tk 9:** builds from 2026 ship Tk 9.0; the route says so, because some older Tk programs
+  behave differently under Tk 9. The table records each build's Tk. Method: the table's tk
+  column, counted by release year (`grep -v '^#' linux.tsv | cut -f3,6 | cut -c1-4,9- | sort
+  | uniq -c`, 2026-10-21): 80 of 80 rows from 2026 have 9.0, 50 of 50 rows from 2025 have 8.6.
 - **Coverage:** rpyenv's built-in CPython definitions that an attested release built for this
   machine's architecture (x86_64 or aarch64, glibc), free-threaded (`t`) ones included (D16);
   for others, `s` is left out.
+- **glibc** (final review A2): the builds are linked against glibc, while rpyenv's own Linux
+  binary is static musl and also runs where glibc is missing (Alpine, NixOS without nix-ld).
+  The route needs the glibc loader for the arch (`/lib64/ld-linux-x86-64.so.2` or
+  `/lib/ld-linux-aarch64.so.1`); without it, `--deps=prebuilt` refuses with `pyenv: no
+  prebuilt builds for this system: python-build-standalone's builds need glibc (<loader> not
+  found)` and the prompt leaves `s` out.
 - **Compiler settings** are rewritten for the system's compiler (D18).
 - **`--deps=prebuilt`** always installs the prebuilt build (it doesn't depend on what is
   missing), and fails when the table has none for this version. `-g` and `-p` can't be used
-  with it.
-- **The record:** `versions/<v>/.rpyenv-deps` names the release; when rpyenv's table later
-  offers a newer build of that version, `pyenv install` says so, as §6.3 does for libraries.
+  with it. Ruling R1: `--deps=prebuilt` and `RPYENV_BUILD_DEPS=prebuilt` act only for
+  definitions that build CPython 3 from source; PyPy, conda and CPython 2.x ignore them, as
+  they ignore the other routes, so "fails when the table has none" applies only to those.
+- **The record:** `versions/<v>/.rpyenv-deps` names the release, the arch and the bundled
+  OpenSSL (`prebuilt <release> <arch> <openssl>`; records without the OpenSSL word are still
+  read); when rpyenv's table later offers a newer build of that version, `pyenv install` says
+  so, as §6.3 does for libraries.
+- **The newest patch** (final review B1, user ruling "extend", 2026-10-21):
+  python-build-standalone rebuilds only the newest patch of each minor, so an installed older
+  patch never gets the newer-build line. When the version's own row has no newer release but
+  the table has a later patch of the same `X.Y` and variant (`t` or not) for the recorded
+  arch, `pyenv install` prints instead `pyenv: <name> is the python-build-standalone build of
+  <date> (OpenSSL <x>); rpyenv offers <newer>, built <date> (OpenSSL <y>): pyenv install
+  --deps=prebuilt <newer>`. `<newer>` is the highest such version, compared numerically; final
+  releases only, unless the installed version is itself a prerelease. Table only, no network;
+  one line per version (the newer-build line wins).
 
 **Measured in M8d, 2026-10-21.**
 
@@ -287,9 +308,21 @@ X11 would show as `libX11.so.6`.
 | `libtcl9tk9.0.so` | libc, libm, libdl, libpthread; no libX11, libxcb, libXft or fontconfig |
 | `python3.13` | libc, libm, libdl, libpthread, librt, libutil |
 
-So `import tkinter` needs no X11 packages; showing a window still needs a display. That
-the X11 client code is linked into the Tk library is an inference (it contains the
-string `XOpenDisplay` but imports no such symbol).
+So, for this one build, `import tkinter` needs no X11 packages; showing a window still needs a
+display. That the X11 client code is linked into the Tk library is an inference (it contains
+the string `XOpenDisplay` but imports no such symbol). Indirectly, the must-fail run of
+`ci/check_prebuilt.sh` (3.13.16 x86_64, release 20261020, in `ubuntu:24.04`, which has no
+libX11 or libxcb files and no X11 packages: checked with `ls` and `dpkg -l` in that image,
+2026-10-21) failed only for "ssl certificates", so `tkinter` and Tcl worked there. Other builds
+were not examined; the check after install runs `import tkinter` and `tkinter.Tcl()` on every
+install, so a build that needs X11 fails visibly.
+
+**Method notes (2026-10-21).** D16's facts were measured with the GitHub API (attestation
+lookups per release) and in Ubuntu 24.04 and Fedora 44 containers (OpenSSL via
+`ssl.OPENSSL_VERSION`; 3.10.4 of 20220528 not starting on Fedora 44: the loader's error for
+`libcrypt.so.1`). D19's static linking was established in containers by
+`sys.builtin_module_names` containing `_ssl` and `_hashlib`, no `_ssl` or libssl file in
+`lib-dynload` or `lib/`, and the OpenSSL init symbol string in libpython.
 
 ## 8. Options considered for reusing compiled libraries (D7)
 
@@ -321,7 +354,7 @@ a development machine):
 | `install` as root: `--deps=install`, full build, §4.4 check | Ubuntu, Fedora | every PR |
 | `build` (M8b): only a compiler, no `-dev` packages; §4.4 check | Ubuntu, Fedora | every PR |
 | X11 build (M8c): no X11 packages; `_tkinter` and `tkinter.Tcl()` work | Ubuntu | every PR |
-| `prebuilt` (M8d): hash and attestation, §4.4 check | Ubuntu | every PR |
+| `prebuilt` (M8d): a real install checked against the table's SHA-256, §4.4 check, a C extension built with the runner's compiler; on x86_64 also a must-fail install without CA certificates (in `ubuntu:24.04`). The attestation is checked by the weekly sync before a row enters the table (D15), not here | Ubuntu runners, x86_64 and aarch64 | every PR |
 | `install` and `build` on all six containers | all six | weekly |
 
 **The check must be able to fail:** for each route, a deliberately incomplete build (one
