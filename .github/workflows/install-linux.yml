@@ -18,6 +18,8 @@ on:
       - "crates/pyenv/build.rs"
       - "ci/check_install.sh"
       - "ci/check_deps.sh"
+      - "ci/check_prebuilt.sh"
+      - "crates/pyenv/prebuilt/**"
       - ".github/workflows/install-linux.yml"
   schedule:
     - cron: "17 3 * * *"
@@ -131,6 +133,31 @@ jobs:
           PYENV_ROOT="$RUNNER_TEMP/root" target/release/pyenv install "$v"
       - name: Check the install
         run: bash ci/check_install.sh "$RUNNER_TEMP/root" "$VERSION"
+
+  # M8d: a real python-build-standalone install (`RPYENV_BUILD_DEPS=prebuilt`) on both
+  # architectures, every time the Linux build runs. The runner's own compiler builds a C
+  # extension with it (the build's CC was clang before the rewrite). On ubuntu-latest the
+  # check also installs in an ubuntu:24.04 container without ca-certificates and requires the
+  # check after install to refuse the build, so the check is known to be able to fail.
+  prebuilt:
+    if: github.event.schedule != '41 4 * * 0'
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    name: prebuilt (${{ matrix.runner }})
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, 2026-10-02
+        with:
+          toolchain: "1.96"
+      - run: cargo build --release -p pyenv -p pyenv-shim
+      - name: Install a prebuilt build and check it
+        env:
+          PREBUILT_MUSTFAIL: ${{ matrix.runner == 'ubuntu-latest' && '1' || '' }}
+        run: bash ci/check_prebuilt.sh "$PWD/target/release"
 
   # M7b design §8: real conda installs. A numbered Miniforge on both architectures, a numbered
   # Miniconda 25.x (the terms variable and `conda install pip` against defaults), and
