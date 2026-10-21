@@ -147,6 +147,28 @@ fn version_file_read_and_write() {
             1
         )
     );
+    // pyenv 2.8.10: an empty version anywhere fails and leaves the file as it was.
+    for args in [
+        ["version-file-write", "--force", "new", "", "2", "3"],
+        ["version-file-write", "--force", "new", "1", "", "3"],
+    ] {
+        let r = f.pyenv(&args);
+        assert_eq!(
+            (r.stderr.as_str(), r.code),
+            ("pyenv: invalid empty version argument\n", 1),
+            "{args:?}"
+        );
+        assert!(!f.work.join("new").exists(), "{args:?}");
+    }
+    let r = f.pyenv(&["version-file-write", "--force", "out", "3.12.1", ""]);
+    assert_eq!(
+        (r.stderr.as_str(), r.code),
+        ("pyenv: invalid empty version argument\n", 1)
+    );
+    assert_eq!(
+        std::fs::read_to_string(f.work.join("out")).unwrap(),
+        "3.12.1\n3.11.9\n"
+    );
 }
 
 #[cfg(windows)]

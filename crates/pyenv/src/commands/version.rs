@@ -190,8 +190,12 @@ pub fn version_file_write(ctx: &Ctx, args: &[&str]) -> Output {
         .take_while(|a| matches!(**a, "-f" | "--force"))
         .count();
     let rest = &args[forced..];
+    // pyenv 2.8.10 prints the usage only when the file or every version is missing; an empty
+    // version fails in `write_checked`. pyenv-win's rule (the first version empty) stays.
     match rest {
-        [file, first, ..] if !file.is_empty() && !first.is_empty() => {
+        [file, first, ..]
+            if !file.is_empty() && (ctx.flavor == Flavor::Pyenv || !first.is_empty()) =>
+        {
             write_checked(ctx, &ctx.pwd.join(file), &rest[1..], forced > 0)
         }
         _ => Output::error("Usage: pyenv version-file-write [-f|--force] <file> <version> [...]"),
@@ -207,6 +211,10 @@ pub fn write_checked(ctx: &Ctx, file: &Path, versions: &[&str], force: bool) -> 
                 return Output::error(e.message());
             }
         }
+    }
+    // pyenv 2.8.10: an empty version fails before anything is written.
+    if ctx.flavor == Flavor::Pyenv && versions.iter().any(|v| v.is_empty()) {
+        return Output::error("pyenv: invalid empty version argument");
     }
     match verfile::write_versions(file, versions, ctx.flavor) {
         Ok(()) => Output::new(),
