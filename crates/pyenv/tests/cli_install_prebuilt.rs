@@ -749,3 +749,123 @@ fn install_names_a_newer_patch_of_an_installed_prebuilt_minor() {
         r.stderr
     );
 }
+
+/// RPYENV_TEST_GLIBC_LOADER's value in the A2 tests: a file that doesn't exist.
+fn no_loader(f: &Fixture) -> String {
+    f.base.join("no-such-ld.so").display().to_string()
+}
+
+/// Final review A2: python-build-standalone's builds need glibc; without its loader (a musl
+/// system, NixOS without nix-ld) `--deps=prebuilt` refuses before downloading.
+// allowlist D-131
+#[test]
+fn deps_prebuilt_refuses_without_the_glibc_loader() {
+    let f = Fixture::plain();
+    let (s, sha) = serve_build(Reply::Body, tarball_gz(&[], true));
+    let t = table(&f, Some(&sha), "9.0");
+    let loader = no_loader(&f);
+    let r = run_route(
+        &f,
+        &s.url(""),
+        &t,
+        &["install", "--deps=prebuilt", DEF],
+        &[("RPYENV_TEST_GLIBC_LOADER", &loader)],
+    );
+    assert_eq!(r.code, 1, "{}", r.stderr);
+    assert!(
+        r.stderr.contains(&format!(
+            "pyenv: no prebuilt builds for this system: python-build-standalone's builds need glibc ({loader} not found)\n"
+        )),
+        "{}",
+        r.stderr
+    );
+    assert_eq!(s.hits(&asset_path()), 0);
+    assert!(left_in_versions(&f).is_empty());
+}
+
+/// Final review A2: and the prompt has no `[s]`.
+// allowlist D-132
+#[test]
+fn the_prompt_leaves_s_out_without_the_glibc_loader() {
+    let f = Fixture::plain();
+    let (s, sha) = serve_build(Reply::Body, tarball_gz(&[], true));
+    let t = table(&f, Some(&sha), "9.0");
+    let loader = no_loader(&f);
+    let r = run_route_input(
+        &f,
+        &s.url(""),
+        &t,
+        &["install", DEF],
+        &[
+            ("RPYENV_TEST_TTY", "1"),
+            ("RPYENV_TEST_PREFLIGHT", "sqlite"),
+            ("RPYENV_TEST_BUILD_TOOLS", "perl,x11"),
+            ("RPYENV_TEST_GLIBC_LOADER", &loader),
+        ],
+        "s\n",
+    );
+    // `s` is refused; then the input ends.
+    assert_eq!(r.code, 1, "{}", r.stderr);
+    assert!(
+        r.stderr.contains("How should rpyenv get them?"),
+        "{}",
+        r.stderr
+    );
+    assert!(!r.stderr.contains("[s]"), "{}", r.stderr);
+    assert_eq!(s.hits(&asset_path()), 0);
+    assert!(left_in_versions(&f).is_empty());
+}
+
+/// Final review C1: a prebuilt alias that fails the check names `<definition>:<name>` in its
+/// hint, as the stale line does.
+#[test]
+fn a_failing_prebuilt_alias_names_the_definition_in_its_hint() {
+    let f = Fixture::plain();
+    let (s, sha) = serve_build(Reply::Body, tarball_gz(&["sqlite3"], true));
+    let t = table(&f, Some(&sha), "9.0");
+    let alias = format!("{DEF}:mine");
+    let r = run_route(
+        &f,
+        &s.url(""),
+        &t,
+        &["install", "--deps=prebuilt", &alias],
+        &[],
+    );
+    assert_eq!(r.code, 1, "{}", r.stderr);
+    assert!(
+        r.stderr
+            .contains(&format!("(pyenv install --deps=build {DEF}:mine)")),
+        "{}",
+        r.stderr
+    );
+    assert!(left_in_versions(&f).is_empty());
+}
+
+/// Final review C2: a relative PYENV_ROOT is checked as the absolute folder that the build's
+/// settings will name (here it has a space).
+// allowlist D-131
+#[test]
+fn deps_prebuilt_checks_a_relative_root_as_its_absolute_path() {
+    let f = Fixture::new();
+    let (s, sha) = serve_build(Reply::Body, tarball_gz(&[], true));
+    let t = table(&f, Some(&sha), "9.0");
+    // The CLI tests run in `<base>/work`; `../root` is the fixture's root.
+    let r = run_route(
+        &f,
+        &s.url(""),
+        &t,
+        &["install", "--deps=prebuilt", DEF],
+        &[("PYENV_ROOT", "../root")],
+    );
+    assert_eq!(r.code, 1, "{}", r.stderr);
+    assert!(
+        r.stderr.contains(&format!(
+            "pyenv: --deps=prebuilt needs a version folder without spaces, colons or shell characters ({})\n",
+            f.work.join("../root/versions").join(DEF).display()
+        )),
+        "{}",
+        r.stderr
+    );
+    assert_eq!(s.hits(&asset_path()), 0);
+    assert!(left_in_versions(&f).is_empty());
+}

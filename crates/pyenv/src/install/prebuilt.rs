@@ -109,6 +109,15 @@ pub fn host_arch() -> Option<&'static str> {
     arch_of(std::env::consts::ARCH)
 }
 
+/// The glibc dynamic loader a build for `arch` runs under (final review A2): a static musl
+/// rpyenv also runs where it is missing (Alpine, NixOS without nix-ld).
+pub fn glibc_loader(arch: &str) -> &'static str {
+    match arch {
+        "aarch64" => "/lib/ld-linux-aarch64.so.1",
+        _ => "/lib64/ld-linux-x86-64.so.2",
+    }
+}
+
 pub fn find<'a>(rows: &'a [Row], name: &str, arch: &str) -> Option<&'a Row> {
     rows.iter().find(|r| r.name == name && r.arch == arch)
 }
