@@ -289,7 +289,8 @@ fn why(d: &Dep) -> String {
 /// The prompt's lines (M8 design §5.1). The reason column is as wide as the longest reason
 /// among `deps`, so the package names line up within one prompt (ruling R7). Programs and CA
 /// certificates are not modules: they get a heading of their own (final review M5). `crb`:
-/// the CRB line (ruling R15).
+/// the CRB line (ruling R15). `prebuilt`: the summary of the build `[s]` installs (M8 design §7).
+#[allow(clippy::too_many_arguments)]
 pub fn prompt_lines(
     version: &str,
     deps: &[Dep],
@@ -298,6 +299,7 @@ pub fn prompt_lines(
     build: Option<&BuildPlan>,
     crb: Option<&str>,
     continue_offered: bool,
+    prebuilt: Option<&str>,
 ) -> Vec<String> {
     let names = |module: bool| {
         deps.iter()
@@ -374,6 +376,11 @@ pub fn prompt_lines(
             }
         }
     }
+    // M8 design §7: a python-build-standalone build of this definition, when the table has one
+    // for this machine (the build `--deps=prebuilt` installs without the prompt).
+    if let Some(s) = prebuilt {
+        out.push(format!("  [s] use a prebuilt CPython instead: {s}"));
+    }
     // Only optional libraries missing: the user may build without them, as a script does,
     // instead of being stopped (for a user without sudo, the other way is `[b]`, when it can
     // build them here).
@@ -394,11 +401,13 @@ pub fn choice(
     install_offered: bool,
     build_offered: bool,
     continue_offered: bool,
+    prebuilt_offered: bool,
 ) -> Option<Route> {
     match line.trim().to_ascii_lowercase().as_str() {
         "" | "p" => Some(Route::System),
         "i" if install_offered => Some(Route::Install),
         "b" if build_offered => Some(Route::Build),
+        "s" if prebuilt_offered => Some(Route::Prebuilt),
         "c" if continue_offered => Some(Route::Continue),
         _ => None,
     }
@@ -511,11 +520,17 @@ pub fn build_plan(
 }
 
 /// The line `prompt` prints after an answer it can't use, listing the letters on offer.
-pub fn answer_hint(install_offered: bool, build_offered: bool, continue_offered: bool) -> String {
+pub fn answer_hint(
+    install_offered: bool,
+    build_offered: bool,
+    continue_offered: bool,
+    prebuilt_offered: bool,
+) -> String {
     let mut letters = vec!["p"];
     for (on, l) in [
         (install_offered, "i"),
         (build_offered, "b"),
+        (prebuilt_offered, "s"),
         (continue_offered, "c"),
     ] {
         if on {
@@ -782,6 +797,7 @@ mod tests {
             None,
             None,
             false,
+            None,
         );
         assert_eq!(
             lines,
@@ -802,6 +818,7 @@ mod tests {
             None,
             None,
             false,
+            None,
         );
         assert!(
             lines.contains(&"  [i] not offered: no sudo on PATH".to_string()),
@@ -816,6 +833,7 @@ mod tests {
             None,
             None,
             false,
+            None,
         );
         assert_eq!(
             lines[5],
@@ -850,6 +868,7 @@ mod tests {
             None,
             None,
             false,
+            None,
         );
         assert_eq!(lines[1], "  ssl       OpenSSL 1.0.2 found, needs 1.1.1+");
         assert_eq!(lines[2], "  uuid      can't link -luuid");
@@ -896,6 +915,7 @@ mod tests {
             None,
             None,
             false,
+            None,
         );
         assert_eq!(
             lines[0],
@@ -907,7 +927,7 @@ mod tests {
         );
         assert_eq!(lines[2], "  dbm       can't link -lgdbm -lgdbm_compat");
         assert_eq!(lines[3], "  tkinter   Tk 9.0.2 found, needs 8.5 or 8.6");
-        let only = prompt_lines("3.12.14", &d[2..], None, Err("x"), None, None, false);
+        let only = prompt_lines("3.12.14", &d[2..], None, Err("x"), None, None, false, None);
         assert_eq!(
             only[0],
             "pyenv: 3.12.14 needs: pkg-config, ssl certificates"
@@ -928,6 +948,7 @@ mod tests {
             None,
             Some(crb),
             false,
+            None,
         );
         let at = lines.iter().position(|l| l == crb).expect("the CRB line");
         assert_eq!(lines[at + 1], "How should rpyenv get them?");
@@ -936,19 +957,19 @@ mod tests {
     #[test]
     fn choices() {
         assert!(matches!(
-            choice("", true, false, false),
+            choice("", true, false, false, false),
             Some(Route::System)
         ));
         assert!(matches!(
-            choice("p", true, false, false),
+            choice("p", true, false, false, false),
             Some(Route::System)
         ));
         assert!(matches!(
-            choice("I", true, false, false),
+            choice("I", true, false, false, false),
             Some(Route::Install)
         ));
-        assert!(choice("i", false, false, false).is_none());
-        assert!(choice("x", true, false, false).is_none());
+        assert!(choice("i", false, false, false, false).is_none());
+        assert!(choice("x", true, false, false, false).is_none());
         assert!(matches!(Route::parse("install"), Some(Route::Install)));
         assert!(matches!(Route::parse("prebuilt"), Some(Route::Prebuilt)));
         assert!(Route::parse("yes").is_none());
@@ -1005,6 +1026,7 @@ mod tests {
             None,
             None,
             true,
+            None,
         );
         assert_eq!(
             lines.last().unwrap(),
@@ -1018,17 +1040,18 @@ mod tests {
             None,
             None,
             false,
+            None,
         );
         assert!(!without.iter().any(|l| l.contains("[c]")), "{without:?}");
         assert!(matches!(
-            choice("c", false, false, true),
+            choice("c", false, false, true, false),
             Some(Route::Continue)
         ));
         assert!(matches!(
-            choice(" C ", false, false, true),
+            choice(" C ", false, false, true, false),
             Some(Route::Continue)
         ));
-        assert!(choice("c", true, false, false).is_none());
+        assert!(choice("c", true, false, false, false).is_none());
         assert!(Route::parse("continue").is_none(), "not a --deps value");
         for hard in ["compiler", "make", "patch", "awk", "openssl", "zlib"] {
             assert!(is_hard(hard), "{hard}");
@@ -1263,6 +1286,7 @@ mod tests {
             None,
             None,
             false,
+            None,
         );
         let text = lines.join(
             "
@@ -1313,6 +1337,7 @@ mod tests {
             Some(&partial),
             None,
             false,
+            None,
         );
         assert!(lines.contains(&"  [b] build them from source for rpyenv, no root (not tkinter: needs the X11 headers, libx11-dev)".to_string()), "{lines:#?}");
         let full = build_plan(&missing, 12, &ALL_TOOLS, false, Ok(()), Some(Manager::Apt));
@@ -1324,6 +1349,7 @@ mod tests {
             Some(&full),
             None,
             false,
+            None,
         );
         let at = lines
             .iter()
@@ -1350,6 +1376,7 @@ mod tests {
             Some(&blocked),
             None,
             false,
+            None,
         );
         assert!(
             lines.contains(&"  [b] not offered: nothing missing can be built here".to_string()),
@@ -1363,18 +1390,86 @@ mod tests {
             None,
             None,
             false,
+            None,
         );
         assert!(!none.iter().any(|l| l.starts_with("  [b]")), "{none:#?}");
     }
 
     #[test]
     fn b_is_a_choice_only_when_offered_and_the_hint_lists_the_letters() {
-        assert_eq!(choice("b", false, true, false), Some(Route::Build));
-        assert_eq!(choice("B", true, true, true), Some(Route::Build));
-        assert_eq!(choice("b", true, false, true), None);
-        assert_eq!(answer_hint(true, true, true), "pyenv: answer p, i, b or c");
-        assert_eq!(answer_hint(false, true, false), "pyenv: answer p or b");
-        assert_eq!(answer_hint(true, false, true), "pyenv: answer p, i or c");
-        assert_eq!(answer_hint(false, false, false), "pyenv: answer p");
+        assert_eq!(choice("b", false, true, false, false), Some(Route::Build));
+        assert_eq!(choice("B", true, true, true, false), Some(Route::Build));
+        assert_eq!(choice("b", true, false, true, false), None);
+        assert_eq!(
+            answer_hint(true, true, true, false),
+            "pyenv: answer p, i, b or c"
+        );
+        assert_eq!(
+            answer_hint(false, true, false, false),
+            "pyenv: answer p or b"
+        );
+        assert_eq!(
+            answer_hint(true, false, true, false),
+            "pyenv: answer p, i or c"
+        );
+        assert_eq!(answer_hint(false, false, false, false), "pyenv: answer p");
+    }
+
+    #[test]
+    fn the_prompt_offers_s_with_the_builds_summary_only_when_given() {
+        let deps = vec![dep("sqlite3", "sqlite")];
+        let s = "python-build-standalone 2026-10-20 (third-party build; OpenSSL 3.5.9, Tk 9.0; no dbm.gnu or nis)";
+        let with = prompt_lines(
+            "3.13.16",
+            &deps,
+            Some(Manager::Apt),
+            Err("x"),
+            None,
+            None,
+            true,
+            Some(s),
+        );
+        let i_s = with
+            .iter()
+            .position(|l| {
+                l.starts_with(
+                    "  [s] use a prebuilt CPython instead: python-build-standalone 2026-10-20",
+                )
+            })
+            .unwrap();
+        let i_c = with.iter().position(|l| l.starts_with("  [c]")).unwrap();
+        assert!(i_s < i_c, "{with:?}");
+        let without = prompt_lines(
+            "3.13.16",
+            &deps,
+            Some(Manager::Apt),
+            Err("x"),
+            None,
+            None,
+            true,
+            None,
+        );
+        assert!(!without.iter().any(|l| l.contains("[s]")), "{without:?}");
+    }
+
+    #[test]
+    fn s_chooses_prebuilt_only_when_offered_and_the_hint_lists_it() {
+        assert_eq!(
+            choice("s", false, false, false, true),
+            Some(Route::Prebuilt)
+        );
+        assert_eq!(
+            choice("S", false, false, false, true),
+            Some(Route::Prebuilt)
+        );
+        assert_eq!(choice("s", true, true, true, false), None);
+        assert_eq!(
+            answer_hint(true, true, true, true),
+            "pyenv: answer p, i, b, s or c"
+        );
+        assert_eq!(
+            answer_hint(false, false, false, true),
+            "pyenv: answer p or s"
+        );
     }
 }

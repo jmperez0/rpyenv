@@ -5,6 +5,7 @@ use crate::install::builder::{self, patch_files, Job, Options};
 use crate::install::conda;
 use crate::install::defs::{self, Found, Origin};
 use crate::install::fetch::Fetcher;
+use crate::install::prebuilt;
 use crate::install::pypy::{self, Verdict};
 use crate::install::txn::{is_complete, Txn};
 use crate::install::{
@@ -281,9 +282,11 @@ fn old_preflight(get: &dyn Fn(&str) -> Option<String>, patch: bool) -> Result<()
 
 /// What `resolve_deps` settled. `cont`: the prompt's `[c]`, so the builder warns at the end
 /// instead of failing. `store`: the build store's entries to link (`[b]`, `--deps=build`).
+/// `prebuilt`: the prompt's `[s]`, so the prebuilt build is installed instead (M8 design §7).
 struct Resolution {
     cont: bool,
     store: Vec<store::Entry>,
+    prebuilt: bool,
 }
 
 /// Builds catalog keys into the store (`store::ensure` with the job's setup).
@@ -300,6 +303,46 @@ fn download_cache(env: &[(OsString, OsString)], root: &Path) -> Option<PathBuf> 
     .filter(|c| c.is_dir())
 }
 
+/// M8 design §7: the prebuilt build `found` may use here, or why it can't (for `--deps=prebuilt`).
+/// The reason is never shown at the prompt: there `[s]` is simply left out.
+fn prebuilt_row(
+    found: &Found,
+    prefix: &Path,
+    debug: bool,
+    patch: bool,
+) -> Result<prebuilt::Row, String> {
+    let name = &found.name;
+    let Some(arch) = prebuilt::host_arch() else {
+        return Err(format!(
+            "pyenv: no prebuilt builds for {} machines",
+            std::env::consts::ARCH
+        ));
+    };
+    if found.origin != Origin::Builtin {
+        return Err(format!(
+            "pyenv: --deps=prebuilt installs only rpyenv's built-in definitions, not {name}"
+        ));
+    }
+    if debug {
+        return Err("pyenv: --deps=prebuilt can't make a debug build (-g)".into());
+    }
+    if patch {
+        return Err("pyenv: --deps=prebuilt can't apply a patch (-p)".into());
+    }
+    if !store::plain_path(prefix) {
+        return Err(format!(
+            "pyenv: --deps=prebuilt needs a version folder without spaces, colons or shell characters ({})",
+            prefix.display()
+        ));
+    }
+    let rows = prebuilt::table()?;
+    prebuilt::find(&rows, name, arch).cloned().ok_or_else(|| {
+        format!(
+            "pyenv: this rpyenv has no prebuilt build of {name} for {arch} (python-build-standalone releases from 2025-03-11 on); install it from source with --deps=system, install or build"
+        )
+    })
+}
+
 /// M8 design §5: detect, then print (system), install (install) or build into the store
 /// (build) until nothing is missing. `Ok` when the build may start; `Err(exit code)` otherwise.
 #[allow(clippy::too_many_arguments)]
@@ -311,6 +354,7 @@ fn resolve_deps(
     flag: Option<&str>,
     root: &Path,
     x11_source: bool,
+    prebuilt: Option<&str>,
     build: &mut StoreBuild,
 ) -> Result<Resolution, i32> {
     use crate::install::deps::{self, Route, SudoUse};
@@ -334,10 +378,6 @@ fn resolve_deps(
         },
         None => None,
     };
-    if chosen == Some(Route::Prebuilt) {
-        say("pyenv: the prebuilt route comes in a later rpyenv release");
-        return Err(1);
-    }
     let os_path = if cfg!(debug_assertions) {
         get("RPYENV_TEST_OS_RELEASE")
     } else {
@@ -404,6 +444,7 @@ fn resolve_deps(
             return Ok(Resolution {
                 cont: false,
                 store: store_entries,
+                prebuilt: false,
             });
         }
         // `[c]`: only optional libraries are missing (M8a follow-up).
@@ -480,6 +521,7 @@ fn resolve_deps(
                 plan.as_ref(),
                 crb.as_deref(),
                 continue_offered,
+                prebuilt,
             ) {
                 say(&l);
             }
@@ -488,12 +530,19 @@ fn resolve_deps(
                     Reply::Interrupted => return Err(130),
                     Reply::Eof => return Err(1),
                     Reply::Line(l) => {
-                        match deps::choice(&l, offer.is_ok(), build_offered, continue_offered) {
+                        match deps::choice(
+                            &l,
+                            offer.is_ok(),
+                            build_offered,
+                            continue_offered,
+                            prebuilt.is_some(),
+                        ) {
                             Some(r) => break r,
                             None => say(&deps::answer_hint(
                                 offer.is_ok(),
                                 build_offered,
                                 continue_offered,
+                                prebuilt.is_some(),
                             )),
                         }
                     }
@@ -505,6 +554,14 @@ fn resolve_deps(
             chosen.unwrap_or(Route::System)
         };
         match (route, offer) {
+            // `[s]` (M8 design §7): install the prebuilt build instead; nothing to resolve.
+            (Route::Prebuilt, _) => {
+                return Ok(Resolution {
+                    cont: false,
+                    store: Vec::new(),
+                    prebuilt: true,
+                })
+            }
             (Route::Build, _) => {
                 let Some(p) = plan else {
                     return Err(1);
@@ -542,6 +599,7 @@ fn resolve_deps(
                 return Ok(Resolution {
                     cont: true,
                     store: store_entries,
+                    prebuilt: false,
                 })
             }
             (Route::Install, Ok(cmds)) => {
@@ -899,8 +957,33 @@ pub fn install(ctx: &Ctx, args: &[&str]) -> Output {
                 }
                 _ => None,
             });
+        // `--deps=prebuilt` / RPYENV_BUILD_DEPS=prebuilt (M8 design §7): always the prebuilt
+        // build, whatever is missing, or a refusal. The flag wins over the variable. Only for
+        // CPython 3 built from source, where `--deps` acts (ruling R1): PyPy, conda and CPython
+        // 2.x ignore it, as they ignore the other routes.
+        let from_source3 = compiles && minor.is_some();
+        let given = f
+            .deps
+            .clone()
+            .or_else(|| env("RPYENV_BUILD_DEPS").filter(|v| !v.is_empty()));
+        let wants_prebuilt = from_source3 && given.as_deref() == Some("prebuilt");
+        let row = if from_source3 {
+            prebuilt_row(&found, &prefix, f.debug, f.patch)
+        } else {
+            Err(String::new())
+        };
+        if wants_prebuilt {
+            if let Err(m) = &row {
+                say(m);
+                status = status.max(1);
+                break;
+            }
+        }
+        // `[s]` at the prompt names the build it would install.
+        let offer = row.as_ref().ok().map(prebuilt::summary);
+        let mut chose_prebuilt = false;
         let mut store_entries: Vec<store::Entry> = Vec::new();
-        if compiles && job_get("RPYENV_SKIP_PREFLIGHT").as_deref() != Some("1") {
+        if compiles && !wants_prebuilt && job_get("RPYENV_SKIP_PREFLIGHT").as_deref() != Some("1") {
             let patch = f.patch || needs_patch(&found, &parsed);
             let abs_root = std::path::absolute(&ctx.root).unwrap_or_else(|_| ctx.root.clone());
             let snapshot = job_env.clone();
@@ -944,12 +1027,14 @@ pub fn install(ctx: &Ctx, args: &[&str]) -> Output {
                     f.deps.as_deref(),
                     &abs_root,
                     boot_src.is_some(),
+                    offer.as_deref(),
                     &mut build,
                 ),
                 // CPython 2.x keeps today's check (plan ruling P2 of M8a).
                 None => old_preflight(&job_get, patch).map(|()| Resolution {
                     cont: false,
                     store: Vec::new(),
+                    prebuilt: false,
                 }),
             };
             match ok {
@@ -967,9 +1052,53 @@ pub fn install(ctx: &Ctx, args: &[&str]) -> Output {
                         job_env.push(("RPYENV_DEPS_MODE".into(), "continue".into()));
                     }
                     store_entries = r.store;
+                    chose_prebuilt = r.prebuilt;
                 }
             }
         }
+        // The prebuilt route: the built-in definition gives way to the one-line definition of
+        // its python-build-standalone build, with the definition's own check step.
+        let (found, parsed, row) = if wants_prebuilt || chose_prebuilt {
+            let row = match row {
+                Ok(r) => r,
+                Err(m) => {
+                    say(&m);
+                    status = status.max(1);
+                    break;
+                }
+            };
+            let verify = parsed
+                .packages
+                .iter()
+                .flat_map(|p| p.steps.iter())
+                .find(|s| s.starts_with("verify_py"))
+                .cloned()
+                .unwrap_or_else(|| "verify_py3_latest".into());
+            let swapped = Found {
+                text: prebuilt::definition_text(&row, &verify),
+                ..found
+            };
+            match defs::parse(&swapped, &env, &sibling) {
+                Ok(d) => {
+                    say(&format!(
+                        "pyenv: installing the {} of {}",
+                        prebuilt::summary(&row),
+                        swapped.name
+                    ));
+                    if let Some(l) = prebuilt::tk9_line(&row) {
+                        say(l);
+                    }
+                    (swapped, d, Some(row))
+                }
+                Err(e) => {
+                    say(&e);
+                    status = status.max(1);
+                    break;
+                }
+            }
+        } else {
+            (found, parsed, None)
+        };
         // The builder's fetcher is made after the store ran, from the final environment.
         let fetcher = Fetcher::from_env(
             &|k: &str| builder::get(&job_env, k),
@@ -1013,6 +1142,18 @@ pub fn install(ctx: &Ctx, args: &[&str]) -> Output {
                 if interrupted() {
                     drop(txn);
                     return Output::new().with_code(130);
+                }
+                // The prebuilt build's record (M8 design §7): which build this version is.
+                if let Some(r) = &row {
+                    let file = prefix.join(crate::install::record::FILE);
+                    if let Err(e) =
+                        std::fs::write(&file, crate::install::record::prebuilt_text(&found.name, r))
+                    {
+                        say(&format!(
+                            "pyenv: warning: cannot write {}: {e}",
+                            file.display()
+                        ));
+                    }
                 }
                 if let Err(e) = txn.commit() {
                     say(&format!(
