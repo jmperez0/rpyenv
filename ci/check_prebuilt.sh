@@ -56,13 +56,13 @@ case "$cc" in
   *) echo "::error::sysconfig CC is '$cc', want one that starts with cc"; exit 1 ;;
 esac
 # The build prefix is /install as a whole path: "/usr/bin/install", "./install", "/opt/install"
-# and "$(srcdir)/install-sh" don't count. Fails when no file matches or the file lacks "prefix"
+# and "$(srcdir)/install-sh" don't count. Fails when no file matches or the file lacks a prefix key
 # (so the grep below has something to read), and when a leftover is found.
 no_build_prefix() { # <file>...
   [ "$#" -gt 0 ] || { echo "::error::no lib/python3.*/_sysconfigdata_*.py in the install"; return 1; }
   local f rc
   for f in "$@"; do
-    [ -f "$f" ] && grep -q '"prefix"' "$f" || { echo "::error::$f is not a sysconfig data file ("prefix" missing)"; return 1; }
+    [ -f "$f" ] && grep -qE "[\"']prefix[\"']" "$f" || { echo "::error::$f is not a sysconfig data file (no prefix key)"; return 1; }
     rc=0
     grep -nE "(^|[^A-Za-z0-9_.]|-[IL])/install([/\"' ),]|$)" "$f" || rc=$?
     case "$rc" in
