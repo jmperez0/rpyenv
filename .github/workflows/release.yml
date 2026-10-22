@@ -1,7 +1,9 @@
 name: Release
-# A v* tag builds, verifies and drafts the release (M6b design §7.2). Run by hand, it does
-# the same into a pre-release draft named v<version>-dryrun.<run>, which creates no tag
-# until someone publishes it: delete that draft afterwards.
+# Step 1 of a release (Phase 3 spec §4): a v* tag builds the executables and tarballs,
+# attests them and drafts the release with the unsigned executables as tmp-* zips. Then
+# `python ci/release_sign.py <tag>` signs on the maintainer's PC (docs/releasing.md). Run
+# by hand, it does the same into a pre-release draft v<version>-dryrun.<run>, which creates
+# no tag until someone publishes it: delete that draft afterwards.
 on:
   push:
     tags: ["v*"]
@@ -29,9 +31,10 @@ jobs:
   build:
     needs: version
     uses: ./.github/workflows/build.yml
-    secrets: inherit
+    with:
+      msi: false
 
-  publish:
+  draft:
     needs: [version, build]
     runs-on: ubuntu-latest
     permissions:
@@ -42,26 +45,32 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          path: assets
-          merge-multiple: true
-      - name: Checksums
+          path: art
+      - name: Arrange the draft's files
         run: |
-          cp install.sh assets/
-          cd assets
-          sha256sum rpyenv-* install.sh >SHA256SUMS
-          cat SHA256SUMS
+          mkdir assets
+          cp install.sh art/tar-*/*.tar.gz assets/
+          for arch in x64 arm64; do
+            (cd "art/exes-$arch" && zip -X "../../assets/tmp-unsigned-exes-$arch.zip" pyenv.exe pyenv-shim.exe pyenv-shimw.exe)
+          done
+          ls -l assets
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-path: "assets/*"
+          subject-path: |
+            art/exes-*/*.exe
+            assets/*.tar.gz
+            assets/install.sh
       - name: Draft the release
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.version.outputs.version }}
         run: |
           if [ "$GITHUB_REF_TYPE" = tag ]; then
-            gh release create "$GITHUB_REF_NAME" assets/* --draft --generate-notes --title "rpyenv $VERSION"
+            gh release create "$GITHUB_REF_NAME" assets/* --draft --target "$GITHUB_SHA" \
+              --generate-notes --title "rpyenv $VERSION"
           else
             tag="v$VERSION-dryrun.$GITHUB_RUN_NUMBER"
             gh release create "$tag" assets/* --draft --prerelease --target "$GITHUB_SHA" \
               --generate-notes --title "rpyenv $VERSION (dry run $GITHUB_RUN_NUMBER)"
           fi
+          echo "Next: python ci/release_sign.py <tag> on the PC with the card (docs/releasing.md)"
