@@ -3,9 +3,10 @@
 The README has the short version. This page covers what the MSI's options do,
 PowerShell's execution policy, silent installs, and uninstalling.
 
-v0.1.0 is **unsigned**. Windows SmartScreen warns before running the MSI: choose
-"More info", then "Run anyway". On a PC with Smart App Control turned on, Windows blocks
-unsigned programs, rpyenv's shims included.
+From v0.2.0 the MSIs and the programs in them are signed with a Certum code-signing
+certificate. SmartScreen may still warn while the certificate has no download reputation:
+choose "More info", then "Run anyway". v0.1.0 is **unsigned**: SmartScreen always warns, and
+on a PC with Smart App Control turned on, Windows blocks its programs, rpyenv's shims included.
 
 ## The MSI's options
 

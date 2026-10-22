@@ -24,7 +24,7 @@ Success means:
 |---|---|---|
 | D1 | Audience | Public v0.1.0 for others. |
 | D2 | Builds | Windows x64 and ARM64; Linux x64 and arm64 (static musl). |
-| D3 | Code signing | Unsigned for v0.1.0. The release workflow has a signing step that runs only when its secrets exist. The provider (SignPath Foundation or Azure Artifact Signing, see §9) is chosen later. |
+| D3 | Code signing | Unsigned for v0.1.0. The release workflow has a signing step that runs only when its secrets exist. The provider (SignPath Foundation or Azure Artifact Signing, see §9) is chosen later. Superseded by docs/superpowers/specs/2026-10-22-release-signing-design.md (Phase 3). |
 | D4 | Linux install location | `$PYENV_ROOT/bin` (and `$PYENV_ROOT/completions`), so existing pyenv startup lines work unchanged. |
 | D5 | Linux shell setup | Ask, default yes; non-interactive runs print the lines; `--init`/`--no-init` force it. |
 | D6 | Windows uninstall | For the uninstalling user: `pyenv migrate --restore` (if a backup exists), then `pyenv setup --undo`. Other users of an all-users install run `pyenv setup --undo` themselves (documented). `PYENV_ROOT` and Python versions are always kept. |
@@ -188,6 +188,9 @@ Steps:
   `strip`). Builds use `--locked` and the toolchain from `rust-toolchain.toml` (1.96).
 
 ### 7.2 `release.yml`
+
+> Since Phase 3, `release.yml` is only step 1 of a release; see
+> `docs/superpowers/specs/2026-10-22-release-signing-design.md` §4–§5.
 
 Trigger: a `v*` tag; also `workflow_dispatch` as a dry run that runs every step, publish
 included, into a pre-release draft named `v<version>-dryrun.<run>`. A draft creates no tag
