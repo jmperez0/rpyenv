@@ -1,0 +1,10 @@
+{
+  "repo": "jmperez0/rpyenv",
+  "thumbprint": "58E0373B2F4DF17A924C8B1EAB467FC7619A4403",
+  "timestamp": ["http://time.certum.pl", "http://timestamp.digicert.com"],
+  "description": "rpyenv",
+  "url": "https://github.com/jmperez0/rpyenv",
+  "exes": ["pyenv.exe", "pyenv-shim.exe", "pyenv-shimw.exe"],
+  "msi": "rpyenv-{version}-{arch}.msi",
+  "arches": ["x64", "arm64"]
+}
