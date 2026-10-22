@@ -10,6 +10,10 @@ on:
       - "ci/check_real_install.sh"
       - "ci/test_install_sh.py"
       - "ci/pe_imports.py"
+      - "ci/signing.py"
+      - "ci/check_signed.py"
+      - "ci/requirements-signing.txt"
+      - "ci/signing_selftest.ps1"
       # What the MSI's custom actions run (M6b final review M9).
       - "crates/pyenv/src/commands/setup_win.rs"
       - "crates/pyenv/src/commands/migrate_win.rs"
@@ -24,6 +28,9 @@ on:
       - ".github/workflows/build.yml"
       - ".github/workflows/packaging.yml"
       - ".github/workflows/release.yml"
+      - ".github/workflows/msi.yml"
+      - ".github/workflows/release-msi.yml"
+      - ".github/workflows/release-finish.yml"
 
 permissions:
   contents: read
@@ -31,4 +38,3 @@ permissions:
 jobs:
   build:
     uses: ./.github/workflows/build.yml
-    secrets: inherit
