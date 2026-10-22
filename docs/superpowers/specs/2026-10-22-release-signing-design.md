@@ -168,6 +168,7 @@ A dry run's draft tag (`v0.2.0-dryrun.17`) is accepted the same way. For a dry r
 | `tmp-signed-exes-*`, no `tmp-unsigned-msi-*` | Looks for a `release-msi.yml` run for the tag. Running: waits. Failed: prints its link and starts step 3 again only if asked (`--retry`). None: starts step 3. |
 | `tmp-unsigned-msi-*`, no `tmp-signed-msi-*` | Step 4: sign the MSIs, upload, start step 5, wait |
 | `tmp-signed-msi-*`, no `SHA256SUMS` | Same as the row for step 3, for `release-finish.yml` |
+| `SHA256SUMS`, every final file and some `tmp-*` | Step 5 stopped while tidying: check the final files (attestation, `SHA256SUMS`), then delete the `tmp-*` |
 | `SHA256SUMS` and no `tmp-*` | Prints "done" and the draft's link |
 
 ### 6.2 Checks before signing (any failure stops before signtool runs)
@@ -198,6 +199,7 @@ signtool sign /sha1 <thumbprint> /fd sha256 /tr <timestamp URL> /td sha256
 
 ### 6.4 Starting and following CI
 
+- For a dry run, the branch's head must be the draft's commit before anything is signed.
 - `gh workflow run <file> --ref <tag, or the dry run's branch> -f tag=<tag> -f request=<random hex>`.
 - The run is found by the `request` value in its name (`gh run list --json`), then followed
   with `gh run watch --exit-status`. Not found within 2 minutes: the script stops and
@@ -272,7 +274,8 @@ The method candidates are:
 | Card removed, wrong PIN, signtool error | Nothing uploaded; temporary folder removed | Run the script again; it starts the step from scratch |
 | First timestamp server down | Script retries with the second (second PIN prompt) | Nothing, unless both are down: try later |
 | A `check_signed.py` or attestation check fails in CI | That run uploads nothing | Read the run log; this is a stop, not a retry |
-| A build or test in step 3 or 5 fails | The draft does not change | Fix the cause, then `release_sign.py <tag> --retry` |
+| A build or test in step 3 or 5 fails | The draft does not change | A runner or network failure: `release_sign.py <tag> --retry`. A code fix needs a new tag or a new dry run (steps 3 and 5 run the drafted commit). |
+| Step 5 stopped while removing `tmp-*` assets | Every final file is on the draft | Run the script again: it checks the final files' attestations (`release-finish.yml`) and `SHA256SUMS`, then removes the `tmp-*` assets itself |
 | The dry run's branch moved | Step 3 or 5 fails with that message | Start a new dry run |
 | Dropping a release | — | Delete the draft by hand; the script never deletes drafts or tags |
 

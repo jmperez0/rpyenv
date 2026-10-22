@@ -20,20 +20,24 @@ function Copy-To([string] $Dir, [string[]] $Files) {
     foreach ($f in $Files) { Copy-Item $f $Dir }
     (Get-ChildItem $Dir -File).FullName
 }
-function Sign([string[]] $Files) {
-    & $signtool sign /sha1 $cert.Thumbprint /fd sha256 /tr http://timestamp.digicert.com /td sha256 /d rpyenv $Files
+function Sign([string[]] $Files, [switch] $NoTimestamp) {
+    $stamp = if ($NoTimestamp) { @() } else { @('/tr', 'http://timestamp.digicert.com', '/td', 'sha256') }
+    & $signtool sign /sha1 $cert.Thumbprint /fd sha256 @stamp /d rpyenv $Files
     if ($LASTEXITCODE) { throw "signtool sign failed ($LASTEXITCODE)" }
 }
 function Flip-Byte([string] $File, [int] $Offset) {
     $b = [IO.File]::ReadAllBytes($File); $b[$Offset] = $b[$Offset] -bxor 1; [IO.File]::WriteAllBytes($File, $b)
 }
-function Check([string] $Kind, [string[]] $Unsigned, [string[]] $Signed) {
+# -PinnedThumbprint checks against installer/signing.json's thumbprint (the Certum card's)
+# instead of the throwaway certificate's.
+function Check([string] $Kind, [string[]] $Unsigned, [string[]] $Signed, [switch] $PinnedThumbprint) {
     $zips = Join-Path $work "zips-$Kind-$([guid]::NewGuid())"
     New-Item -ItemType Directory $zips | Out-Null
     Compress-Archive -Path $Unsigned -DestinationPath (Join-Path $zips "tmp-unsigned-$Kind-x64.zip")
     Compress-Archive -Path $Signed -DestinationPath (Join-Path $zips "tmp-signed-$Kind-x64.zip")
+    $pin = if ($PinnedThumbprint) { @() } else { @('--thumbprint', $cert.Thumbprint) }
     $out = & python ci/check_signed.py $Kind --version $version --zips $zips --out (Join-Path $zips out) `
-        --no-attestation --thumbprint $cert.Thumbprint --arches x64 2>&1 | Out-String
+        --no-attestation @pin --arches x64 2>&1 | Out-String
     $code = $LASTEXITCODE
     Write-Host $out
     @{ Code = $code; Text = $out }
@@ -61,6 +65,12 @@ try {
     $t = Copy-To (Join-Path $work 't-exes') $s
     Flip-Byte (Join-Path $work 't-exes\pyenv.exe') 0x400
     Expect 'exes tampered' (Check exes $u $t) 1 'FAIL x64/pyenv\.exe'
+    # 6. A valid signature by another certificate: the pinned thumbprint must refuse it.
+    Expect 'exes other signer' (Check exes $u $s -PinnedThumbprint) 1 'signed by [0-9A-F]{40}, expected 58E0373B2F4DF17A924C8B1EAB467FC7619A4403'
+    # 7. A signature without a timestamp must fail.
+    $n = Copy-To (Join-Path $work 'n-exes') $u
+    Sign $n -NoTimestamp
+    Expect 'exes no timestamp' (Check exes $u $n) 1 'FAIL x64/pyenv\.exe: no timestamp'
 
     $um = Copy-To (Join-Path $work 'u-msi') (Get-ChildItem $Msi -Filter *.msi).FullName
     $sm = Copy-To (Join-Path $work 's-msi') $um
