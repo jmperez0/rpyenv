@@ -38,3 +38,26 @@ permissions:
 jobs:
   build:
     uses: ./.github/workflows/build.yml
+
+  signing-selftest:
+    name: signing check self-test
+    needs: build
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --require-hashes --only-binary ":all:" -r ci/requirements-signing.txt
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: exes-x64
+          path: art/exes
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: msi-x64
+          path: art/msi
+      - name: Sign with a throwaway certificate; check what must pass and what must fail
+        shell: pwsh
+        run: ./ci/signing_selftest.ps1 -Exes art/exes -Msi art/msi
