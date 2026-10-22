@@ -1,5 +1,6 @@
 """Offline tests of ci/release_sign.py (Phase 3 spec §6) against a fake gh and signtool."""
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -16,6 +17,11 @@ import signing  # noqa: E402
 ARCHES = ["x64", "arm64"]
 COMMIT = "c" * 40
 EXES = ["pyenv-shim.exe", "pyenv-shimw.exe", "pyenv.exe"]
+
+
+def finals(version="0.2.0"):
+    return {f"rpyenv-{version}-x64.msi", f"rpyenv-{version}-arm64.msi", f"rpyenv-{version}-linux-x64.tar.gz",
+            f"rpyenv-{version}-linux-arm64.tar.gz", "install.sh", "SHA256SUMS"}
 
 
 def step1_assets(version="0.2.0"):
@@ -35,6 +41,12 @@ class FakeGitHub:
         self.register_runs = register_runs
         self.dispatched, self.uploaded = [], []
         self.extra_in_zip = None
+        self.deleted, self.heads, self.sums_override = [], {}, None
+
+    def sums(self):
+        lines = [f"{hashlib.sha256(f'final {n}'.encode()).hexdigest()}  {n}\n"
+                 for n in sorted(self.assets) if n != "SHA256SUMS" and not n.startswith("tmp-")]
+        return self.sums_override if self.sums_override is not None else "".join(lines)
 
     def zip_names(self, asset):
         kind = "exes" if "-exes-" in asset else "msi"
@@ -53,7 +65,11 @@ class FakeGitHub:
             dest = a[a.index("-D") + 1]
             os.makedirs(dest, exist_ok=True)
             for i, x in enumerate(a):
-                if x == "-p" and a[i + 1] in self.assets:
+                if x == "-p" and a[i + 1] in self.assets and not a[i + 1].endswith(".zip"):
+                    data = self.sums().encode() if a[i + 1] == "SHA256SUMS" else f"final {a[i + 1]}".encode()
+                    with open(os.path.join(dest, a[i + 1]), "wb") as f:
+                        f.write(data)
+                elif x == "-p" and a[i + 1] in self.assets:
                     with zipfile.ZipFile(os.path.join(dest, a[i + 1]), "w") as z:
                         for n in self.zip_names(a[i + 1]):
                             z.writestr(n, b"MZ unsigned")
@@ -63,8 +79,12 @@ class FakeGitHub:
             self.uploaded.append(sorted(os.path.basename(f) for f in files))
             self.assets |= {os.path.basename(f) for f in files}
             return ""
+        if a[:2] == ["release", "delete-asset"]:
+            self.assets.discard(a[3])
+            self.deleted.append(a[3])
+            return ""
         if a[0] == "api":
-            return COMMIT + "\n"
+            return self.heads.get(a[1].rsplit("/commits/", 1)[1], COMMIT) + "\n"
         if a[:2] == ["workflow", "run"]:
             stem = a[2].removesuffix(".yml")
             ref = a[a.index("--ref") + 1]
@@ -97,7 +117,7 @@ class Flow(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.signed_calls, self.signtool_results = [], []
-        self.already_signed, self.attest_fail = set(), set()
+        self.already_signed, self.attest_fail, self.attested = set(), set(), []
         self.card = "ok"
         self.workdirs = []
 
@@ -120,6 +140,7 @@ class Flow(unittest.TestCase):
         return self.signtool_results.pop(0) if self.signtool_results else (0, "")
 
     def fake_attest(self, path, repo, workflow, commit):
+        self.attested.append((os.path.basename(path), workflow, commit))
         if os.path.basename(path) in self.attest_fail:
             raise signing.SigningError(f"{os.path.basename(path)}: attestation: no match")
 
@@ -182,6 +203,38 @@ class Flow(unittest.TestCase):
         self.assertIn("--ref is only for dry runs", text)
         self.assertEqual((fake.dispatched, self.signed_calls), ([], []))
 
+    def test_an_interrupted_tidy_is_finished_by_the_script(self):
+        fake = FakeGitHub("v0.2.0", finals() | {"tmp-signed-msi-arm64.zip", "tmp-unsigned-msi-x64.zip"})
+        code, text = self.run_main(fake, "v0.2.0")
+        self.assertEqual(code, 0, text)
+        self.assertEqual(sorted(fake.deleted), ["tmp-signed-msi-arm64.zip", "tmp-unsigned-msi-x64.zip"])
+        self.assertEqual(fake.dispatched, [])
+        self.assertEqual({(n, w) for n, w, _ in self.attested}, {(n, "release-finish.yml") for n in finals()})
+        self.assertIn("Done", text)
+
+    def test_a_tidy_with_a_wrong_checksum_deletes_nothing(self):
+        fake = FakeGitHub("v0.2.0", finals() | {"tmp-signed-msi-arm64.zip"})
+        fake.sums_override = fake.sums().replace(hashlib.sha256(b"final install.sh").hexdigest(), "0" * 64)
+        code, text = self.run_main(fake, "v0.2.0")
+        self.assertEqual(code, 1)
+        self.assertIn("install.sh does not match SHA256SUMS", text)
+        self.assertEqual(fake.deleted, [])
+
+    def test_a_tidy_with_a_failed_attestation_deletes_nothing(self):
+        self.attest_fail.add("rpyenv-0.2.0-arm64.msi")
+        fake = FakeGitHub("v0.2.0", finals() | {"tmp-signed-msi-arm64.zip"})
+        code, text = self.run_main(fake, "v0.2.0")
+        self.assertEqual(code, 1)
+        self.assertEqual(fake.deleted, [])
+
+    def test_a_dry_run_ref_not_at_the_drafts_commit_stops_before_signing(self):
+        fake = FakeGitHub("v0.2.0-dryrun.9", step1_assets())
+        fake.heads["main"] = "d" * 40
+        code, text = self.run_main(fake, "v0.2.0-dryrun.9")
+        self.assertEqual(code, 1)
+        self.assertIn("--ref", text)
+        self.assertEqual((self.workdirs, self.signed_calls, fake.dispatched), ([], [], []))
+
     def test_check_only_reads(self):
         fake = FakeGitHub("v0.2.0", step1_assets())
         code, text = self.run_main(fake, "v0.2.0", "--check")
@@ -242,6 +295,7 @@ class Flow(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("https://run/release-msi", text)
         self.assertIn("--retry", text)
+        self.assertIn("A code fix needs a new tag", text)
         self.assertEqual(fake.dispatched, [("release-msi", "v0.2.0")])
         code, text = self.run_main(fake, "v0.2.0", "--retry")
         self.assertEqual(code, 0, text)
@@ -276,7 +330,7 @@ class Flow(unittest.TestCase):
 
 class State(unittest.TestCase):
     def s(self, *names):
-        return rs.state(set(names), ARCHES)
+        return rs.state(set(names), ARCHES, finals())
 
     def test_state_each_step(self):
         ue = ("tmp-unsigned-exes-x64.zip", "tmp-unsigned-exes-arm64.zip")
@@ -299,6 +353,7 @@ class State(unittest.TestCase):
     def test_state_finish_half_done_never_goes_back(self):
         self.assertEqual(self.s("SHA256SUMS", "tmp-unsigned-exes-x64.zip", "tmp-unsigned-exes-arm64.zip"),
                          "await-finish")
+        self.assertEqual(self.s(*finals(), "tmp-unsigned-exes-x64.zip"), "tidy")
 
     def test_state_unknown(self):
         self.assertEqual(self.s("install.sh"), "unknown")
