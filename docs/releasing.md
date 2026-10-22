@@ -36,7 +36,8 @@ steps 3 and 5 refuse to run if the branch has moved since step 1.
 | Card removed, wrong PIN, signtool error | Nothing is uploaded; the temporary folder is removed | Run the script again |
 | First timestamp server down | The script tries the second one (the PIN dialog may show again) | Nothing, unless both are down: try later |
 | A check in `release-msi.yml` or `release-finish.yml` fails (attestation, signer, timestamp, "differs from the unsigned file") | That run uploads nothing | Read the run log. Don't retry until you know why. |
-| A build or test in step 3 or 5 fails | The draft does not change | Fix the cause, then `python ci/release_sign.py <tag> --retry` |
+| A build or test in step 3 or 5 fails | The draft does not change | A runner or network failure: `python ci/release_sign.py <tag> --retry` (add `--ref <branch>` for a dry run). A code fix needs a new tag or a new dry run, because steps 3 and 5 run the drafted commit. |
+| Step 5 stopped while removing the `tmp-*` files | Every final file is on the draft | Run the script again: it checks the final files' attestations and `SHA256SUMS`, then removes the `tmp-*` files. |
 | The dry run's branch moved | Step 3 or 5 stops with that message | Start a new dry run |
 | You want to drop a release | — | Delete the draft by hand. The script never deletes drafts or tags. |
 

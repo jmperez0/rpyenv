@@ -213,5 +213,37 @@ class Signatures(unittest.TestCase):
                 signing.find_signtool()
 
 
+class SignatureProblems(unittest.TestCase):
+    """The signer pin and the timestamp check, which every flow test stubs out."""
+    PIN = "58E0373B2F4DF17A924C8B1EAB467FC7619A4403"
+
+    def problems(self, info, signtool_code=0, pin=PIN):
+        done = mock.Mock(returncode=signtool_code, stdout="SignTool Error: no signature" if signtool_code else "", stderr="")
+        with mock.patch.object(signing.subprocess, "run", return_value=done), \
+                mock.patch.object(signing, "signature_info", return_value=info):
+            return signing.signature_problems("f.exe", pin, "signtool.exe")
+
+    def test_the_pinned_timestamped_signature_passes(self):
+        self.assertEqual(self.problems(signing.SigInfo("Valid", self.PIN, True)), [])
+        self.assertEqual(self.problems(signing.SigInfo("Valid", self.PIN, True), pin=self.PIN.lower()), [])
+
+    def test_another_signer_fails(self):
+        other = "AB" * 20
+        self.assertEqual(self.problems(signing.SigInfo("Valid", other, True)),
+                         [f"signed by {other}, expected {self.PIN}"])
+
+    def test_no_timestamp_fails(self):
+        self.assertEqual(self.problems(signing.SigInfo("Valid", self.PIN, False)), ["no timestamp"])
+
+    def test_a_bad_status_fails(self):
+        self.assertEqual(self.problems(signing.SigInfo("HashMismatch", self.PIN, True)),
+                         ["signature status HashMismatch"])
+
+    def test_signtool_verify_failing_fails(self):
+        got = self.problems(signing.SigInfo("Valid", self.PIN, True), signtool_code=1)
+        self.assertEqual(len(got), 1)
+        self.assertRegex(got[0], "^signtool verify /pa failed: SignTool Error")
+
+
 if __name__ == "__main__":
     unittest.main()
