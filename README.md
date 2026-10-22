@@ -247,8 +247,9 @@ ignore them.
 
 ## Installing
 
-Releases: https://github.com/jmperez0/rpyenv/releases. v0.1.0 is **unsigned**, so Windows
-SmartScreen warns before running the MSI ("More info", then "Run anyway").
+Releases: https://github.com/jmperez0/rpyenv/releases. From v0.2.0 the MSIs and the programs
+in them are signed with a Certum code-signing certificate. SmartScreen may still warn while
+the certificate is new ("More info", then "Run anyway"); v0.1.0 is unsigned and always warns.
 
 ### Windows
 
