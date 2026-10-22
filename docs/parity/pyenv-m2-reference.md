@@ -182,7 +182,9 @@ for every `$PYENV_ROOT/plugins/*/share/python-build` directory, in glob order, a
 
 - [probe]: a definition `3.12.99` placed in `$PYENV_ROOT/plugins/fake/share/python-build` appeared in
   `pyenv install --list` and won the prefix resolution `pyenv install 3.12 → 3.12.99`. A standalone
-  `pyenv latest -k 3.12` still printed `3.12.14`, because `pyenv-latest` does not add plugin directories.
+  `pyenv latest -k 3.12` still printed `3.12.14`, because `pyenv-latest` did not add plugin directories.
+  pyenv 2.8.11 changed that: `pyenv-latest -k` now lists `pyenv-install --list --bare`, so it sees them
+  [test test/latest.bats "known versions include plugin definitions"].
 
 ### Which versions get installed
 
@@ -555,8 +557,9 @@ M1's `pyenv latest` section is complete for the algorithm, the flags (`-k/--know
 | `anaconda3` / `miniforge3` / `graalpy` / `jython` / `stackless` | 0 | `anaconda3-2026.07-1` / `miniforge3-26.7.2-0` / `graalpy-25.0.3` / `jython-2.7.4` / `stackless-3.7.5` |
 | (none) | 1 | ``pyenv: no known versions match the prefix `'`` (stderr) |
 
-- **Plugin definitions.** Run on its own, `pyenv latest -k` does not see plugin definition directories (see `pyenv
-  install`, "Plugin definition directories").
+- **Plugin definitions.** Up to pyenv 2.8.10, `pyenv latest -k` run on its own did not see plugin definition
+  directories (see `pyenv install`, "Plugin definition directories"). Since 2.8.11 it lists
+  `pyenv-install --list --bare` and sees them; a failing listing makes it fail, even with `-f`.
 - **Use by `pyenv install`.** `pyenv install` calls `pyenv-latest -f -k <arg>` once per argument (loop step 1).
 
 ---
@@ -1282,7 +1285,7 @@ plan can decide; this file makes no judgement.
 | Stdout during install | Only `patch` output (and `-v` log copy, and hook echoes). Everything else is on stderr. | output |
 | Leftovers in `TMPDIR` | The log and `python-patch.*` always stay. The build directory stays on failure, Ctrl+C, or `-k`. | keep |
 | Alias | Taken after the last `:`. `latest` is reserved. `-g` adds no `-debug` to an alias. The default-packages hook ignores the alias. | install, default-packages |
-| Plugin definitions | Visible to `install`, `install --list` and install's prefix resolution, but not to standalone `pyenv latest -k`. | install |
+| Plugin definitions | Visible to `install`, `install --list`, install's prefix resolution and (since pyenv 2.8.11) `pyenv latest -k`. | install |
 | Free-threaded | `3.13t` resolves to `3.13.15t`. The `t` definitions source the non-`t` file with `PYTHON_BUILD_FREE_THREADING=1`, which gives `--disable-gil`. `3t` resolves to the prerelease `3.15.0rc2t`. | latest, DSL |
 | Locale | `--definitions` pins `LC_ALL=C`. The `:latest` hook's `sort` and `pyenv latest`'s sort do not. | list, `:latest` |
 

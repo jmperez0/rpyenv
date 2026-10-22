@@ -109,17 +109,19 @@ fn a_failed_match_reports_or_falls_back() {
     );
 }
 
+// pyenv 2.8.11: `pyenv-latest -k` lists `pyenv-install --list --bare`, plugin definitions
+// included (test/latest.bats "known versions include plugin definitions").
 #[test]
-fn standalone_known_mode_does_not_see_plugin_definitions() {
+fn known_mode_sees_plugin_definitions() {
     let f = Fixture::new();
-    f.file(
-        &f.root.join("plugins/fake/share/python-build/3.12.99"),
-        "x\n",
-    );
-    assert_eq!(
-        f.pyenv(&["latest", "-k", "3.12"]).stdout,
-        format!("{}\n", newest_release("3.12.", ""))
-    );
+    let plugin = f.root.join("plugins/custom/share/python-build");
+    f.file(&plugin.join("custom-1.0"), "")
+        .file(&plugin.join("custom-2.0"), "");
+    f.file(&plugin.join("3.12.99"), "x\n");
+    for (prefix, want) in [("custom", "custom-2.0\n"), ("3.12", "3.12.99\n")] {
+        let r = f.pyenv(&["latest", "-k", prefix]);
+        assert_eq!((r.stdout.as_str(), r.code), (want, 0), "{prefix}");
+    }
 }
 
 /// The newest final release `<series><n><suffix>` among the vendored definitions, in
