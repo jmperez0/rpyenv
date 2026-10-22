@@ -1,7 +1,7 @@
 name: Release MSIs
-# Placeholder: GitHub only lets you start a workflow by hand once a file of that name is on
-# the default branch. The real step 3 comes with Phase 3
-# (docs/superpowers/specs/2026-10-22-release-signing-design.md); until then a run fails.
+# Step 3 of a release (Phase 3 spec §5.1), started by ci/release_sign.py: checks the signed
+# executables against the attested unsigned ones, builds and tests the MSIs from them,
+# attests the unsigned MSIs and puts them on the draft for signing.
 run-name: release-msi ${{ inputs.tag }} ${{ inputs.request }}
 on:
   workflow_dispatch:
@@ -17,9 +17,71 @@ permissions:
   contents: read
 
 jobs:
-  placeholder:
-    runs-on: ubuntu-latest
+  exes:
+    name: check the signed executables
+    runs-on: windows-2025
+    timeout-minutes: 20
+    # Draft releases are visible only to tokens with push access.
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ inputs.tag }}
     steps:
-      - run: |
-          echo "placeholder: dispatch this workflow with --ref on the Phase 3 branch" >&2
-          exit 1
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: This run belongs to the draft
+        shell: bash
+        run: bash ci/release_guard.sh
+      - name: Download the hand-off
+        shell: bash
+        run: gh release download "$TAG" -D zips -p "tmp-unsigned-exes-*.zip" -p "tmp-signed-exes-*.zip"
+      - name: Signed = attested + signature, pinned signer, timestamped
+        run: python ci/check_signed.py exes --zips zips --out signed --commit ${{ github.sha }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: exes-x64
+          path: signed/x64/*.exe
+          if-no-files-found: error
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: exes-arm64
+          path: signed/arm64/*.exe
+          if-no-files-found: error
+
+  msi:
+    needs: exes
+    uses: ./.github/workflows/msi.yml
+
+  upload:
+    needs: msi
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: msi-x64
+          path: art/x64
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: msi-arm64
+          path: art/arm64
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: art/*/*.msi
+      - name: Put the unsigned MSIs on the draft
+        run: |
+          for arch in x64 arm64; do
+            (cd "art/$arch" && zip -X "../../tmp-unsigned-msi-$arch.zip" -- *.msi)
+          done
+          gh release upload "$TAG" tmp-unsigned-msi-x64.zip tmp-unsigned-msi-arm64.zip --clobber
