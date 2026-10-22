@@ -10,6 +10,7 @@ never sees. Downloads go to a temporary folder that is removed at the end. docs/
 has the whole procedure.
 """
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -67,13 +68,23 @@ def run_signtool(signtool, cfg, timestamp, files):
     return r.returncode, r.stdout + r.stderr
 
 
-def state(names, arches):
-    """The draft's step, from its asset names alone (spec §6.1)."""
+def final_names(cfg, version):
+    """The assets a finished draft holds (spec §1)."""
+    arches = cfg["arches"]
+    return ({cfg["msi"].format(version=version, arch=a) for a in arches}
+            | {f"rpyenv-{version}-linux-{a}.tar.gz" for a in arches} | {"install.sh", "SHA256SUMS"})
+
+
+def state(names, arches, finals):
+    """The draft's step, from its asset names alone (spec §6.1). "tidy": step 5 uploaded every
+    final file but stopped before removing all tmp-* assets, so running it again can't work."""
     def every(stage, kind):
         return all(signing.zip_name(stage, kind, a) in names for a in arches)
 
     if "SHA256SUMS" in names:
-        return "await-finish" if any(n.startswith("tmp-") for n in names) else "done"
+        if not any(n.startswith("tmp-") for n in names):
+            return "done"
+        return "tidy" if finals <= names else "await-finish"
     if every("signed", "msi"):
         return "await-finish"
     if every("unsigned", "msi"):
@@ -159,6 +170,36 @@ def sign_step(kind, cfg, repo, tag, version, commit, signtool_override):
         shutil.rmtree(work, ignore_errors=True)
 
 
+def tidy_step(cfg, repo, tag, version, commit, names):
+    """Finishes an interrupted step 5: every final file is on the draft, attested by
+    release-finish.yml at the draft's commit and listed in SHA256SUMS; then the tmp-* go."""
+    finals = sorted(final_names(cfg, version))
+    work = tempfile.mkdtemp(prefix="rpyenv-tidy.")
+    try:
+        gh("release", "download", tag, "-R", repo, "-D", work, *[x for n in finals for x in ("-p", n)])
+        for n in finals:
+            signing.verify_attestation(os.path.join(work, n), repo, "release-finish.yml", commit)
+        sums = {}
+        with open(os.path.join(work, "SHA256SUMS"), encoding="utf-8") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) != 2:
+                    raise Stop(f"unreadable SHA256SUMS line {line!r}")
+                sums[parts[1].lstrip("*")] = parts[0]
+        want = set(finals) - {"SHA256SUMS"}
+        if set(sums) != want:
+            raise Stop(f"SHA256SUMS lists {sorted(sums)}, expected {sorted(want)}")
+        for n in sorted(want):
+            with open(os.path.join(work, n), "rb") as f:
+                if hashlib.sha256(f.read()).hexdigest() != sums[n]:
+                    raise Stop(f"{n} does not match SHA256SUMS")
+        for n in sorted(x for x in names if x.startswith("tmp-")):
+            gh("release", "delete-asset", tag, n, "-R", repo, "--yes")
+            print(f"Removed {n}.", flush=True)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
 def runs(repo, workflow, tag):
     """This tag's runs of a workflow, newest first, found by their run name."""
     prefix = f"{workflow.removesuffix('.yml')} {tag} "
@@ -208,7 +249,7 @@ def main(argv=None):
             if not rel["isDraft"]:
                 raise Stop(f"{a.tag} is already published")
             names = {x["name"] for x in rel["assets"]}
-            st = state(names, cfg["arches"])
+            st = state(names, cfg["arches"], final_names(cfg, version))
             print(f"{a.tag}: {st}", flush=True)
             if st == "done":
                 print(f"Done. Review and publish the draft: {rel['url']}")
@@ -218,6 +259,15 @@ def main(argv=None):
             if st == "unknown":
                 raise Stop(f"the draft's assets match no step: {sorted(names)}")
             commit = commit_of(repo, a.tag, dry_run, rel)
+            if st == "tidy":
+                tidy_step(cfg, repo, a.tag, version, commit, names)
+                continue
+            if dry_run:
+                # Steps 3 and 5 run on `ref`; check it before the card signs anything.
+                head = gh("api", f"repos/{repo}/commits/{ref}", "--jq", ".sha").strip()
+                if head != commit:
+                    raise Stop(f"{ref} is at {head[:12]}, but the draft was built from {commit[:12]}: "
+                               f"pass --ref <the branch the dry run started from>, or start a new dry run")
             if st.startswith("sign-"):
                 kind = st.removeprefix("sign-")
                 sign_step(kind, cfg, repo, a.tag, version, commit, a.signtool)
@@ -236,8 +286,10 @@ def main(argv=None):
                 retried = True
                 follow(repo, dispatch(repo, workflow, a.tag, ref))
             else:
+                again = f"python ci/release_sign.py {a.tag} --retry" + (f" --ref {a.ref}" if a.ref else "")
                 raise Stop(f"{workflow} failed: {last['url']}\n"
-                           f"Fix the cause, then run: python ci/release_sign.py {a.tag} --retry")
+                           f"If the cause was outside the code (a runner or network failure), run: {again}\n"
+                           f"A code fix needs a new tag, or a new dry run: steps 3 and 5 run the drafted commit.")
     except (Stop, signing.SigningError, OSError) as e:
         print(f"release_sign: {e}", file=sys.stderr)
         return 1
