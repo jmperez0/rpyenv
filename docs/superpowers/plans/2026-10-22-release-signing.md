@@ -16,7 +16,8 @@
 - Timestamp servers, in order: `http://time.certum.pl`, then `http://timestamp.digicert.com`. Every signature uses `/fd sha256 /tr <url> /td sha256`.
 - Files signed: `pyenv.exe`, `pyenv-shim.exe` and `pyenv-shimw.exe`, for `x64` and `arm64`, plus `rpyenv-{version}-{arch}.msi`. Nothing else.
 - Temporary draft assets: `tmp-unsigned-exes-<arch>.zip`, `tmp-signed-exes-<arch>.zip`, `tmp-unsigned-msi-<arch>.zip`, `tmp-signed-msi-<arch>.zip`.
-- Release tags: `v<X.Y.Z>`, or `v<X.Y.Z>-dryrun.<N>` for a dry run. Dry-run steps 3 and 5 are dispatched on `main`; real ones on the tag.
+- Release tags: `v<X.Y.Z>`, or `v<X.Y.Z>-dryrun.<N>` for a dry run. A dry run's steps 3 and 5 are dispatched on a branch: `main` by default, or the one given with `release_sign.py --ref`. A real release's steps run on its tag.
+- Order (user, 2026-10-23): Task 0's placeholder PR merges first. The card dry run (Task 10) runs on `phase3-release-signing` before the real PR is merged.
 - `gh attestation verify` always gets `--repo jmperez0/rpyenv --signer-workflow jmperez0/rpyenv/.github/workflows/<file> --source-digest <40-hex commit> --deny-self-hosted-runners`. Measured 2026-10-22 on v0.1.0's `install.sh`: the right commit gives exit 0, an all-zero digest gives exit 1.
 - Attest steps run in the top-level workflow's own job (never inside `build.yml` or `msi.yml`), so the signer workflow is `release.yml`, `release-msi.yml` or `release-finish.yml`.
 - No script reads, stores or passes the card PIN.
@@ -31,7 +32,7 @@
 2. **A signed file that differs from the attested one only in a byte outside the signature:** it must fail in CI, not pass because the signature itself is valid. Pinned in Task 4 (self-test cases 2 and 5) and Task 1 (`test_pe_byte_changed`).
 3. **A zip with an extra file, a missing file or a path like `../x`:** it must be refused before anything is signed or extracted. Pinned in Task 1 (`test_unzip_*`) and Task 6 (`test_extra_file_stops_before_signing`).
 4. **The timestamp server down:** the second server is tried on fresh copies, so files are never signed twice. Pinned in Task 6 (`test_timestamp_fallback_uses_fresh_copies`).
-5. **`main` moving during a dry run, or a tag/ref mismatch:** steps 3 and 5 must refuse before downloading anything. Pinned in Task 7 (`ci/release_guard.sh`, run in both workflows' first step) and checked by hand in Task 10.
+5. **The dry run's branch moving, or a tag/ref mismatch:** steps 3 and 5 must refuse before downloading anything. Pinned in Task 7 (`ci/release_guard.sh`, run as the first step of both workflows), and Task 6 (`--ref` refused for a release).
 
 ---
 
@@ -57,6 +58,68 @@
 | `.github/workflows/release-finish.yml` (new) | Step 5 |
 | `installer/sign.ps1` (deleted) | Replaced |
 | `docs/releasing.md` (new), `README.md`, `docs/windows-install.md`, M6b spec | Docs |
+
+---
+
+### Task 0: Placeholder workflows on `main` (a separate small PR)
+
+GitHub only lets you start a workflow by hand once a file of that name is on the default branch; the run then uses the file from the `--ref` branch. These placeholders let Task 10 dry-run the real steps 3 and 5 from `phase3-release-signing` before it merges. They can't touch a release: `contents: read` only, and the job fails on purpose.
+
+**Files (on a new branch `release-workflow-placeholders` from `origin/main`):**
+- Create: `.github/workflows/release-msi.yml`
+- Create: `.github/workflows/release-finish.yml`
+
+- [ ] **Step 1: Create the branch from `main`**
+
+Run: `git switch -c release-workflow-placeholders origin/main`. First run `git fetch origin`.
+
+- [ ] **Step 2: Write `.github/workflows/release-msi.yml`**
+
+```yaml
+name: Release MSIs
+# Placeholder: GitHub only lets you start a workflow by hand once a file of that name is on
+# the default branch. The real step 3 comes with Phase 3
+# (docs/superpowers/specs/2026-10-22-release-signing-design.md); until then a run fails.
+run-name: release-msi ${{ inputs.tag }} ${{ inputs.request }}
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        required: true
+        type: string
+      request:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  placeholder:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "placeholder: dispatch this workflow with --ref on the Phase 3 branch" >&2
+          exit 1
+```
+
+- [ ] **Step 3: Write `.github/workflows/release-finish.yml`**
+
+The same file, with `name: Release finish`, `run-name: release-finish ${{ inputs.tag }} ${{ inputs.request }}`, and "step 5" instead of "step 3" in the comment.
+
+- [ ] **Step 4: Check that the YAML parses, then commit**
+
+Run: `python -c "import sys, yaml; [yaml.safe_load(open(p, encoding='utf-8')) for p in sys.argv[1:]]; print('ok')" .github/workflows/release-msi.yml .github/workflows/release-finish.yml`
+Expected: `ok`.
+
+```bash
+git add .github/workflows/release-msi.yml .github/workflows/release-finish.yml
+git commit -m "CI: placeholder release-msi and release-finish workflows, so Phase 3's real ones can be dispatched from its branch before it merges"
+```
+
+- [ ] **Step 5: Ask the user before pushing, then open the PR**
+
+Ask the user. On yes: `git push -u origin release-workflow-placeholders`, then `gh pr create` with a short body that explains why. Afterwards run `git switch phase3-release-signing`. The user merges. Once it is merged, `phase3-release-signing` gets these files from Task 7, which replaces them, so rebase onto `main` before the PR in Task 9.
 
 ---
 
@@ -1245,7 +1308,7 @@ git commit -m "Release step 1: attest the unsigned executables, tarballs and ins
 
 **Interfaces:**
 - Consumes: all of Task 1's `signing` API.
-- Produces: `python ci/release_sign.py <tag> [--check] [--retry] [--signtool PATH]`, plus these module functions used by the tests:
+- Produces: `python ci/release_sign.py <tag> [--check] [--retry] [--signtool PATH] [--ref BRANCH]`, plus these module functions used by the tests:
   - `state(names: set, arches: list) -> str`, one of `done`, `await-finish`, `sign-msi`, `await-msi`, `sign-exes`, `unknown`
   - `gh(*args) -> str` (raises `Stop`)
   - `gh_live(*args) -> int`
@@ -1426,6 +1489,20 @@ class Flow(unittest.TestCase):
         code, text = self.run_main(fake, "v0.2.0")
         self.assertEqual(code, 0, text)
         self.assertEqual(fake.dispatched, [("release-msi", "v0.2.0"), ("release-finish", "v0.2.0")])
+
+    def test_a_dry_run_on_a_branch(self):
+        fake = FakeGitHub("v0.2.0-dryrun.8", step1_assets())
+        code, text = self.run_main(fake, "v0.2.0-dryrun.8", "--ref", "phase3-release-signing")
+        self.assertEqual(code, 0, text)
+        self.assertEqual(fake.dispatched, [("release-msi", "phase3-release-signing"),
+                                           ("release-finish", "phase3-release-signing")])
+
+    def test_ref_is_refused_for_a_release(self):
+        fake = FakeGitHub("v0.2.0", step1_assets())
+        code, text = self.run_main(fake, "v0.2.0", "--ref", "main")
+        self.assertEqual(code, 1)
+        self.assertIn("--ref is only for dry runs", text)
+        self.assertEqual((fake.dispatched, self.signed_calls), ([], []))
 
     def test_check_only_reads(self):
         fake = FakeGitHub("v0.2.0", step1_assets())
@@ -1754,12 +1831,15 @@ def main(argv=None):
     ap.add_argument("--check", action="store_true", help="print the draft's step; change nothing")
     ap.add_argument("--retry", action="store_true", help="start a failed CI step again (once)")
     ap.add_argument("--signtool", help="signtool.exe to use (default: the newest Windows SDK's)")
+    ap.add_argument("--ref", help="dry runs only: the branch steps 3 and 5 run on (default main)")
     a = ap.parse_args(argv)
     try:
         cfg = signing.load_config()
         repo = cfg["repo"]
         version, dry_run = signing.parse_tag(a.tag)
-        ref = "main" if dry_run else a.tag
+        if a.ref and not dry_run:
+            raise Stop("--ref is only for dry runs; a release's steps run on its tag")
+        ref = (a.ref or "main") if dry_run else a.tag
         retried = False
         while True:
             rel = draft(repo, a.tag)
@@ -1842,8 +1922,8 @@ git commit -m "Signing: ci/release_sign.py signs a release's executables and MSI
 ```bash
 #!/usr/bin/env bash
 # Steps 3 and 5 of a release (Phase 3 spec §5): refuse unless this dispatched run belongs to
-# the draft $TAG. A release runs on its tag; a dry run (v1.2.3-dryrun.N) runs on main, and
-# main must still be the commit step 1 drafted.
+# the draft $TAG. A release runs on its tag; a dry run (v1.2.3-dryrun.N) runs on a branch
+# (release_sign.py --ref, default main) that must still be the commit step 1 drafted.
 set -euo pipefail
 case "$TAG" in
   v[0-9]*.[0-9]*.[0-9]*-dryrun.[0-9]*) want=branch ;;
@@ -1851,15 +1931,11 @@ case "$TAG" in
   *) echo "not a release tag: $TAG" >&2; exit 1 ;;
 esac
 if [ "$GITHUB_REF_TYPE" != "$want" ]; then
-  echo "$TAG must run on $([ "$want" = tag ] && echo "its tag" || echo main), not $GITHUB_REF" >&2
+  echo "$TAG must run on $([ "$want" = tag ] && echo "its tag" || echo "a branch"), not $GITHUB_REF" >&2
   exit 1
 fi
 if [ "$want" = tag ] && [ "$GITHUB_REF_NAME" != "$TAG" ]; then
   echo "this run is on $GITHUB_REF_NAME, not $TAG" >&2
-  exit 1
-fi
-if [ "$want" = branch ] && [ "$GITHUB_REF_NAME" != main ]; then
-  echo "a dry run's steps run on main, not $GITHUB_REF_NAME" >&2
   exit 1
 fi
 info=$(gh release view "$TAG" --json isDraft,targetCommitish --jq '"\(.isDraft) \(.targetCommitish)"')
@@ -1868,7 +1944,7 @@ if [ "${info%% *}" != true ]; then
   exit 1
 fi
 if [ "$want" = branch ] && [ "${info#* }" != "$GITHUB_SHA" ]; then
-  echo "main moved since step 1 (${info#* } drafted, now $GITHUB_SHA); start a new dry run" >&2
+  echo "$GITHUB_REF_NAME moved since step 1 (${info#* } drafted, now $GITHUB_SHA); start a new dry run" >&2
   exit 1
 fi
 echo "release guard: $TAG on $GITHUB_REF at $GITHUB_SHA"
@@ -2092,6 +2168,8 @@ run "release on its tag" TAG=v0.2.0 GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v0.2.0 G
 run "release on main" TAG=v0.2.0 GITHUB_REF_TYPE=branch GITHUB_REF_NAME=main GITHUB_REF=refs/heads/main GITHUB_SHA=$s STUB_INFO="true $s"
 run "other tag" TAG=v0.2.0 GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v0.1.0 GITHUB_REF=refs/tags/v0.1.0 GITHUB_SHA=$s STUB_INFO="true $s"
 run "dry run ok" TAG=v0.2.0-dryrun.3 GITHUB_REF_TYPE=branch GITHUB_REF_NAME=main GITHUB_REF=refs/heads/main GITHUB_SHA=$s STUB_INFO="true $s"
+run "dry run on a branch ok" TAG=v0.2.0-dryrun.3 GITHUB_REF_TYPE=branch GITHUB_REF_NAME=phase3-release-signing GITHUB_REF=refs/heads/phase3-release-signing GITHUB_SHA=$s STUB_INFO="true $s"
+run "dry run on a tag" TAG=v0.2.0-dryrun.3 GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v0.2.0 GITHUB_REF=refs/tags/v0.2.0 GITHUB_SHA=$s STUB_INFO="true $s"
 run "main moved" TAG=v0.2.0-dryrun.3 GITHUB_REF_TYPE=branch GITHUB_REF_NAME=main GITHUB_REF=refs/heads/main GITHUB_SHA=$s STUB_INFO="true 2222222222222222222222222222222222222222"
 run "not a draft" TAG=v0.2.0 GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v0.2.0 GITHUB_REF=refs/tags/v0.2.0 GITHUB_SHA=$s STUB_INFO="false $s"
 run "bad tag" TAG=0.2.0 GITHUB_REF_TYPE=tag GITHUB_REF_NAME=0.2.0 GITHUB_REF=refs/tags/0.2.0 GITHUB_SHA=$s STUB_INFO="true $s"
@@ -2099,7 +2177,7 @@ rm -rf "$stub"
 ```
 
 Run: `bash /c/tmp/guard_test.sh`
-Expected: exit 0 for "release on its tag" and "dry run ok"; exit 1 with the matching message for the other five.
+Expected: exit 0 for "release on its tag", "dry run ok" and "dry run on a branch ok"; exit 1 with the matching message for the other six.
 
 - [ ] **Step 5: Commit**
 
@@ -2146,10 +2224,11 @@ anything. Running the script again continues from the draft's state.
 
 ## Dry run
 
-Run `release.yml` by hand on `main` (Actions → Release → Run workflow). It creates the draft
-pre-release `vX.Y.Z-dryrun.N`. Then run `python ci/release_sign.py vX.Y.Z-dryrun.N`.
-Delete the draft afterwards. Don't push to `main` until the dry run is finished: steps 3 and 5
-refuse to run if `main` has moved since step 1.
+Run `release.yml` by hand on a branch: `gh workflow run release.yml --ref main`, or another
+branch. It creates the draft pre-release `vX.Y.Z-dryrun.N`. Then run
+`python ci/release_sign.py vX.Y.Z-dryrun.N`, adding `--ref <branch>` when the branch isn't `main`.
+Delete the draft afterwards. Don't push to that branch until the dry run is finished:
+steps 3 and 5 refuse to run if the branch has moved since step 1.
 
 ## When something fails
 
@@ -2159,7 +2238,7 @@ refuse to run if `main` has moved since step 1.
 | First timestamp server down | The script tries the second one (the PIN dialog may show again) | Nothing, unless both are down: try later |
 | A check in `release-msi.yml` or `release-finish.yml` fails (attestation, signer, timestamp, "differs from the unsigned file") | That run uploads nothing | Read the run log. Don't retry until you know why. |
 | A build or test in step 3 or 5 fails | The draft does not change | Fix the cause, then `python ci/release_sign.py <tag> --retry` |
-| `main` moved during a dry run | Step 3 or 5 stops with that message | Start a new dry run |
+| The dry run's branch moved | Step 3 or 5 stops with that message | Start a new dry run |
 | You want to drop a release | — | Delete the draft by hand. The script never deletes drafts or tags. |
 
 ## What is pinned
@@ -2237,6 +2316,8 @@ Expected: all pass, matching what the `coverage` job will see.
 
 - [ ] **Step 2: Ask the user before pushing**
 
+This needs Task 0's PR to be merged. Rebase first: `git fetch origin`, then `git rebase origin/main`. If the placeholder files conflict, keep this branch's version of `release-msi.yml` and `release-finish.yml`. Re-run Step 1.
+
 Ask: "Push `phase3-release-signing` and open a PR?" On yes:
 - `git push -u origin phase3-release-signing`
 - `gh pr create` with a body file `C:\tmp\pr_phase3_body.md`. The body says what changed and how it was tested, with no attribution lines.
@@ -2254,13 +2335,13 @@ If self-test case 1 or 4 fails, the comparison method is wrong for what signtool
 
 ---
 
-### Task 10: The dry run with the card (after the user merges)
+### Task 10: The dry run with the card, on the PR branch, before the merge
 
-`workflow_dispatch` workflows can only be started once they are on the default branch, so this task runs after the merge. Every step that starts or changes something on GitHub, or uses the card, is the user's to approve or do.
+Task 0's placeholders are on `main`, so the real `release-msi.yml` and `release-finish.yml` can be dispatched with `--ref phase3-release-signing`. GitHub's docs say a by-hand run uses the file from that ref; this is an inference until step 1 of this task shows it. Every step that starts or changes something on GitHub, or uses the card, is the user's to approve or do. Don't push to the branch during this task: the guard refuses to run once the branch has moved.
 
 - [ ] **Step 1: Ask the user to start the dry run**
 
-Ask for approval, then run `gh workflow run release.yml --ref main -R jmperez0/rpyenv`. Wait for it to finish. Read the draft's name (`v0.1.0-dryrun.N` while `Cargo.toml` says 0.1.0) with `gh release list -R jmperez0/rpyenv --limit 3`.
+Ask for approval, then run `gh workflow run release.yml --ref phase3-release-signing -R jmperez0/rpyenv`. Wait for it to finish. Read the draft's name (`v0.1.0-dryrun.N` while `Cargo.toml` says 0.1.0) with `gh release list -R jmperez0/rpyenv --limit 3`. Check in the run's log that the job named `draft` ran: that job exists only in the branch's `release.yml`, which shows the branch file was used.
 
 - [ ] **Step 2: Check the state without changing anything**
 
@@ -2269,7 +2350,7 @@ Expected: `v0.1.0-dryrun.N: sign-exes`.
 
 - [ ] **Step 3: The user runs the script with the card**
 
-The user inserts the card and types `! python ci/release_sign.py v0.1.0-dryrun.N` into the prompt. The PIN goes into the Certum dialog only. Measure and record:
+The user inserts the card and types `! python ci/release_sign.py v0.1.0-dryrun.N --ref phase3-release-signing` into the prompt. The PIN goes into the Certum dialog only. Measure and record:
 - how many PIN dialogs each signtool call showed (the user reports this);
 - the wall-clock time of the whole run;
 - whether every step reached `done`.
@@ -2285,5 +2366,6 @@ The user inserts the card and types `! python ci/release_sign.py v0.1.0-dryrun.N
 - [ ] **Step 5: Record the measurements and finish**
 
 - Put the measured PIN-prompt count and run time into `docs/releasing.md`, replacing "an estimate until the first release measures it", and into spec §2.
-- Commit on a new branch, then ask before pushing.
+- Commit on `phase3-release-signing`, then ask before pushing. The PR is then ready for the user to merge.
+- If the dry run found a defect, fix it on the branch with a test, push (after asking), and run a new dry run.
 - Ask the user to delete the dry-run draft. The script never deletes drafts.
