@@ -1,0 +1,25 @@
+name: Release MSIs
+# Placeholder: GitHub only lets you start a workflow by hand once a file of that name is on
+# the default branch. The real step 3 comes with Phase 3
+# (docs/superpowers/specs/2026-10-22-release-signing-design.md); until then a run fails.
+run-name: release-msi ${{ inputs.tag }} ${{ inputs.request }}
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        required: true
+        type: string
+      request:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  placeholder:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "placeholder: dispatch this workflow with --ref on the Phase 3 branch" >&2
+          exit 1
