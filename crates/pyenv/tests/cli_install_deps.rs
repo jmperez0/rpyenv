@@ -1000,14 +1000,17 @@ fn an_interrupt_during_the_install_command_ends_the_run_with_130() {
     let f = Fixture::new();
     plugin_def(&f);
     stubs(&f, 0);
-    // The package manager logs its line, then runs long enough to be interrupted.
+    // The package manager logs its line, then runs long enough to be interrupted. In short
+    // sleeps: a Ctrl+C that reaches dash while it starts a `sleep` misses that `sleep`, and dash
+    // acts on it only once the `sleep` ends (one `sleep 30` failed 27 of 300 loaded runs).
     let l = log_path(&f).display().to_string();
     stub(
         &f,
         "apt-get",
         &format!(
             "echo \"apt-get $*\" >> '{l}'
-sleep 30"
+i=0
+while [ $i -lt 300 ]; do sleep 0.1; i=$((i + 1)); done"
         ),
     );
     let owned = env(&f, &[("RPYENV_TEST_PREFLIGHT", "openssl")]);
