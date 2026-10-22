@@ -114,9 +114,14 @@ from step 1's workflow run, so the 90-day artifact limit no longer applies.
 Rules shared by `release-msi.yml` and `release-finish.yml`:
 
 - `run-name` includes the `request` input, so the script can find the run it started.
-- The first job checks that `github.sha` equals the commit the draft points at. For a dry
-  run (dispatched on `main`) a mismatch fails with "main moved since step 1; start a new
-  dry run".
+- The first job checks that the run belongs to the draft. A release runs on its own tag.
+  A dry run runs on a branch (`main` by default; any branch with `--ref`), and `github.sha`
+  must equal the commit the draft points at, else "the branch moved since step 1; start a
+  new dry run".
+- GitHub only lets you start a workflow by hand once a file of that name is on the default
+  branch; the run then uses the file from the `--ref` branch. Placeholder
+  `release-msi.yml` and `release-finish.yml` therefore go to `main` in a small PR first. The
+  card dry run (§8.2) then runs on the feature branch, before the real PR is merged.
 - Only the job that writes to the draft has `contents: write`, `id-token: write` and
   `attestations: write`. Actions stay pinned by commit SHA.
 - `workflow_dispatch` can only be started by accounts with write access to the repo.
@@ -137,7 +142,7 @@ Rules shared by `release-msi.yml` and `release-finish.yml`:
 1. Download `tmp-unsigned-msi-*` and `tmp-signed-msi-*`, verify the unsigned MSIs'
    attestations (signer workflow `release-msi.yml`), then run `ci/check_signed.py` on the
    signed MSIs as in step 3.
-2. Rename to `rpyenv-<v>-<arch>.msi`, download the tarballs and `install.sh` from the
+2. Take the signed `rpyenv-<v>-<arch>.msi` files (the zips already use the final names), download the tarballs and `install.sh` from the
    draft, write `SHA256SUMS` (`sha256sum rpyenv-* install.sh`, as today), attest the
    final files.
 3. Upload the MSIs and `SHA256SUMS`, then delete every `tmp-*` asset.
@@ -150,7 +155,9 @@ Rules shared by `release-msi.yml` and `release-finish.yml`:
 | `python ci/release_sign.py v0.2.0` | Reads the draft and does the next step (§6.1) |
 | `python ci/release_sign.py v0.2.0 --check` | Prints the state only; signs nothing, starts nothing |
 
-A dry run's draft tag (`v0.2.0-dryrun.17`) is accepted the same way.
+A dry run's draft tag (`v0.2.0-dryrun.17`) is accepted the same way. For a dry run,
+`--ref <branch>` (default `main`) names the branch steps 3 and 5 run on; a release refuses
+`--ref`, since its steps always run on its tag.
 
 ### 6.1 State, from the draft's assets only
 
@@ -191,7 +198,7 @@ signtool sign /sha1 <thumbprint> /fd sha256 /tr <timestamp URL> /td sha256
 
 ### 6.4 Starting and following CI
 
-- `gh workflow run <file> --ref <tag or main> -f tag=<tag> -f request=<random hex>`.
+- `gh workflow run <file> --ref <tag, or the dry run's branch> -f tag=<tag> -f request=<random hex>`.
 - The run is found by the `request` value in its name (`gh run list --json`), then followed
   with `gh run watch --exit-status`. Not found within 2 minutes: the script stops and
   says so.
@@ -266,7 +273,7 @@ The method candidates are:
 | First timestamp server down | Script retries with the second (second PIN prompt) | Nothing, unless both are down: try later |
 | A `check_signed.py` or attestation check fails in CI | That run uploads nothing | Read the run log; this is a stop, not a retry |
 | A build or test in step 3 or 5 fails | The draft does not change | Fix the cause, then `release_sign.py <tag> --retry` |
-| `main` moved during a dry run | Step 3 or 5 fails with that message | Start a new dry run |
+| The dry run's branch moved | Step 3 or 5 fails with that message | Start a new dry run |
 | Dropping a release | — | Delete the draft by hand; the script never deletes drafts or tags |
 
 ## 10. Documentation
