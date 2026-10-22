@@ -116,8 +116,9 @@ pub fn latest(ctx: &Ctx, args: &[&str]) -> Output {
     }
     let prefix = args.get(i).copied().unwrap_or("");
     let found = if known {
+        // pyenv 2.8.11 lists `pyenv-install --list --bare`, which adds plugin definitions.
         let env = |k: &str| std::env::var(k).ok();
-        resolve_known(prefix, &defs::known(&env))
+        resolve_known(prefix, &defs::names(&ctx.root, &env))
     } else {
         // The same list prefix.rs and select.rs pass to `latest::latest`; it already
         // omits the installer's staging names.

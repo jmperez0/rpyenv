@@ -93,8 +93,8 @@ pub fn names(root: &Path, env: &dyn Fn(&str) -> Option<String>) -> Vec<String> {
     list(dirs(root, env, true))
 }
 
-/// Standalone `pyenv latest -k`: the same list without plugin directories, which only
-/// `pyenv install` adds (reference "Plugin definition directories").
+/// The same list without plugin directories, which `pyenv install` and (since pyenv 2.8.11)
+/// `pyenv latest -k` add (reference "Plugin definition directories").
 pub fn known(env: &dyn Fn(&str) -> Option<String>) -> Vec<String> {
     list(dirs(Path::new(""), env, false))
 }
