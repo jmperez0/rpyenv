@@ -1,7 +1,7 @@
 name: Release finish
-# Placeholder: GitHub only lets you start a workflow by hand once a file of that name is on
-# the default branch. The real step 5 comes with Phase 3
-# (docs/superpowers/specs/2026-10-22-release-signing-design.md); until then a run fails.
+# Step 5 of a release (Phase 3 spec §5.2), started by ci/release_sign.py: checks the signed
+# MSIs against the attested unsigned ones, writes SHA256SUMS, attests the final files, puts
+# them on the draft and removes the tmp-* hand-off files. The draft stays a draft.
 run-name: release-finish ${{ inputs.tag }} ${{ inputs.request }}
 on:
   workflow_dispatch:
@@ -17,9 +17,77 @@ permissions:
   contents: read
 
 jobs:
-  placeholder:
-    runs-on: ubuntu-latest
+  msi:
+    name: check the signed MSIs
+    runs-on: windows-2025
+    timeout-minutes: 20
+    # Draft releases are visible only to tokens with push access.
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ inputs.tag }}
     steps:
-      - run: |
-          echo "placeholder: dispatch this workflow with --ref on the Phase 3 branch" >&2
-          exit 1
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --require-hashes --only-binary ":all:" -r ci/requirements-signing.txt
+      - name: This run belongs to the draft
+        shell: bash
+        run: bash ci/release_guard.sh
+      - name: Download the hand-off
+        shell: bash
+        run: gh release download "$TAG" -D zips -p "tmp-unsigned-msi-*.zip" -p "tmp-signed-msi-*.zip"
+      - name: Signed = attested + signature, pinned signer, timestamped
+        shell: bash
+        run: |
+          version=${TAG#v}
+          version=${version%%-dryrun.*}
+          python ci/check_signed.py msi --version "$version" --zips zips --out signed --commit ${{ github.sha }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: final-msi
+          path: signed/*/*.msi
+          if-no-files-found: error
+
+  publish:
+    needs: msi
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: final-msi
+          path: art
+      - name: Gather the final files
+        run: |
+          mkdir assets
+          cp art/*/*.msi assets/
+          gh release download "$TAG" -D assets -p "rpyenv-*.tar.gz" -p install.sh
+          for f in assets/*.tar.gz assets/install.sh; do
+            gh attestation verify "$f" --repo "$GH_REPO" \
+              --signer-workflow "$GH_REPO/.github/workflows/release.yml" \
+              --source-digest "$GITHUB_SHA" --deny-self-hosted-runners
+          done
+          cd assets
+          sha256sum rpyenv-* install.sh >SHA256SUMS
+          cat SHA256SUMS
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: "assets/*"
+      - name: Final files on the draft; hand-off files removed
+        run: |
+          gh release upload "$TAG" assets/*.msi assets/SHA256SUMS --clobber
+          gh release view "$TAG" --json assets --jq '.assets[].name' | grep '^tmp-' | while read -r name; do
+            gh release delete-asset "$TAG" "$name" --yes
+          done
+          echo "Done: review and publish the draft $TAG"
