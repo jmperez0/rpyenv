@@ -1,0 +1,56 @@
+name: Build MSIs
+# Builds and tests the MSI from the run's exes-<arch> artifact (M6b design §7, Phase 3 spec §5).
+# Called by build.yml (pull requests, unsigned) and release-msi.yml (signed executables).
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  msi:
+    name: msi (${{ matrix.arch }})
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-2025
+          - arch: arm64
+            runner: windows-11-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: "8.0.x"
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: exes-${{ matrix.arch }}
+          path: bin
+      - name: Build the MSI
+        shell: pwsh
+        run: ./installer/build.ps1 -Arch ${{ matrix.arch }} -BinDir bin -OutDir dist
+      - name: Build a higher-version MSI for the upgrade test
+        shell: pwsh
+        run: ./installer/build.ps1 -Arch ${{ matrix.arch }} -BinDir bin -OutDir dist-next -Version Next
+      - name: Check the MSI's tables
+        shell: pwsh
+        run: ./installer/test_msi_tables.ps1 (Get-ChildItem dist/*.msi).FullName
+      - name: Install, upgrade and uninstall
+        run: python installer/test_msi.py dist dist-next
+      - name: Keep the msiexec logs of a failed run
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: msi-logs-${{ matrix.arch }}
+          path: msi-logs/
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: msi-${{ matrix.arch }}
+          path: dist/*.msi
+          if-no-files-found: error
