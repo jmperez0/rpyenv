@@ -86,3 +86,6 @@ try {
     Expect 'msi one byte' (Check msi $mm $sm) 1 'differs from the unsigned file'
 }
 finally { Pop-Location }
+# The last case leaves $LASTEXITCODE at 1 on purpose, and GitHub's pwsh step exits with
+# $LASTEXITCODE. Every case passed to get here; a failed case throws above.
+exit 0
