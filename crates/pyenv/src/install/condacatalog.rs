@@ -74,8 +74,9 @@ pub fn listing_files(html: &str, folder: &str) -> Vec<(String, Option<String>)> 
 /// versioned one `name_of` parses, or an unversioned `<Family>-Windows-x86_64.exe` for the
 /// `-latest` rows) with its download URL and whether a `<asset>.sha256` sits beside it. Other
 /// assets (`*-uninstaller-patch`, `Miniforge-pypy3-*`) are left out, so their sidecars are never
-/// fetched and can't fail the read. A page that isn't a JSON array is an error
-/// (GitHub's rate-limit answer is an object).
+/// fetched and can't fail the read. Releases marked `prerelease` or `draft` are left out too
+/// (Miniforge 26.9.4-0 came out as a pre-release whose `conda create` fails on Windows). A page
+/// that isn't a JSON array is an error (GitHub's rate-limit answer is an object).
 pub fn release_assets(json: &str, miniforge: &str) -> Result<Vec<(String, bool)>, String> {
     let v: serde_json::Value = serde_json::from_str(json).map_err(|e| format!("releases: {e}"))?;
     let releases = v.as_array().ok_or_else(|| {
@@ -86,6 +87,9 @@ pub fn release_assets(json: &str, miniforge: &str) -> Result<Vec<(String, bool)>
     })?;
     let mut out = Vec::new();
     for r in releases {
+        if r["prerelease"].as_bool() == Some(true) || r["draft"].as_bool() == Some(true) {
+            continue;
+        }
         let tag = r["tag_name"].as_str().unwrap_or_default();
         let names: Vec<&str> = r["assets"]
             .as_array()
@@ -769,6 +773,34 @@ mod tests {
             ("https://github.com/conda-forge/miniforge/releases/download/26.7.2-0/Miniforge3-Windows-x86_64.exe".to_string(), false),
         ]);
         assert!(release_assets("{\"message\":\"API rate limit exceeded\"}", "x").is_err());
+    }
+
+    #[test]
+    fn release_assets_skips_prereleases_and_drafts() {
+        // Miniforge 26.9.4-0 came out as a pre-release whose `conda create` fails on Windows.
+        let rel = |tag: &str, flags: &str| {
+            format!(
+                r#"{{"tag_name":"{tag}",{flags}"assets":[{{"name":"Miniforge3-{tag}-Windows-x86_64.exe"}},{{"name":"Miniforge3-Windows-x86_64.exe"}}]}}"#
+            )
+        };
+        let json = format!(
+            "[{},{},{}]",
+            rel("26.9.4-0", r#""prerelease":true,"draft":false,"#),
+            rel("26.9.5-0", r#""prerelease":false,"draft":true,"#),
+            rel("26.7.2-1", r#""prerelease":false,"draft":false,"#),
+        );
+        let got = release_assets(&json, "https://github.com/conda-forge/miniforge").unwrap();
+        let base = "https://github.com/conda-forge/miniforge/releases/download/26.7.2-1/";
+        assert_eq!(
+            got,
+            vec![
+                (
+                    format!("{base}Miniforge3-26.7.2-1-Windows-x86_64.exe"),
+                    false
+                ),
+                (format!("{base}Miniforge3-Windows-x86_64.exe"), false),
+            ]
+        );
     }
 
     #[test]
