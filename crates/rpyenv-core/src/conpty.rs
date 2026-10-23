@@ -661,12 +661,21 @@ mod tests {
     use std::ffi::OsString;
     use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
     use windows_sys::Win32::System::Console::CTRL_CLOSE_EVENT;
+    use windows_sys::Win32::System::Threading::TerminateProcess;
 
     /// R8 in LAZY: when the shim's own window closes, the console handler closes the
     /// pseudo-console (the program gets its own CTRL_CLOSE_EVENT) and returns only once the
     /// program has ended, so the job doesn't cut its cleanup short.
+    ///
+    /// The close waits for the program's own output: closing a pseudo-console whose host is
+    /// still starting can go unnoticed, and the program then runs on. A fixed 500 ms sleep
+    /// hung 8 of 100 runs of this test binary under load (2026-10-23), always with the close
+    /// before cmd's first output. The handler gets 30 s, so a missed close fails the test
+    /// instead of hanging it; in the shim, Windows' own timeout bounds the wait.
     #[test]
     fn the_close_handler_closes_the_pseudo_console_and_waits_for_the_program() {
+        const MARKER: &str = "rpyenv-ready";
+        let limit = std::time::Duration::from_secs(30);
         let (in_read, _in_write) = pipe().unwrap();
         let (out_read, out_write) = pipe().unwrap();
         let mut hpc: HPCON = 0;
@@ -676,8 +685,11 @@ mod tests {
         drop(in_read);
         drop(out_write);
         let out = out_read.0 as usize;
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         let drain = std::thread::spawn(move || {
             let mut buf = [0u8; 4096];
+            let mut seen = Vec::new();
+            let mut ready = Some(ready_tx);
             loop {
                 let mut n = 0u32;
                 // SAFETY: reads into a local buffer of the length given.
@@ -693,23 +705,47 @@ mod tests {
                 if ok == 0 || n == 0 {
                     break;
                 }
+                if ready.is_some() {
+                    seen.extend_from_slice(&buf[..n as usize]);
+                    if String::from_utf8_lossy(&seen).contains(MARKER) {
+                        let _ = ready.take().map(|tx| tx.send(()));
+                    }
+                }
             }
         });
         winproc::set_pty(hpc);
         let cmd =
             std::env::var("ComSpec").unwrap_or_else(|_| r"C:\Windows\System32\cmd.exe".into());
-        let mut line = command_line(Path::new(&cmd), Some(OsStr::new("/d /c pause")));
+        let args = format!("/d /c echo {MARKER}& pause");
+        let mut line = command_line(Path::new(&cmd), Some(OsStr::new(&args)));
         let env = env_block(&std::env::vars_os().collect::<Vec<_>>());
         let process = start(&mut line, &env, hpc, None).unwrap();
         // SAFETY: `process` owns the program's process handle.
         unsafe { winproc::watch_child(process.0) };
-        std::thread::sleep(std::time::Duration::from_millis(500));
-        // SAFETY: calls the handler as Windows would, on this thread.
-        unsafe { winproc::on_console_event(CTRL_CLOSE_EVENT) };
+        let ready = ready_rx.recv_timeout(limit).is_ok();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        if ready {
+            std::thread::spawn(move || {
+                // SAFETY: calls the handler as Windows would, on a thread of its own.
+                unsafe { winproc::on_console_event(CTRL_CLOSE_EVENT) };
+                let _ = done_tx.send(());
+            });
+        }
+        let returned = ready && done_rx.recv_timeout(limit).is_ok();
         // SAFETY: polls the program's process handle, which `process` owns.
         let ended = unsafe { WaitForSingleObject(process.0, 0) } == WAIT_OBJECT_0;
+        if !ended {
+            // SAFETY: ends the program, whose handle `process` owns, so nothing outlives
+            // the test and a waiting handler returns.
+            unsafe { TerminateProcess(process.0, 1) };
+        }
         winproc::close_pty();
         let _ = drain.join();
+        assert!(ready, "cmd didn't print {MARKER} within {limit:?}");
+        assert!(
+            returned,
+            "the handler didn't return within {limit:?}: the program missed the close"
+        );
         assert!(
             ended,
             "the handler returned while the program was still running"
