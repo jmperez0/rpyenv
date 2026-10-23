@@ -1,8 +1,9 @@
 # Releasing rpyenv
 
 A release needs the maintainer's PC with the Certum card. CI builds, tests and attests;
-the PC only signs. The whole run takes about 25–30 minutes (an estimate until the first
-release measures it), most of it CI.
+the PC only signs. The dry run on 2026-10-23 (`v0.1.0-dryrun.4`) took about 12 minutes:
+4 min for `release.yml`, then 7 min 13 s for `release_sign.py` from start to `Done` (two
+PIN prompts, one per signing step; the rest is CI).
 
 ## Steps
 

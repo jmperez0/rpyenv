@@ -42,10 +42,22 @@ Measured on 2026-10-22, read-only, without using the key:
 - `parity.yml`'s `coverage` job runs `python3 -m unittest discover -s ci` on Ubuntu, so a
   test in `ci/` runs on every push and pull request.
 
-Not measured yet (the plan's first tasks measure them, see §8):
+Measured later:
 
-- how many PIN prompts one `signtool sign` call over several files shows;
-- which method proves "signed file = unsigned file + signature" for a PE and for an MSI.
+- PIN prompts: one per `signtool sign` call, whatever the number of files. The card dry run
+  `v0.1.0-dryrun.4` (2026-10-23, from this branch) signed 6 executables in one call and 2
+  MSIs in another, and showed 2 prompts (counted by the maintainer).
+- "Signed file = unsigned file + signature": the §7 comparison (PE: the certificate table
+  appended at the 8-byte-aligned end and the header fields blanked; MSI: equal OLE entries
+  apart from the two signature streams) passes on real signtool output. Method: the
+  pull-request self-test (a throwaway certificate; 7 cases: 2 must pass, 5 must fail) and the
+  card dry run's steps 3 and 5, both green on PR #44.
+- Timing of that dry run: `release.yml` 4 min 12 s, then `release_sign.py` 7 min 13 s from
+  start to `Done`, including both PINs and CI steps 3 (3 min 46 s) and 5 (1 min 11 s).
+- On a Windows 11 26300 VM with no network, restored from a clean checkpoint, the
+  dry run's x64 MSI reads `Valid`, signer `58E0373B…`, timestamped. It installs for all
+  users silently (exit 0), and the installed `pyenv.exe`, `pyenv-shim.exe` and
+  `pyenv-shimw.exe` read the same. The UAC prompt itself was not looked at.
 
 ## 3. Decisions (user, 2026-10-22)
 
