@@ -51,7 +51,8 @@ def run(cmd, env, timeout=TIMEOUT):
 def must(root, name, step, cmd, env, timeout=TIMEOUT):
     rc, out, err = run(cmd, env, timeout)
     if rc:
-        print(f"command: {cmd}\nexit code: {rc}\n--- stdout tail ---\n{tail(out)}\n--- stderr tail ---\n{tail(err)}")
+        # All of stderr: conda's error report puts the traceback first and a long environment dump after it.
+        print(f"command: {cmd}\nexit code: {rc}\n--- stdout tail ---\n{tail(out)}\n--- stderr ---\n{err}")
         log = os.path.join(root, "install_cache", name + ".log")
         if os.path.isfile(log):
             with open(log, encoding="utf-8", errors="replace") as f:
