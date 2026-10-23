@@ -1,7 +1,11 @@
 """Tests for ci/check_conda_win.py's pure parts (plan M7c Task 10)."""
+import contextlib
+import io
 import os
 import sys
+import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import check_conda_win as c  # noqa: E402
@@ -38,6 +42,21 @@ class Tail(unittest.TestCase):
     def test_short_and_long(self):
         self.assertEqual(c.tail("abc", 10), "abc")
         self.assertEqual(c.tail("x" * 20 + "end", 5), "...xxend")
+
+
+class Must(unittest.TestCase):
+    def test_a_failure_prints_all_of_stderr(self):
+        # conda's error report: the traceback first, then an environment dump longer than the stdout tail.
+        report = ("# >>>>>>>>>>>>>>>>>>>>>> ERROR REPORT <<<<<<<<<<<<<<<<<<<<<<\n"
+                  "    Traceback (most recent call last):\n    KeyError: 'the cause'\n"
+                  + "  PATH=C:\\x;" * 2000 + "\nAn unexpected error has occurred.\n")
+        printed = io.StringIO()
+        with mock.patch.object(c, "run", return_value=(1, "plan", report)), \
+                tempfile.TemporaryDirectory() as root, contextlib.redirect_stdout(printed):
+            with self.assertRaisesRegex(c.Failed, "^step 3: "):
+                c.must(root, "miniforge3-26.9.4-0", 3, ["conda.exe", "create"], {})
+        self.assertIn("KeyError: 'the cause'", printed.getvalue())
+        self.assertIn("An unexpected error has occurred.", printed.getvalue())
 
 
 if __name__ == "__main__":
