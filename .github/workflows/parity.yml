@@ -29,8 +29,13 @@ jobs:
       - run: python3 -m unittest discover -s ci -p "test_*.py" -v
 
   linux:
-    name: upstream pyenv (differential + bats)
-    runs-on: ubuntu-latest
+    name: upstream pyenv (differential + bats, ${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # arm64 too: CI's tests already run there, and parity had only x86_64.
+        os: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -52,7 +57,7 @@ jobs:
         run: python3 parity/diff.py --rpyenv target/debug --upstream upstream/pyenv --pyenv-virtualenv upstream/pyenv-virtualenv
       # `locales` (a few MB) with en_US.UTF-8 generated, not `locales-all` (hundreds of MB): upstream's
       # multibyte-path rehash test skips itself without that locale.
-      # The binaries are built on ubuntu-latest and run in trixie-slim. That works while the
+      # The binaries are built on the runner (x86_64 or arm64) and run in trixie-slim. That works while the
       # runner's glibc is no newer than trixie's (2.41).
       - name: Upstream bats suite in debian:trixie-slim (spec §12.3)
         if: ${{ !cancelled() }}
