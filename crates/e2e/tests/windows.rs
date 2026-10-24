@@ -1344,12 +1344,13 @@ fn win_lazy_a_batch_target_takes_eager() {
     }
 }
 
-/// Closes process `pid`'s console window: conhost's, or on CI the Windows Terminal window
-/// hosting it (off CI that window may hold the developer's own tabs). False (after ending
-/// the shim) when it can't.
+/// Closes process `pid`'s console window: conhost's, or on a GitHub-hosted runner the Windows
+/// Terminal window hosting it. Anywhere else that window may hold other tabs (a developer's
+/// own sessions), and `CI` alone is no proof, so it is never closed there. False (after
+/// ending the shim) when it can't.
 fn close_window_of(pid: u32) -> bool {
     let mut helper = Command::new(built("argv-echo"));
-    if on_ci() {
+    if std::env::var("RUNNER_ENVIRONMENT").as_deref() == Ok("github-hosted") {
         helper.env("ARGV_ECHO_CLOSE_TERMINAL", "1");
     }
     let code = helper
@@ -1359,7 +1360,7 @@ fn close_window_of(pid: u32) -> bool {
         .unwrap()
         .code();
     if code == Some(4) {
-        skipped("the console window is neither conhost's nor, on CI, Windows Terminal's");
+        skipped("the console window is neither conhost's nor, on a GitHub-hosted runner, Windows Terminal's");
         terminate(pid);
         return false;
     }

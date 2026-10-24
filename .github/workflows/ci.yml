@@ -32,9 +32,9 @@ jobs:
           python3 ci/shim_deps.py --self-test
           python3 ci/shim_deps.py
       # The window-close tests in Windows Terminal, windows-2025's default terminal, before the step
-      # below switches to conhost: on CI the helper closes the Terminal window hosting the console
-      # (ARGV_ECHO_CLOSE_TERMINAL). The count makes sure both closes went to Terminal, so a run
-      # that fell back to conhost or skipped fails.
+      # below switches to conhost: on GitHub-hosted runners the helper closes the Terminal window
+      # hosting the console (ARGV_ECHO_CLOSE_TERMINAL). The count makes sure both closes went to
+      # Terminal, so a run that fell back to conhost or skipped fails.
       - name: Window-close tests in Windows Terminal
         if: matrix.os == 'windows-2025'
         shell: bash
