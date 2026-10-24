@@ -31,4 +31,18 @@ jobs:
           python3 ci/pe_imports.py --self-test
           python3 ci/shim_deps.py --self-test
           python3 ci/shim_deps.py
+      # windows-2025's default terminal is Windows Terminal, and the e2e window-close tests can only
+      # close conhost's windows: they printed E2E-SKIP there and checked nothing. This sets what
+      # Settings > System > For developers > Terminal = "Windows Console Host" sets, for the
+      # runner's user.
+      - name: Classic console as the default terminal
+        if: startsWith(matrix.os, 'windows')
+        shell: pwsh
+        run: |
+          $k = 'HKCU:\Console\%%Startup'
+          if (-not (Test-Path $k)) { New-Item -Path $k | Out-Null }
+          $conhost = '{B23D10C0-E52E-411E-9D5B-C09FDF709C7D}'
+          Set-ItemProperty -Path $k -Name DelegationConsole -Value $conhost
+          Set-ItemProperty -Path $k -Name DelegationTerminal -Value $conhost
+          Get-ItemProperty -Path $k | Format-List DelegationConsole, DelegationTerminal
       - run: cargo test --workspace
