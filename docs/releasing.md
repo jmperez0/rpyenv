@@ -7,9 +7,11 @@ PIN prompts, one per signing step. The rest is CI.)
 
 ## Steps
 
-1. **Bump the version** in `Cargo.toml` (`version = "X.Y.Z"`) on `main`, then push the tag:
-   `git tag vX.Y.Z && git push origin vX.Y.Z`. `release.yml` builds the executables and
-   tarballs, attests them and creates a draft release.
+1. **Bump the version** in `Cargo.toml` (`version = "X.Y.Z"`) through a pull request, because
+   `main` accepts changes only from pull requests. The parity goldens record the version too:
+   replace `(rpyenv <old>)` in the six files of `parity/golden/` that contain it. After the
+   merge, push the tag: `git tag vX.Y.Z && git push origin vX.Y.Z`. `release.yml` builds the
+   executables and tarballs, attests them and creates a draft release.
 2. **Insert the card**, then run `python ci/release_sign.py vX.Y.Z` from the repo root. It:
    1. signs the six executables (the Certum dialog asks for the PIN),
    2. starts `release-msi.yml` and waits for it,
