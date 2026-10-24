@@ -48,28 +48,60 @@ fn window_minimized(pid: u32) -> i32 {
 }
 
 /// Posts `WM_CLOSE` to process `pid`'s console window, as clicking its close button does.
-/// Exits 4 when the window isn't conhost's (Windows Terminal hosts it elsewhere).
+/// Under Windows Terminal the console's window is a hidden `PseudoConsoleWindow` whose owner
+/// is Terminal's window; with `ARGV_ECHO_CLOSE_TERMINAL=1` that window is closed instead
+/// (only where nobody else's tabs can be in it: CI). Exits 4 for any other window, or for
+/// Terminal's without that variable. Prints what it found on stderr.
 #[cfg(windows)]
 fn close_window(pid: u32) -> i32 {
+    use windows_sys::Win32::Foundation::HWND;
     use windows_sys::Win32::System::Console::{AttachConsole, FreeConsole, GetConsoleWindow};
-    use windows_sys::Win32::UI::WindowsAndMessaging::{GetClassNameW, PostMessageW, WM_CLOSE};
-    // SAFETY: console attachment of this helper only; reads a class name into a local.
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetAncestor, GetClassNameW, GetWindowThreadProcessId, PostMessageW, GA_ROOTOWNER, WM_CLOSE,
+    };
+    fn class_of(hwnd: HWND) -> String {
+        let mut class = [0u16; 128];
+        // SAFETY: reads a class name into a local buffer of the given length.
+        let n = unsafe { GetClassNameW(hwnd, class.as_mut_ptr(), 128) };
+        String::from_utf16_lossy(&class[..n.max(0) as usize])
+    }
+    // SAFETY: console attachment of this helper only; window queries and one posted message.
     unsafe {
         FreeConsole();
         if AttachConsole(pid) == 0 {
             return 2;
         }
         let hwnd = GetConsoleWindow();
-        let mut class = [0u16; 64];
-        let n = GetClassNameW(hwnd, class.as_mut_ptr(), 64);
-        if String::from_utf16_lossy(&class[..n.max(0) as usize]) != "ConsoleWindowClass" {
+        let class = class_of(hwnd);
+        let terminal = std::env::var("ARGV_ECHO_CLOSE_TERMINAL").as_deref() == Ok("1");
+        let target = match class.as_str() {
+            "ConsoleWindowClass" => hwnd,
+            "PseudoConsoleWindow" if terminal => GetAncestor(hwnd, GA_ROOTOWNER),
+            _ => std::ptr::null_mut(),
+        };
+        let target_class = if target.is_null() {
+            String::new()
+        } else {
+            class_of(target)
+        };
+        let mut owner_pid = 0u32;
+        if !target.is_null() {
+            GetWindowThreadProcessId(target, &mut owner_pid);
+        }
+        eprintln!(
+            "close-window: console window {class:?}, closing {target_class:?} of pid {owner_pid}"
+        );
+        if !matches!(
+            target_class.as_str(),
+            "ConsoleWindowClass" | "CASCADIA_HOSTING_WINDOW_CLASS"
+        ) {
             return 4;
         }
         // Leave that console before closing it: the close sends CTRL_CLOSE_EVENT to every
         // process still on it, and this helper would die with 0xC000013A (seen on CI,
         // windows-2022). The window handle stays valid after leaving.
         FreeConsole();
-        if PostMessageW(hwnd, WM_CLOSE, 0, 0) == 0 {
+        if PostMessageW(target, WM_CLOSE, 0, 0) == 0 {
             return 3;
         }
     }

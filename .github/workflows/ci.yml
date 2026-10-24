@@ -31,6 +31,19 @@ jobs:
           python3 ci/pe_imports.py --self-test
           python3 ci/shim_deps.py --self-test
           python3 ci/shim_deps.py
+      # The window-close tests in Windows Terminal, windows-2025's default terminal, before the step
+      # below switches to conhost: on CI the helper closes the Terminal window hosting the console
+      # (ARGV_ECHO_CLOSE_TERMINAL). The count makes sure both closes went to Terminal, so a run
+      # that fell back to conhost or skipped fails.
+      - name: Window-close tests in Windows Terminal
+        if: matrix.os == 'windows-2025'
+        shell: bash
+        run: |
+          cargo test -p rpyenv-e2e --test windows closing_the_window -- --nocapture --test-threads=1 2>&1 | tee wt-close.log
+          test "${PIPESTATUS[0]}" -eq 0
+          n=$(grep -c 'closing "CASCADIA_HOSTING_WINDOW_CLASS"' wt-close.log || true)
+          echo "closes that went to Windows Terminal: $n"
+          test "$n" -eq 2
       # windows-2025's default terminal is Windows Terminal, and the e2e window-close tests can only
       # close conhost's windows: they printed E2E-SKIP there and checked nothing. This sets what
       # Settings > System > For developers > Terminal = "Windows Console Host" sets, for the

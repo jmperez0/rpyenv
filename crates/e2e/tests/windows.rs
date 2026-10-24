@@ -1344,17 +1344,22 @@ fn win_lazy_a_batch_target_takes_eager() {
     }
 }
 
-/// Closes process `pid`'s console window. False (after ending the shim) when the window
-/// isn't conhost's, which this test can't close.
+/// Closes process `pid`'s console window: conhost's, or on CI the Windows Terminal window
+/// hosting it (off CI that window may hold the developer's own tabs). False (after ending
+/// the shim) when it can't.
 fn close_window_of(pid: u32) -> bool {
-    let code = Command::new(built("argv-echo"))
+    let mut helper = Command::new(built("argv-echo"));
+    if on_ci() {
+        helper.env("ARGV_ECHO_CLOSE_TERMINAL", "1");
+    }
+    let code = helper
         .env("ARGV_ECHO_CLOSE_PID", pid.to_string())
         .stdin(Stdio::null())
         .status()
         .unwrap()
         .code();
     if code == Some(4) {
-        skipped("the console window isn't conhost's (Windows Terminal is the default terminal)");
+        skipped("the console window is neither conhost's nor, on CI, Windows Terminal's");
         terminate(pid);
         return false;
     }
