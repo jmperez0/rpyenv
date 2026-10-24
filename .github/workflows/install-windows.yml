@@ -84,6 +84,15 @@ jobs:
       fail-fast: false
       matrix:
         kind: [miniforge3, miniconda3, miniforge3-latest]
+    # Miniforge 26.9.4-0 is broken on Windows upstream: conda 26.9.4 looks for its launcher stub only in the
+    # conda-launchers record's paths_data, which that installer leaves empty, so creating any env with entry
+    # points fails (reproduced 2026-10-24 with the stock installer and no rpyenv; conda-forge/miniforge#913 is
+    # another symptom). While MINIFORGE_BROKEN names the newest release: the miniforge3 row checks
+    # MINIFORGE_HOLD instead, and the miniforge3-latest row (always /releases/latest/) still runs but can't fail
+    # the job. Empty both once a fixed release is out.
+    env:
+      MINIFORGE_BROKEN: miniforge3-26.9.4-0
+      MINIFORGE_HOLD: miniforge3-26.7.2-1
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master, 2026-10-02
@@ -114,10 +123,18 @@ jobs:
             $name = (& $pyenv latest -k $env:KIND | Select-Object -Last 1)
             if ($LASTEXITCODE -or -not $name) { Write-Error "no installable $env:KIND name"; exit 1 }
             $name = $name.Trim()
+            if ($env:MINIFORGE_BROKEN -and $name -eq $env:MINIFORGE_BROKEN) {
+              "$name is known broken upstream; checking $env:MINIFORGE_HOLD instead"
+              $name = $env:MINIFORGE_HOLD
+            }
           }
           $start = Get-Date
           python ci/check_conda_win.py $name
           $code = $LASTEXITCODE
           $secs = [int]((Get-Date) - $start).TotalSeconds
           "| name | seconds | exit |`n|---|---|---|`n| $name | $secs | $code |" >> $env:GITHUB_STEP_SUMMARY
+          if ($code -and $env:KIND -eq 'miniforge3-latest' -and $env:MINIFORGE_BROKEN) {
+            "::warning::miniforge3-latest failed (exit $code) while $env:MINIFORGE_BROKEN is held as broken; not failing the job"
+            exit 0
+          }
           if ($code) { exit 1 }
