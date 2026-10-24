@@ -4,11 +4,12 @@ use common::{nl, Fixture};
 #[test]
 fn version_flag() {
     let expected = if cfg!(windows) {
-        "pyenv 3.1.1 (rpyenv 0.1.0)\n".to_string()
+        format!("pyenv 3.1.1 (rpyenv {})\n", env!("CARGO_PKG_VERSION"))
     } else {
         format!(
-            "pyenv {} (rpyenv 0.1.0)\n",
-            pyenv::install::defs::UPSTREAM_VERSION
+            "pyenv {} (rpyenv {})\n",
+            pyenv::install::defs::UPSTREAM_VERSION,
+            env!("CARGO_PKG_VERSION")
         )
     };
     let r = Fixture::new().pyenv(&["--version"]);
@@ -40,8 +41,9 @@ fn no_arguments_prints_version_and_help_to_stderr() {
     assert!(r
         .stderr
         .starts_with(&format!(
-            "pyenv {} (rpyenv 0.1.0)\nUsage: pyenv <command> [<args>]\n\nSome useful pyenv commands are:\n",
-            pyenv::install::defs::UPSTREAM_VERSION
+            "pyenv {} (rpyenv {})\nUsage: pyenv <command> [<args>]\n\nSome useful pyenv commands are:\n",
+            pyenv::install::defs::UPSTREAM_VERSION,
+            env!("CARGO_PKG_VERSION")
         )));
     assert!(r
         .stderr
@@ -137,9 +139,10 @@ fn works_in_a_deleted_directory() {
 #[test]
 fn win_no_arguments_prints_show_help() {
     let r = Fixture::new().pyenv(&[]);
-    assert!(r
-        .stdout
-        .starts_with("pyenv 3.1.1 (rpyenv 0.1.0)\r\n\r\nUsage: pyenv <command> [<args>]\r\n"));
+    assert!(r.stdout.starts_with(&format!(
+        "pyenv 3.1.1 (rpyenv {})\r\n\r\nUsage: pyenv <command> [<args>]\r\n",
+        env!("CARGO_PKG_VERSION")
+    )));
     assert_eq!(r.code, 0);
 }
 
