@@ -50,8 +50,8 @@ fn window_minimized(pid: u32) -> i32 {
 /// Posts `WM_CLOSE` to process `pid`'s console window, as clicking its close button does.
 /// Under Windows Terminal the console's window is a hidden `PseudoConsoleWindow` whose owner
 /// is Terminal's window; with `ARGV_ECHO_CLOSE_TERMINAL=1` that window is closed instead
-/// (only where nobody else's tabs can be in it: CI). Exits 4 for any other window, or for
-/// Terminal's without that variable. Prints what it found on stderr.
+/// (only where nobody else's tabs can be in it: a GitHub-hosted runner). Exits 4 for any
+/// other window, or for Terminal's without that variable. Prints what it found on stderr.
 #[cfg(windows)]
 fn close_window(pid: u32) -> i32 {
     use windows_sys::Win32::Foundation::HWND;
