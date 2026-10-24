@@ -23,9 +23,15 @@ pub struct Sources {
 /// set and it unset they name a closed local port, so a test never reaches the network. Release
 /// builds ignore both.
 pub fn sources() -> Sources {
+    sources_from(&|k| std::env::var(k).ok().filter(|v| !v.is_empty()))
+}
+
+/// `sources` with `var` as the environment, so a test needn't change the process's: another
+/// test reading these variables at that moment would see the change (a prebuilt URL test did).
+#[cfg_attr(not(debug_assertions), allow(unused_variables))]
+fn sources_from(var: &dyn Fn(&str) -> Option<String>) -> Sources {
     #[cfg(debug_assertions)]
     {
-        let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
         let test = var("RPYENV_TEST_CONDA")
             .or_else(|| var("RPYENV_TEST_PYTHON_ORG").map(|_| "http://127.0.0.1:9".to_string()));
         if let Some(b) = test {
@@ -835,28 +841,13 @@ mod tests {
         assert!(!tos("miniforge3-26.7.2-0"));
     }
 
-    static ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    /// Spec R2: with only `RPYENV_TEST_PYTHON_ORG` set, no source can reach the network.
+    /// Spec R2: with only `RPYENV_TEST_PYTHON_ORG` set, no source can reach the network. The
+    /// environment is a closure: setting the process's variables raced other tests.
     #[test]
     fn sources_name_a_closed_port_under_the_python_org_test_variable() {
-        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
-        let saved = (
-            std::env::var_os("RPYENV_TEST_CONDA"),
-            std::env::var_os("RPYENV_TEST_PYTHON_ORG"),
-        );
-        std::env::remove_var("RPYENV_TEST_CONDA");
-        std::env::set_var("RPYENV_TEST_PYTHON_ORG", "http://example.invalid");
-        let s = sources();
-        for (k, v) in [
-            ("RPYENV_TEST_CONDA", saved.0),
-            ("RPYENV_TEST_PYTHON_ORG", saved.1),
-        ] {
-            match v {
-                Some(v) => std::env::set_var(k, v),
-                None => std::env::remove_var(k),
-            }
-        }
+        let s = sources_from(&|k| {
+            (k == "RPYENV_TEST_PYTHON_ORG").then(|| "http://example.invalid".to_string())
+        });
         for u in [&s.miniconda, &s.archive, &s.miniforge, &s.releases] {
             assert!(u.starts_with("http://127.0.0.1:9"), "{u}");
         }
