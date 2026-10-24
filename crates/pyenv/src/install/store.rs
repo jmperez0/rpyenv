@@ -1034,7 +1034,35 @@ install_dev:
             verbose: false,
             bootstrap: None,
         };
-        ensure(&b, keys, say)
+        let mut said: Vec<String> = Vec::new();
+        let r = ensure(&b, keys, &mut |s: &str| {
+            said.push(s.to_string());
+            say(s);
+        });
+        if r == Err(InstallError::Failed) {
+            report_failure(f, &said);
+        }
+        r
+    }
+
+    /// What a failed build said and its kept logs, on stderr: libtest shows it only when the
+    /// test then fails, so an unexpected failure (a rare flake in
+    /// `two_builders_of_one_entry_build_it_once`) names its cause.
+    fn report_failure(f: &Fixture, said: &[String]) {
+        eprintln!("build failed; it said:\n{}", said.join("\n"));
+        let tmp = f
+            .env
+            .iter()
+            .find(|(k, _)| k == "TMPDIR")
+            .map(|(_, v)| PathBuf::from(v));
+        let logs = tmp.and_then(|t| std::fs::read_dir(t).ok());
+        for e in logs.into_iter().flatten().filter_map(Result::ok) {
+            let n = e.file_name().to_string_lossy().into_owned();
+            if n.starts_with("rpyenv-deps.") && n.ends_with(".log") {
+                let text = std::fs::read_to_string(e.path()).unwrap_or_default();
+                eprintln!("--- {n}:\n{text}");
+            }
+        }
     }
 
     /// A fake Tcl source tree: `unix/configure` writes a Makefile whose build records the
