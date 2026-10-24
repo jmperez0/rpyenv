@@ -783,6 +783,27 @@ pub fn parent_image_name() -> Option<String> {
     }
 }
 
+/// Whether process `pid` may still be running. False only when Windows says so: no process
+/// has that ID, or the one that had it has exited. A process this user may not open counts as
+/// running.
+pub fn process_may_run(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, STILL_ACTIVE};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    // SAFETY: opens the process only to read its exit code, and closes it at once.
+    unsafe {
+        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if h.is_null() {
+            return GetLastError() == ERROR_ACCESS_DENIED;
+        }
+        let mut code = 0u32;
+        let read = GetExitCodeProcess(h, &mut code);
+        CloseHandle(h);
+        read == 0 || code == STILL_ACTIVE as u32
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -794,5 +815,24 @@ mod tests {
     fn a_test_process_has_a_trusted_parent() {
         let name = parent_image_name().expect("a trusted parent");
         assert!(name.to_ascii_lowercase().ends_with(".exe"), "{name}");
+    }
+
+    /// A running process may run; one that has exited, or an ID far above any in use, doesn't.
+    /// (Windows ignores an ID's low 2 bits: 7 opens 4, System, which this user may not open.)
+    #[test]
+    fn process_may_run_is_false_only_for_a_gone_process() {
+        assert!(process_may_run(std::process::id()));
+        let mut child = Command::new("cmd.exe")
+            .args(["/d", "/c", "exit 0"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        let gone = child.id();
+        child.wait().unwrap();
+        drop(child);
+        assert!(!process_may_run(gone), "pid {gone} exited");
+        assert!(!process_may_run(4_294_967_292));
+        assert!(process_may_run(7), "7 is System's 4");
     }
 }
