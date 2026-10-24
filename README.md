@@ -5,9 +5,8 @@ A drop-in replacement for [pyenv](https://github.com/pyenv/pyenv) and
 It works the same on Linux and Windows and uses native executable shims
 instead of shell scripts and batch wrappers.
 
-> **Status: v0.1.0 released** (Windows MSI, Linux tarball and install script). It covers
-> roadmap milestones M1 to M7b below: everything except conda on Windows, which comes
-> in the next release. The full design is in
+> **Status: v0.2.0** (Windows MSI, Linux tarball and install script). It covers roadmap
+> milestones M1 to M8 below. The full design is in
 > [docs/specs/2026-09-27-rpyenv-design.md](docs/specs/2026-09-27-rpyenv-design.md).
 
 ## Why
@@ -49,14 +48,16 @@ the child's exit code, and leaves your console as it found it.
 - **Full pyenv command parity**, including `install`, `shell`, and
   `init`. The test suites of pyenv and pyenv-win, plus side-by-side runs
   against the real tools, check this.
-- **Official builds only.** rpyenv installs three kinds of Python:
+- **Official builds by default.** rpyenv installs three kinds of Python:
   - **CPython:** python.org's packages on Windows, extracted with no installer and no
     registry writes; compiled from source on Linux, as pyenv does. On Linux, missing
-    libraries are found before the build and can be installed for you.
+    libraries are found before the build: rpyenv can install them through the package
+    manager or compile them without root. If you ask for it (never by default), it installs
+    a third-party python-build-standalone build instead of compiling.
   - **PyPy:** PyPy's official binaries, on Linux (x64, aarch64) and Windows (x64),
     each checked against the SHA-256 PyPy publishes.
   - **Anaconda, Miniconda and Miniforge:** the publishers' installers, on Linux (x64,
-    aarch64) and, after v0.1.0, on Windows (x64), each checked against its
+    aarch64) and, from v0.2.0, on Windows (x64), each checked against its
     publisher's SHA-256.
 
   Names, hashes, limits and what isn't supported:
@@ -320,11 +321,11 @@ nothing. `pyenv init --install pwsh` adds just the profile line.
    when needed; live rehash on both OSes.
 6. **M6 Release** (done, v0.1.0). The Windows MSI, the Linux tarball, and the install
    script.
-7. **M7 More distributions.** PyPy where official binaries exist (M7a, done);
-   Anaconda, Miniconda and Miniforge on Linux (M7b, done) and on Windows (M7c, next
-   release).
-8. **M8 Missing Linux build dependencies.** Install them through the
-   package manager (M8a, done), or compile them without root access (M8b, next release).
+7. **M7 More distributions** (done). PyPy where official binaries exist (M7a, v0.1.0);
+   Anaconda, Miniconda and Miniforge on Linux (M7b, v0.1.0) and on Windows (M7c, v0.2.0).
+8. **M8 Missing Linux build dependencies** (done, v0.2.0). Install them through the
+   package manager (M8a), compile them without root access (M8b), including X11 for Tk
+   (M8c), or install a python-build-standalone build instead (M8d).
 9. **M9 Shared versions** that an administrator manages for all users, if
    the need appears.
 

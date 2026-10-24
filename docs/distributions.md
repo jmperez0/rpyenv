@@ -8,7 +8,7 @@ rpyenv checks it, and what it does not support.
 |---|---|---|
 | CPython | Compiled from source, as pyenv does | python.org's official packages, extracted |
 | PyPy | x64, aarch64 | x64 |
-| Anaconda, Miniconda, Miniforge | x64, aarch64 | x64; ARM64 runs the x64 installers under emulation. After v0.1.0 |
+| Anaconda, Miniconda, Miniforge | x64, aarch64 | x64; ARM64 runs the x64 installers under emulation. From v0.2.0 |
 
 ## CPython
 
@@ -229,7 +229,7 @@ company mirror or `CONDA_SSL_VERIFY`, still apply.
 
 ## Conda on Windows
 
-Conda on Windows is new after v0.1.0.
+Conda on Windows is new in v0.2.0.
 
 ### Install
 
