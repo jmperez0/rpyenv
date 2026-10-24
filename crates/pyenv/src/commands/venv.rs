@@ -341,7 +341,7 @@ pub fn virtualenv(ctx: &Ctx, args: &[&str]) -> Output {
     if name.contains(sep) && name.replace('\\', "/") != format!("{base_first}/envs/{last}") {
         return Output::error("pyenv-virtualenv: no slash allowed in virtualenv name.");
     }
-    if !plain(&last, ctx) || rpyenv_core::installed::is_staging_name(&last) {
+    if !plain(&last, ctx) || rpyenv_core::installed::is_staging_name_for(&last, ctx.flavor) {
         return Output::error(format!(
             "pyenv-virtualenv: `{last}' is not allowed as virtualenv name."
         ));
