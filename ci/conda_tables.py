@@ -127,7 +127,10 @@ def main(argv):
             print(f"warning: {n} {ar}: {v}", file=sys.stderr)
     text = render(rows)
     path = os.path.join(DEST, "linux.tsv")
-    old = open(path, encoding="utf-8").read() if os.path.exists(path) else None
+    old = None
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            old = f.read()
     if old != text and a.write:
         os.makedirs(DEST, exist_ok=True)
         with open(path, "w", encoding="utf-8", newline="\n") as f:

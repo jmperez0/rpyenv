@@ -196,7 +196,10 @@ def main(argv):
     changed = []
     for fname, text in tables.items():
         path = os.path.join(DEST, fname)
-        old = open(path, encoding="utf-8").read() if os.path.exists(path) else None
+        old = None
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as f:
+                old = f.read()
         if old != text:
             changed.append(fname)
             if a.write:

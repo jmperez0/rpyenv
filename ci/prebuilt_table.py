@@ -219,7 +219,10 @@ def main():
         print(f"prebuilt_table: {e}", file=sys.stderr)
         return 1
     text = render(rows)
-    old_text = open(DEST, encoding="utf-8").read() if os.path.exists(DEST) else ""
+    old_text = ""
+    if os.path.exists(DEST):
+        with open(DEST, encoding="utf-8") as f:
+            old_text = f.read()
     if text == old_text:
         print(f"prebuilt table: no change ({len(rows)} rows)")
         return 0

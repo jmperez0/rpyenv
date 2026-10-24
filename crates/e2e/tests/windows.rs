@@ -468,6 +468,15 @@ fn api() -> bool {
     rpyenv_core::winproc::alloc_console_available()
 }
 
+/// Reports a test that returns early without checking its behavior. libtest hides a passing
+/// test's `eprintln!`, so this writes to stderr directly, and CI logs can be searched for
+/// `E2E-SKIP`. libtest names each test's thread after the test.
+fn skipped(why: &str) {
+    use std::io::Write;
+    let name = std::thread::current().name().unwrap_or("?").to_owned();
+    let _ = writeln!(std::io::stderr(), "E2E-SKIP {name}: {why}");
+}
+
 /// Tests that open console windows run one at a time: run together, they starve each
 /// other's process starts (a helper was seen to start 14 s late) and fight over focus.
 static WINDOWS: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -978,6 +987,7 @@ fn win_lazy_a_process_left_running_finishes() {
     );
     assert_eq!(explorer_exit(helper, &exit), 0);
     if !api() {
+        skipped("AllocConsoleWithOptions is missing (Windows build before 26100)");
         return;
     }
     assert!(
@@ -1211,6 +1221,7 @@ fn win_lazy_relays_typed_input() {
     f.install("3.9.1/python.exe");
     f.rehash();
     if !api() {
+        skipped("AllocConsoleWithOptions is missing (Windows build before 26100)");
         return;
     }
     let log = f.base.join("debug.log");
@@ -1246,6 +1257,7 @@ fn win_lazy_ctrl_c_reaches_the_program() {
     f.install("3.9.1/python.exe");
     f.rehash();
     if !api() {
+        skipped("AllocConsoleWithOptions is missing (Windows build before 26100)");
         return;
     }
     let log = f.base.join("debug.log");
@@ -1342,9 +1354,7 @@ fn close_window_of(pid: u32) -> bool {
         .unwrap()
         .code();
     if code == Some(4) {
-        eprintln!(
-            "skipped: the console window isn't conhost's (Windows Terminal is the default terminal)"
-        );
+        skipped("the console window isn't conhost's (Windows Terminal is the default terminal)");
         terminate(pid);
         return false;
     }
@@ -1444,6 +1454,7 @@ fn win_lazy_closing_the_window_reaches_the_program() {
     f.install("3.9.1/python.exe");
     f.rehash();
     if !api() {
+        skipped("AllocConsoleWithOptions is missing (Windows build before 26100)");
         return;
     }
     let log = f.base.join("debug.log");
