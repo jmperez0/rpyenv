@@ -89,6 +89,18 @@ fn remove(versions: &Path, p: &Path, n: &str) -> std::io::Result<Option<PathBuf>
     Ok(std::fs::remove_dir_all(&del).err().map(|_| del))
 }
 
+/// Whether process `pid` may still run. Off Windows, where this file is only built, it says
+/// yes, so no folder is ever taken for a gone uninstall's.
+#[cfg(windows)]
+fn may_run(pid: u32) -> bool {
+    rpyenv_core::winproc::process_may_run(pid)
+}
+
+#[cfg(not(windows))]
+fn may_run(_pid: u32) -> bool {
+    true
+}
+
 /// Deletes the `versions\.del-<n>-<pid>` folders that `remove` left behind in an earlier
 /// uninstall whose process is gone. Best effort and silent: a folder a running program still
 /// holds stays for the next uninstall, and a running uninstall's own folder is never touched.
@@ -107,7 +119,7 @@ fn remove_leftovers(versions: &Path) {
         let Some(pid) = pid else {
             continue;
         };
-        if pid != std::process::id() && !rpyenv_core::winproc::process_may_run(pid) {
+        if pid != std::process::id() && !may_run(pid) {
             let _ = std::fs::remove_dir_all(e.path());
         }
     }
