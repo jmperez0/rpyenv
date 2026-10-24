@@ -85,6 +85,28 @@ class Judge(unittest.TestCase):
         self.assertEqual(diff.judge(False, [], (9, b"", b"", b""), None, self.root, self.work), ("differs", []))
 
 
+class OrphanGoldens(unittest.TestCase):
+    def test_goldens_no_run_reads_are_listed(self):
+        table = {"D-12": "Windows", "D-49": "Linux"}
+        cases = (
+            diff_cases.Case("kept", ("version",), allow=("D-49",)),
+            diff_cases.Case("row gone", ("root",)),
+            diff_cases.Case("windows only", ("root",), allow=("D-12",)),
+        )
+        with tempfile.TemporaryDirectory() as d:
+            for n in ["kept.code", "kept.stdout", "row-gone.code", "windows-only.code", "renamed.stderr"]:
+                open(os.path.join(d, n), "wb").close()
+            self.assertEqual(diff.orphan_goldens(cases, table, "Linux", d),
+                             ["renamed.stderr", "row-gone.code", "windows-only.code"])
+            self.assertEqual(diff.orphan_goldens(cases, table, "Linux", os.path.join(d, "none")), [])
+
+    def test_the_shipped_goldens_have_no_orphans(self):
+        table = allowlist.rows()
+        for os_name in ("Linux", "Windows"):
+            golden = os.path.join(os.path.dirname(diff.GOLDEN), os_name.lower())
+            self.assertEqual(diff.orphan_goldens(diff_cases.CASES, table, os_name, golden), [], os_name)
+
+
 class Main(unittest.TestCase):
     def run_main(self, argv, cases):
         out, err = io.StringIO(), io.StringIO()

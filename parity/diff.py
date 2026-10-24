@@ -89,6 +89,15 @@ def golden_files(case):
     return {n: f"{base}.{n}" for n in names}
 
 
+def orphan_goldens(cases, table, os_name, golden_dir):
+    """The files of `golden_dir` no run reads: no `os_name` case has their name, or that case has
+    no allowlist row for `os_name` (only an allowed difference consults its golden)."""
+    used = {slug(c.name) for c in cases if c.os in ("both", os_name) and applicable(c, table, os_name)}
+    if not os.path.isdir(golden_dir):
+        return []
+    return sorted(n for n in os.listdir(golden_dir) if n.rsplit(".", 1)[0] not in used)
+
+
 def read_golden(case):
     paths = golden_files(case)
     if not all(os.path.isfile(p) for p in paths.values()):
@@ -286,6 +295,9 @@ def main(argv):
     remove_tree(BASE)
     if not counts and not failures:
         failures.append("no case ran" + (f" (no case named {a.only!r} for {OS_NAME})" if a.only else ""))
+    if counts and not a.only:
+        failures += [f"orphan golden {n}: no {OS_NAME} run reads it; delete it"
+                     for n in orphan_goldens(diff_cases.CASES, table, OS_NAME, GOLDEN)]
     print(f"{OS_NAME}: " + ", ".join(f"{n} {k}" for k, n in sorted(counts.items())))
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
