@@ -262,6 +262,35 @@ fn del_dirs(f: &Fixture) -> Vec<String> {
         .collect()
 }
 
+/// A `.del-` folder an earlier uninstall left (a running program kept a file) goes at the next
+/// uninstall once that uninstall's process is gone; one whose uninstall still runs stays.
+#[test]
+fn an_uninstall_removes_earlier_leftovers_whose_process_is_gone() {
+    let f = with(&["3.12.1", "3.12.2"]);
+    let mut child = std::process::Command::new("cmd.exe")
+        .args(["/d", "/c", "exit 0"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    let gone = child.id();
+    child.wait().unwrap();
+    drop(child);
+    let versions = f.root.join("versions");
+    let old = versions.join(format!(".del-3.11.0-{gone}"));
+    std::fs::create_dir_all(old.join("Lib")).unwrap();
+    std::fs::write(old.join("Lib").join("x.py"), "").unwrap();
+    let live = versions.join(format!(".del-3.11.1-{}", std::process::id()));
+    std::fs::create_dir_all(&live).unwrap();
+    let r = f.pyenv(&["uninstall", "3.12.1"]);
+    assert_eq!(
+        (r.code, r.stdout),
+        (0, "pyenv: Successfully uninstalled 3.12.1\r\n".to_string())
+    );
+    assert!(!old.exists(), "{}", old.display());
+    assert!(live.is_dir(), "{}", live.display());
+}
+
 #[test]
 fn a_normal_uninstall_leaves_no_renamed_folder() {
     let f = with(&["3.12.1", "3.12.2"]);
