@@ -262,8 +262,18 @@ fn plan_win(
     let path = win_child_path(ctx, &names, env.appdata.as_deref());
     let program = match mode {
         // A shim finds its file like `pyenv which`, launching only files Windows can start
-        // (M1b review M-4); not found is exit 127 (D-42).
+        // (M1b review M-4); not found is exit 127 (D-42). With `PATHEXT` unset or empty it uses
+        // cmd.exe's built-in list, as pyenv-win's `.bat` shims do through `exec` (D-42).
         Mode::Shim => {
+            let defaulted;
+            let ctx = if ctx.pathext.as_ref().is_none_or(|p| p.is_empty()) {
+                let mut c = ctx.clone();
+                c.pathext = Some(".COM;.EXE;.BAT;.CMD".into());
+                defaulted = c;
+                &defaulted
+            } else {
+                ctx
+            };
             lookup::which_win_runnable(ctx, command)
                 .map_err(|nf| lookup::not_found_report(ctx, command, &nf, true))?
                 .path
@@ -1099,5 +1109,22 @@ mod tests {
         let r = plan(&ctx, Mode::Shim, "python38", vec![], &ExecEnv::default()).unwrap_err();
         assert_eq!((r.stderr, r.code), (false, 127));
         assert_eq!(r.lines[0], "pyenv: python38: command not found");
+    }
+
+    /// With `PATHEXT` unset or empty, cmd.exe searches its built-in list, so pyenv-win's `.bat`
+    /// shims (which run `pyenv exec`) still start `python.exe`; rpyenv's shim does too.
+    /// `pyenv which` keeps pyenv-win's `GetExtensions` list, which has no `.EXE` then.
+    #[test]
+    fn win_shim_finds_an_exe_with_pathext_unset_or_empty() {
+        for pathext in [None, Some("")] {
+            let (_t, mut ctx) = win_ctx(&["3.9.1"]);
+            let python = ctx.versions_dir().join("3.9.1").join("python.exe");
+            exe(&python);
+            ctx.pyenv_version = Some("3.9.1".to_string());
+            ctx.pathext = pathext.map(OsString::from);
+            let p = plan(&ctx, Mode::Shim, "python", vec![], &ExecEnv::default());
+            assert_eq!(p.map(|p| p.program).ok(), Some(python), "{pathext:?}");
+            assert!(lookup::which_win(&ctx, "python").is_err(), "{pathext:?}");
+        }
     }
 }
