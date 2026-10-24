@@ -29,6 +29,24 @@ fn run(f: &Fixture, args: &[&str]) -> (String, String, i32) {
     (r.stdout, r.stderr, r.code)
 }
 
+/// NTFS ignores case: `.TMP-x` is the installer's staging name `.tmp-x`.
+#[test]
+fn a_staging_name_in_any_case_is_not_an_env_name() {
+    let f = Fixture::new();
+    base(&f, "3.13.1");
+    for name in [".tmp-x", ".TMP-x", ".Del-x-1"] {
+        let (_, err, code) = run(&f, &["virtualenv", "3.13.1", name]);
+        assert_eq!(
+            (err, code),
+            (
+                format!("pyenv-virtualenv: `{name}' is not allowed as virtualenv name.\r\n"),
+                1
+            )
+        );
+        assert!(!f.root.join("versions").join(name).exists(), "{name}");
+    }
+}
+
 #[test]
 fn creates_an_env_behind_a_junction_and_lists_it() {
     let f = Fixture::new();

@@ -32,13 +32,21 @@ pub fn is_staging_name(name: &str) -> bool {
     name.starts_with(".tmp-") || name.starts_with(".old-") || name.starts_with(".del-")
 }
 
+/// `is_staging_name` as `flavor`'s file system sees it: pyenv-win's NTFS ignores case.
+pub fn is_staging_name_for(name: &str, flavor: Flavor) -> bool {
+    match flavor {
+        Flavor::Pyenv => is_staging_name(name),
+        Flavor::PyenvWin => is_staging_name(&name.to_ascii_lowercase()),
+    }
+}
+
 /// Top-level entries of `versions/` that are directories (following links),
 /// in the order the flavor lists them. Envs are not included.
 pub fn top_level(versions_dir: &Path, flavor: Flavor) -> Vec<VersionEntry> {
     let mut names = subdirs(versions_dir);
     // The installer's staging names, for both flavors (plan M2a Decision 4, M2b Decision 9).
     // Upstream lists other dot entries too, so only these are hidden (allowlist row, Task 10).
-    names.retain(|n| !is_staging_name(n));
+    names.retain(|n| !is_staging_name_for(n, flavor));
     if flavor == Flavor::Pyenv {
         sort_version_names(&mut names, &versions_dir.to_string_lossy());
     }
@@ -147,6 +155,23 @@ mod tests {
         assert!(!got
             .iter()
             .any(|n| n.starts_with(".tmp-") || n.starts_with(".old-") || n.starts_with(".del-")));
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// NTFS ignores case, so pyenv-win hides staging names in any case; Linux lists other
+    /// spellings, as upstream lists dot entries.
+    #[test]
+    fn staging_names_ignore_case_only_for_pyenv_win() {
+        let d = std::env::temp_dir().join(format!(
+            "rpyenv-installed-{}-staging_case",
+            std::process::id()
+        ));
+        for n in ["3.12.1", ".TMP-3.12.2", ".Old-3.12.1", ".DEL-3.12.3-77"] {
+            fs::create_dir_all(d.join(n)).unwrap();
+        }
+        assert_eq!(names(&d, Flavor::PyenvWin), ["3.12.1"]);
+        let linux = names(&d, Flavor::Pyenv);
+        assert_eq!(linux.len(), 4, "{linux:?}");
         fs::remove_dir_all(&d).unwrap();
     }
 
