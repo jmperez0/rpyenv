@@ -195,7 +195,9 @@ static RECIPES: &[Recipe] = &[
         x11_args: "",
         includes: &[],
         steps: &[
-            "CPPFLAGS='-I{dep:ncurses}/include -I{dep:ncurses}/include/ncursesw' ./configure --prefix={prefix} --disable-shared --enable-static --with-curses",
+            // `-std=gnu11`: readline before 8.2 (3.8's pin, 8.1) declares `()` prototypes that
+            // C23, GCC 15's default, reads as `(void)` (measured: Fedora 44, Tumbleweed).
+            r#"CFLAGS="${CFLAGS--g -O2} -std=gnu11" CPPFLAGS='-I{dep:ncurses}/include -I{dep:ncurses}/include/ncursesw' ./configure --prefix={prefix} --disable-shared --enable-static --with-curses"#,
             "make -j{jobs}",
             "make install DESTDIR={destdir}",
             // ncurses joins the archive: `-lreadline` then stands alone (ruling P11).
