@@ -20,8 +20,9 @@ fn listing(file: &str, sha: &str) -> Vec<u8> {
 #[test]
 fn read_published_collects_both_listings_and_the_releases() {
     const ASSET: &str = "Miniforge3-26.7.2-0-Windows-x86_64.exe";
+    const PRE: &str = "Miniforge3-26.9.4-0-Windows-x86_64.exe";
     let releases = format!(
-        r#"[{{"tag_name":"26.7.2-0","assets":[{{"name":"{ASSET}"}},{{"name":"{ASSET}.sha256"}}]}}]"#
+        r#"[{{"tag_name":"26.9.4-0","prerelease":true,"assets":[{{"name":"{PRE}"}},{{"name":"{PRE}.sha256"}}]}},{{"tag_name":"26.7.2-0","assets":[{{"name":"{ASSET}"}},{{"name":"{ASSET}.sha256"}}]}}]"#
     );
     let s =
         start(vec![
@@ -45,14 +46,21 @@ fn read_published_collects_both_listings_and_the_releases() {
             "/miniforge/releases/download/26.7.2-0/Miniforge3-26.7.2-0-Windows-x86_64.exe.sha256",
             vec![Reply::Body(format!("{SHA_C}  {ASSET}\n").into_bytes())],
         ),
+        (
+            "/miniforge/releases/download/26.9.4-0/Miniforge3-26.9.4-0-Windows-x86_64.exe.sha256",
+            vec![Reply::Body(format!("{SHA_A}  {PRE}\n").into_bytes())],
+        ),
     ]);
     std::env::set_var("RPYENV_TEST_CONDA", s.url(""));
     let f = Fetcher::direct();
 
     let got = read_published(&f, &sources()).unwrap();
     let want = |path: &str, sha: &str| (s.url(path), Some(sha.to_string()));
+    // A pre-release is read like any release, and named as one (only `add_newer` skips it).
+    let pre = s.url("/miniforge/releases/download/26.9.4-0/Miniforge3-26.9.4-0-Windows-x86_64.exe");
+    assert_eq!(got.prerelease.iter().collect::<Vec<_>>(), [&pre]);
     assert_eq!(
-        got.into_iter().collect::<Vec<_>>(),
+        got.files.into_iter().collect::<Vec<_>>(),
         vec![
             want("/archive/Anaconda3-2025.06-0-Windows-x86_64.exe", SHA_B),
             want(
@@ -63,6 +71,7 @@ fn read_published_collects_both_listings_and_the_releases() {
                 "/miniforge/releases/download/26.7.2-0/Miniforge3-26.7.2-0-Windows-x86_64.exe",
                 SHA_C
             ),
+            (pre.clone(), Some(SHA_A.to_string())),
         ]
     );
 

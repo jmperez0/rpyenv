@@ -4,10 +4,36 @@
 
 use super::conda::{self, Install, LinuxRow, Verdict, WIN_ARCH};
 use super::fetch::Fetcher;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-/// Installer URL → the publisher's SHA-256 (`None`: listed without one).
-pub type Published = BTreeMap<String, Option<String>>;
+/// Installer URL → the publisher's SHA-256 (`None`: listed without one), as a map, plus the
+/// URLs that come from Miniforge releases marked `prerelease`: a row upstream names keeps its
+/// installer, but `add_newer` never adds one (Miniforge 26.9.4-0 came out as a pre-release
+/// whose `conda create` fails on Windows; older re-released builds are pre-releases too).
+#[derive(Debug, Default)]
+pub struct Published {
+    pub files: BTreeMap<String, Option<String>>,
+    pub prerelease: BTreeSet<String>,
+}
+
+impl Published {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl std::ops::Deref for Published {
+    type Target = BTreeMap<String, Option<String>>;
+    fn deref(&self) -> &Self::Target {
+        &self.files
+    }
+}
+
+impl std::ops::DerefMut for Published {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.files
+    }
+}
 
 pub struct Sources {
     pub miniconda: String,
@@ -78,12 +104,12 @@ pub fn listing_files(html: &str, folder: &str) -> Vec<(String, Option<String>)> 
 
 /// One page of Miniforge's releases API: each Windows x64 installer rpyenv can use (a
 /// versioned one `name_of` parses, or an unversioned `<Family>-Windows-x86_64.exe` for the
-/// `-latest` rows) with its download URL and whether a `<asset>.sha256` sits beside it. Other
-/// assets (`*-uninstaller-patch`, `Miniforge-pypy3-*`) are left out, so their sidecars are never
-/// fetched and can't fail the read. Releases marked `prerelease` or `draft` are left out too
-/// (Miniforge 26.9.4-0 came out as a pre-release whose `conda create` fails on Windows). A page
-/// that isn't a JSON array is an error (GitHub's rate-limit answer is an object).
-pub fn release_assets(json: &str, miniforge: &str) -> Result<Vec<(String, bool)>, String> {
+/// `-latest` rows) with its download URL, whether a `<asset>.sha256` sits beside it, and
+/// whether its release is marked `prerelease` (see `Published`). Other assets
+/// (`*-uninstaller-patch`, `Miniforge-pypy3-*`) are left out, so their sidecars are never
+/// fetched and can't fail the read. Releases marked `draft` are left out too. A page that
+/// isn't a JSON array is an error (GitHub's rate-limit answer is an object).
+pub fn release_assets(json: &str, miniforge: &str) -> Result<Vec<(String, bool, bool)>, String> {
     let v: serde_json::Value = serde_json::from_str(json).map_err(|e| format!("releases: {e}"))?;
     let releases = v.as_array().ok_or_else(|| {
         format!(
@@ -93,9 +119,10 @@ pub fn release_assets(json: &str, miniforge: &str) -> Result<Vec<(String, bool)>
     })?;
     let mut out = Vec::new();
     for r in releases {
-        if r["prerelease"].as_bool() == Some(true) || r["draft"].as_bool() == Some(true) {
+        if r["draft"].as_bool() == Some(true) {
             continue;
         }
+        let prerelease = r["prerelease"].as_bool() == Some(true);
         let tag = r["tag_name"].as_str().unwrap_or_default();
         let names: Vec<&str> = r["assets"]
             .as_array()
@@ -107,7 +134,11 @@ pub fn release_assets(json: &str, miniforge: &str) -> Result<Vec<(String, bool)>
                 .is_some_and(|f| !f.is_empty() && !f.contains('-'));
             if (name_of(n).is_some() || unversioned) && !tag.is_empty() {
                 let sidecar = names.contains(&format!("{n}.sha256").as_str());
-                out.push((format!("{miniforge}/releases/download/{tag}/{n}"), sidecar));
+                out.push((
+                    format!("{miniforge}/releases/download/{tag}/{n}"),
+                    sidecar,
+                    prerelease,
+                ));
             }
         }
     }
@@ -145,13 +176,15 @@ pub fn read_published(f: &Fetcher, s: &Sources) -> Result<Published, String> {
     if assets.is_empty() {
         return Err(format!("{}: lists no Windows installers", s.releases));
     }
+    p.prerelease
+        .extend(assets.iter().filter(|a| a.2).map(|a| a.0.clone()));
     let shas = std::sync::Mutex::new(Vec::new());
     let next = std::sync::atomic::AtomicUsize::new(0);
     std::thread::scope(|sc| {
         for _ in 0..8 {
             sc.spawn(|| loop {
                 let i = next.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                let Some((url, sidecar)) = assets.get(i) else {
+                let Some((url, sidecar, _)) = assets.get(i) else {
                     break;
                 };
                 // A listed sidecar that can't be read fails the whole read (M7c design D9).
@@ -396,13 +429,17 @@ pub fn lost(previous: &[LinuxRow], new: &[LinuxRow]) -> Vec<String> {
         .collect()
 }
 
-/// §4.3 step 2: releases newer than their family's newest row, appended in name order.
+/// §4.3 step 2: releases newer than their family's newest row, appended in name order;
+/// never one from a pre-release (`Published`).
 pub fn add_newer(rows: &mut Vec<LinuxRow>, p: &Published) -> usize {
     let mut added = Vec::new();
-    for (url, sha) in p {
+    for (url, sha) in p.iter() {
         let (Some(sha), Some(name)) = (sha, url.rsplit('/').next().and_then(name_of)) else {
             continue;
         };
+        if p.prerelease.contains(url) {
+            continue;
+        }
         if rows.iter().any(|r| r.name == name) {
             continue;
         }
@@ -614,10 +651,13 @@ mod tests {
     const SHA_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
     fn published(entries: &[(&str, Option<&str>)]) -> Published {
-        entries
-            .iter()
-            .map(|(u, s)| (u.to_string(), s.map(str::to_string)))
-            .collect()
+        Published {
+            files: entries
+                .iter()
+                .map(|(u, s)| (u.to_string(), s.map(str::to_string)))
+                .collect(),
+            prerelease: Default::default(),
+        }
     }
 
     #[test]
@@ -700,6 +740,38 @@ mod tests {
     }
 
     #[test]
+    fn a_prerelease_is_never_added_but_a_row_upstream_names_keeps_it() {
+        // Miniforge 26.9.4-0 came out as a pre-release whose `conda create` fails on Windows;
+        // 24.7.1-1, an older build later replaced by 24.7.1-2, is a pre-release too.
+        let dl = "https://github.com/conda-forge/miniforge/releases/download";
+        let mut p = published(&[
+            (
+                &format!("{dl}/26.9.4-0/Miniforge3-26.9.4-0-Windows-x86_64.exe"),
+                Some(SHA_B),
+            ),
+            (
+                &format!("{dl}/24.7.1-1/Miniforge3-24.7.1-1-Windows-x86_64.exe"),
+                Some(SHA_A),
+            ),
+        ]);
+        p.prerelease = p.files.keys().cloned().collect();
+        let mut rows = crate::install::conda::parse_windows(&format!(
+            "miniforge3-26.7.2-0\tWindows-x86_64\tok Miniforge3-26.7.2-0-Windows-x86_64 {dl}/26.7.2-0/Miniforge3-26.7.2-0-Windows-x86_64.exe#{SHA_A} miniconda verify_py3\n"
+        ), true).unwrap();
+        assert_eq!(add_newer(&mut rows, &p), 0);
+        let linux = parse_linux(&format!(
+            "miniforge3-24.7.1-1\tLinux-x86_64\tok Miniforge3-24.7.1-1-Linux-x86_64 {dl}/24.7.1-1/Miniforge3-24.7.1-1-Linux-x86_64.sh#{SHA_B} miniconda verify_py3\n"
+        ))
+        .unwrap();
+        let win = from_linux(&linux, &p);
+        assert!(
+            matches!(&win[0].verdict, Verdict::Ok(i) if i.url.ends_with(&format!("#{SHA_A}"))),
+            "{:?}",
+            win[0].verdict
+        );
+    }
+
+    #[test]
     fn render_round_trips_through_the_parser() {
         let rows = from_linux(&linux(), &Published::new());
         let text = render(&rows, "ci", "2026-10-16T09:30:00Z");
@@ -775,14 +847,14 @@ mod tests {
         let json = r#"[{"tag_name":"26.7.2-0","assets":[{"name":"Miniforge3-26.7.2-0-Windows-x86_64.exe"},{"name":"Miniforge3-26.7.2-0-Windows-x86_64.exe.sha256"},{"name":"Miniforge3-Windows-x86_64.exe"},{"name":"Miniforge3-26.7.2-0-Linux-x86_64.sh"}]}]"#;
         let got = release_assets(json, "https://github.com/conda-forge/miniforge").unwrap();
         assert_eq!(got, vec![
-            ("https://github.com/conda-forge/miniforge/releases/download/26.7.2-0/Miniforge3-26.7.2-0-Windows-x86_64.exe".to_string(), true),
-            ("https://github.com/conda-forge/miniforge/releases/download/26.7.2-0/Miniforge3-Windows-x86_64.exe".to_string(), false),
+            ("https://github.com/conda-forge/miniforge/releases/download/26.7.2-0/Miniforge3-26.7.2-0-Windows-x86_64.exe".to_string(), true, false),
+            ("https://github.com/conda-forge/miniforge/releases/download/26.7.2-0/Miniforge3-Windows-x86_64.exe".to_string(), false, false),
         ]);
         assert!(release_assets("{\"message\":\"API rate limit exceeded\"}", "x").is_err());
     }
 
     #[test]
-    fn release_assets_skips_prereleases_and_drafts() {
+    fn release_assets_marks_prereleases_and_skips_drafts() {
         // Miniforge 26.9.4-0 came out as a pre-release whose `conda create` fails on Windows.
         let rel = |tag: &str, flags: &str| {
             format!(
@@ -796,15 +868,23 @@ mod tests {
             rel("26.7.2-1", r#""prerelease":false,"draft":false,"#),
         );
         let got = release_assets(&json, "https://github.com/conda-forge/miniforge").unwrap();
+        let pre = "https://github.com/conda-forge/miniforge/releases/download/26.9.4-0/";
         let base = "https://github.com/conda-forge/miniforge/releases/download/26.7.2-1/";
         assert_eq!(
             got,
             vec![
                 (
+                    format!("{pre}Miniforge3-26.9.4-0-Windows-x86_64.exe"),
+                    false,
+                    true
+                ),
+                (format!("{pre}Miniforge3-Windows-x86_64.exe"), false, true),
+                (
                     format!("{base}Miniforge3-26.7.2-1-Windows-x86_64.exe"),
+                    false,
                     false
                 ),
-                (format!("{base}Miniforge3-Windows-x86_64.exe"), false),
+                (format!("{base}Miniforge3-Windows-x86_64.exe"), false, false),
             ]
         );
     }
@@ -825,9 +905,10 @@ mod tests {
             vec![
                 (
                     format!("{base}Miniforge3-23.1.0-4-Windows-x86_64.exe"),
-                    true
+                    true,
+                    false
                 ),
-                (format!("{base}Miniforge3-Windows-x86_64.exe"), true),
+                (format!("{base}Miniforge3-Windows-x86_64.exe"), true, false),
             ]
         );
     }
