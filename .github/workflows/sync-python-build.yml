@@ -33,6 +33,9 @@ permissions:
 
 env:
   BATS_VERSION: "1.11.1"
+  # The differential cases' pyenv-virtualenv, as parity.yml's (without it every plugin case
+  # fails with "needs --pyenv-virtualenv").
+  PYENV_VIRTUALENV_SHA: eda64556af9b2992386deeb75dad2130899fc4c9
 
 jobs:
   sync:
@@ -47,6 +50,7 @@ jobs:
           tag=$(gh api repos/pyenv/pyenv/releases/latest --jq .tag_name)
           sha=$(gh api "repos/pyenv/pyenv/commits/$tag" --jq .sha)
           curl -fsSL "https://github.com/pyenv/pyenv/archive/$sha.tar.gz" | tar -xz -C "$RUNNER_TEMP"
+          curl -fsSL "https://github.com/pyenv/pyenv-virtualenv/archive/$PYENV_VIRTUALENV_SHA.tar.gz" | tar -xz -C "$RUNNER_TEMP"
           old=$(cut -d ' ' -f 2 crates/pyenv/python-build/UPSTREAM)
           echo "TAG=$tag" >> "$GITHUB_ENV"
           echo "SHA=$sha" >> "$GITHUB_ENV"
@@ -171,8 +175,9 @@ jobs:
         run: |
           r="$RUNNER_TEMP/results.md"
           up="$RUNNER_TEMP/pyenv-$SHA"
+          venv="$RUNNER_TEMP/pyenv-virtualenv-$PYENV_VIRTUALENV_SHA"
           cargo build --workspace
-          python3 parity/diff.py --rpyenv target/debug --upstream "$up" --update-golden > "$RUNNER_TEMP/golden.log" 2>&1 || true
+          python3 parity/diff.py --rpyenv target/debug --upstream "$up" --pyenv-virtualenv "$venv" --update-golden > "$RUNNER_TEMP/golden.log" 2>&1 || true
           check() { # <title> <command…>: runs it, records pass or fail and the output's tail
             local title=$1; shift
             if "$@" > "$RUNNER_TEMP/out.log" 2>&1; then echo "- **$title**: pass" >> "$r"
@@ -198,7 +203,7 @@ jobs:
           elif [ "$CONDA_WIN" = "0" ]; then echo "- **Windows conda table (crates/pyenv/conda/windows.tsv)**: pass" >> "$r"
           fi
           check "cargo test --workspace" cargo test --workspace
-          check "differential cases (parity/diff.py)" python3 parity/diff.py --rpyenv target/debug --upstream "$up"
+          check "differential cases (parity/diff.py)" python3 parity/diff.py --rpyenv target/debug --upstream "$up" --pyenv-virtualenv "$venv"
           curl -fsSL "https://github.com/bats-core/bats-core/archive/refs/tags/v${BATS_VERSION}.tar.gz" | tar -xz -C "$RUNNER_TEMP"
           run_bats() { # as parity.yml's bats step, against the new pyenv
             docker run --rm -v "$PWD:/w" -v "$RUNNER_TEMP:/t" -w /w debian:trixie-slim bash -c \
